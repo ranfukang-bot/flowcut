@@ -271,6 +271,19 @@ function showNextPersistenceNotice() {
 // again, the newest task state exists only in memory.
 function reportPersistenceProblem(problem) {
   const source = problem.source || "本机状态文件";
+  if (problem.unsavedSubmission) {
+    const submission = problem.unsavedSubmission;
+    const message = `Seedance 已接收任务（Task ID ${submission.taskId}，账号“${submission.accountName}”），但本机无法保存这条记录`;
+    persistenceNotices.push({
+      type: "warning",
+      message: "已提交的生成任务没有保存到本机",
+      detail: `${message}。\n\n当前运行中会继续查询结果并自动下载，请不要关闭 FlowCut。若必须重启，请先记下这个 Task ID：重启后该任务会显示为"提交结果待核对"且不会自动重发，可在 TikTok Symphony 生成历史中按 Task ID 找到视频。`,
+    });
+    if (store?.state) store.log(message, "error");
+    showNextPersistenceNotice();
+    broadcast();
+    return;
+  }
   if (problem.recovered) {
     persistenceNotices.push({
       type: "info",
@@ -845,8 +858,14 @@ async function runGeminiJob(account, job) {
   try {
     return await resultPromise;
   } finally {
-    removeTemporaryGeminiFiles(temporary);
-    removeTemporaryGeminiFiles(referenceTemporary);
+    // A locked temp file must not replace a finished Gemini result with an error.
+    for (const files of [temporary, referenceTemporary]) {
+      try {
+        removeTemporaryGeminiFiles(files);
+      } catch (error) {
+        store.log(`Gemini 临时图片清理失败（不影响任务结果）：${error.message}`, "warn");
+      }
+    }
   }
 }
 

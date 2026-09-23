@@ -215,31 +215,42 @@ class FlowCutBridge {
     this.autoDownloads.add(task.id);
     task.autoDownloadError = '';
     this.store.upsertTask(task);
-    void this.downloadTask(task)
-      .then(() => {
-        if (this.store.isFlowcutTaskCleared?.(task.flowcutTaskId)) return;
+    void this.runAutoDownload(task);
+  }
+
+  async runAutoDownload(task) {
+    let failure = null;
+    try {
+      await this.downloadTask(task);
+    } catch (error) {
+      failure = error;
+    }
+    // Bookkeeping after a finished download must never mark it as failed.
+    try {
+      if (this.store.isFlowcutTaskCleared?.(task.flowcutTaskId)) return;
+      if (!failure) {
         task.autoDownloadError = '';
         task.nextAutoDownloadAt = 0;
         this.store.upsertTask(task);
         this.store.log(
           `FlowCut 成片已自动归档到 TK 账号文件夹“${task.tiktokAccountName}”`,
         );
-      })
-      .catch((error) => {
-        if (this.store.isFlowcutTaskCleared?.(task.flowcutTaskId)) return;
-        task.autoDownloadError =
-          error instanceof Error ? error.message : String(error);
-        task.nextAutoDownloadAt = Date.now() + 60_000;
-        this.store.upsertTask(task);
-        this.store.log(
-          `FlowCut 成片等待下载，1 分钟后自动重试：${task.autoDownloadError}`,
-          error?.code === 'VIDEO_NOT_READY' ? 'info' : 'warn',
-        );
-      })
-      .finally(() => {
-        this.autoDownloads.delete(task.id);
-        this.onChange();
-      });
+        return;
+      }
+      task.autoDownloadError =
+        failure instanceof Error ? failure.message : String(failure);
+      task.nextAutoDownloadAt = Date.now() + 60_000;
+      this.store.upsertTask(task);
+      this.store.log(
+        `FlowCut 成片等待下载，1 分钟后自动重试：${task.autoDownloadError}`,
+        failure?.code === 'VIDEO_NOT_READY' ? 'info' : 'warn',
+      );
+    } catch (error) {
+      console.error('[seedance] auto-download bookkeeping failed', error);
+    } finally {
+      this.autoDownloads.delete(task.id);
+      this.onChange();
+    }
   }
 
   scheduleAutoDownloads() {
@@ -266,7 +277,9 @@ class FlowCutBridge {
           taskId: task.flowcutTaskId,
           kind: task.flowcutTaskKind || 'standard',
           providerJobId: task.id,
-          providerStatus: task.status,
+          // FlowCut lists it with the tasks that need a person; the error text
+          // says the outcome is unconfirmed rather than a definite failure.
+          providerStatus: task.status === 'submit_unconfirmed' ? 'failed' : task.status,
           outputUrl: task.videoUrl || '',
           error: task.errorMessage || '',
           downloadPath: task.lastDownloadedPath || '',

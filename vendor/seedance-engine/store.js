@@ -1,11 +1,16 @@
+const fs = require('node:fs');
 const path = require('node:path');
 const { FAST_MODEL, STANDARD_MODEL, requireModel } = require('./models');
 const {
   QUICK_RETRY_DELAYS_MS,
   describeBlockedState,
   loadJsonState,
+  withFsRetry,
   writeTextDurable,
 } = require('./durable-json');
+
+const UNCONFIRMED_RESTART_MESSAGE =
+  '软件重新启动时这条任务正在提交，无法确认 TikTok 是否已经收到。为避免重复生成，没有自动重新提交。请到 TikTok Symphony 生成历史核对：已生成可在历史中取回视频；确认没有生成时，请为该商品重新创建任务。';
 
 function validateState(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return '不是有效的任务库对象';
@@ -46,7 +51,11 @@ const DEFAULT_ACCOUNT = {
 class WorkbenchStore {
   constructor(userDataPath, { onPersistError = null, onPersistRecovered = null } = {}) {
     this.filePath = path.join(userDataPath, 'workbench-state.json');
+    // Append-only record of accepted generations. It survives even when the
+    // task list could not be saved after a submission.
+    this.submissionJournalPath = path.join(userDataPath, 'submitted-tasks.jsonl');
     this.persistError = null;
+    this.journalDirty = false;
     this.onPersistError = onPersistError;
     this.onPersistRecovered = onPersistRecovered;
     this.blocked = null;
@@ -121,13 +130,97 @@ class WorkbenchStore {
         task.activity = activityByStatus[task.status] || '等待处理';
         task.activityAt = Date.now();
       }
-      if (['uploading', 'submitting'].includes(task.status)) {
-        task.status = task.status === 'uploading' ? 'upload_wait' : 'queued';
-        task.activity =
-          task.status === 'upload_wait' ? '软件重新启动，等待恢复图片上传' : '等待重新提交';
+    }
+    const journal = this.readSubmissionJournal();
+    this.applySubmissionJournal(journal);
+    for (const task of this.data.tasks) {
+      if (task.status === 'uploading') {
+        task.status = 'upload_wait';
+        task.activity = '软件重新启动，等待恢复图片上传';
+      } else if (task.status === 'submitting') {
+        // The request may have reached TikTok before the restart.
+        task.status = 'submit_unconfirmed';
+        task.errorCode = 'SUBMIT_UNCONFIRMED';
+        task.errorMessage = UNCONFIRMED_RESTART_MESSAGE;
+        task.activity = UNCONFIRMED_RESTART_MESSAGE;
+        task.activityLevel = 'error';
+        task.activityAt = Date.now();
       }
     }
+    // Cleared by the next successful save, which now contains these Task IDs.
+    this.journalDirty = journal.length > 0;
     this.save();
+  }
+
+  readSubmissionJournal() {
+    let text = '';
+    try {
+      text = withFsRetry(() => fs.readFileSync(this.submissionJournalPath, 'utf8'));
+    } catch {
+      return [];
+    }
+    const entries = [];
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry?.localTaskId && entry?.taskId) entries.push(entry);
+      } catch {
+        // A line cut off by a crash; complete lines before it are still valid.
+      }
+    }
+    return entries;
+  }
+
+  // Adds submissions the saved task list does not know about yet, so a task
+  // that was accepted before a failed save is tracked instead of resubmitted.
+  applySubmissionJournal(entries) {
+    for (const entry of entries) {
+      const task = this.data.tasks.find((item) => item.id === entry.localTaskId);
+      const taskId = String(entry.taskId);
+      if (!task || (task.taskIds || []).map(String).includes(taskId)) continue;
+      if (entry.accountId && !this.getAccount(entry.accountId)) continue;
+      task.taskId = taskId;
+      task.taskIds = [...(task.taskIds || []), taskId];
+      task.accountId = entry.accountId || task.accountId;
+      task.status = 'generating';
+      task.errorCode = '';
+      task.errorMessage = '';
+      task.attempts = Number(task.attempts || 0) + 1;
+      task.lastSubmittedAt = Number(entry.submittedAt || Date.now());
+      task.activity = `已按提交记录恢复 Task ID ${taskId}，继续追踪生成结果`;
+      task.activityLevel = 'info';
+      task.activityAt = Date.now();
+      task.logs = [{ time: Date.now(), level: 'info', message: task.activity }, ...(task.logs || [])].slice(0, 80);
+    }
+  }
+
+  recordSubmission(entry) {
+    if (this.blocked) return false;
+    try {
+      withFsRetry(() => {
+        const descriptor = fs.openSync(this.submissionJournalPath, 'a');
+        try {
+          fs.writeSync(descriptor, `${JSON.stringify(entry)}\n`);
+          fs.fsyncSync(descriptor);
+        } finally {
+          fs.closeSync(descriptor);
+        }
+      });
+      this.journalDirty = true;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  clearSubmissionJournal() {
+    try {
+      withFsRetry(() => fs.rmSync(this.submissionJournalPath, { force: true }));
+      this.journalDirty = false;
+    } catch {
+      // Harmless: entries already present in the task list are skipped next time.
+    }
   }
 
   // Returns false instead of throwing: a failed write must not turn an accepted
@@ -149,6 +242,8 @@ class WorkbenchStore {
       if (firstFailure) this.onPersistError?.(this.persistError);
       return false;
     }
+    // Every submission recorded so far is now inside the saved task list.
+    if (this.journalDirty) this.clearSubmissionJournal();
     if (this.persistError) {
       const previous = this.persistError;
       this.persistError = null;

@@ -1,6 +1,6 @@
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { AuthRequiredError } = require('./tiktok-client');
+const { AuthRequiredError, isTransientRequestError } = require('./tiktok-client');
 const { FAST_MODEL, STANDARD_MODEL, requireModel, modelLabel } = require('./models');
 
 const EDITABLE_STATUSES = new Set(['draft', 'queued', 'upload_wait', 'retry_wait', 'failed']);
@@ -11,6 +11,17 @@ function isTransientNetworkError(error) {
   const message = error instanceof Error ? error.message : String(error || '');
   return TRANSIENT_NETWORK_PATTERN.test(message);
 }
+
+// No definitive answer from the platform: it may already have accepted the
+// generation, so resubmitting could create (and pay for) a duplicate.
+function isUncertainSubmitError(error) {
+  if (['TimeoutError', 'AbortError'].includes(error?.name)) return true;
+  if (Number(error?.status || 0) >= 500) return true;
+  return isTransientRequestError(error) || isTransientNetworkError(error);
+}
+
+const UNCONFIRMED_SUBMIT_HINT =
+  '为避免重复生成，没有自动重新提交。请到 TikTok Symphony 生成历史核对：已生成可在历史中取回视频；确认没有生成时，请为该商品重新创建任务。';
 
 function backoffDelayMs(failures, baseSeconds = 30, maxSeconds = 300) {
   const exponent = Math.max(0, Math.min(4, Number(failures || 1) - 1));
@@ -26,6 +37,8 @@ class QueueEngine {
     this.tickBusy = false;
     this.activeUploads = new Set();
     this.remotePollState = new Map();
+    // Called when an accepted generation's Task ID could not be stored durably.
+    this.onUnsavedSubmission = () => {};
   }
 
   get authenticated() {
@@ -288,6 +301,9 @@ class QueueEngine {
   retryTask(id) {
     const task = this.store.getTask(id);
     if (!task) throw new Error('任务不存在');
+    if (task.status === 'submit_unconfirmed') {
+      throw new Error(`这条任务的提交结果尚未确认。${UNCONFIRMED_SUBMIT_HINT}`);
+    }
     task.errorCode = '';
     task.errorMessage = '';
     task.completedAt = 0;
@@ -745,6 +761,15 @@ class QueueEngine {
     }
   }
 
+  markSubmitUnconfirmed(task, reason) {
+    task.status = 'submit_unconfirmed';
+    task.errorCode = 'SUBMIT_UNCONFIRMED';
+    task.errorMessage = `提交结果不确定（${reason}）。${UNCONFIRMED_SUBMIT_HINT}`;
+    task.completedAt = Date.now();
+    this.recordTask(task, task.errorMessage, 'error');
+    this.store.log(`任务“${task.imageName || task.id}”提交结果不确定，未自动重发：${reason}`, 'error');
+  }
+
   async submitTask(task, account) {
     if (this.store.isFlowcutTaskCleared?.(task.flowcutTaskId)) return;
     this.assignTaskAccount(task, account, false);
@@ -758,22 +783,11 @@ class QueueEngine {
     task.status = 'submitting';
     task.errorCode = '';
     task.errorMessage = '';
+    task.submitStartedAt = Date.now();
     this.recordTask(task, `正在使用账号“${account.name}” · ${modelLabel(task.model)} 提交生成任务`);
+    let result;
     try {
-      const result = await this.accounts.client(account.id).submitTask(task);
-      task.attempts += 1;
-      task.lastSubmittedAt = Date.now();
-      task.taskId = String(result?.data?.task_id || '');
-      if (!task.taskId) throw new Error('生成接口未返回 Task ID');
-      task.taskIds = [...(task.taskIds || []), task.taskId];
-      task.status = 'generating';
-      this.accounts.markAuthenticated(account.id);
-      this.recordTask(
-        task,
-        `账号“${account.name}”提交成功，正在生成视频 · Task ID ${task.taskId}`,
-        'success',
-      );
-      this.store.log(`账号“${account.name}”已提交任务，Task ID：${task.taskId}`);
+      result = await this.accounts.client(account.id).submitTask(task);
     } catch (error) {
       if (this.accounts.isQuotaError(error)) {
         this.switchAfterQuota(task, account.id, error.message);
@@ -787,6 +801,8 @@ class QueueEngine {
         task.status = 'retry_wait';
         task.nextRetryAt = Date.now() + 60_000;
         this.recordTask(task, '平台限流或并发已满，稍后继续使用同一模型');
+      } else if (isUncertainSubmitError(error)) {
+        this.markSubmitUnconfirmed(task, error.message);
       } else {
         task.status = 'failed';
         task.errorMessage = `提交失败：${error.message}`;
@@ -794,6 +810,49 @@ class QueueEngine {
         this.recordTask(task, task.errorMessage, 'error');
         this.store.log(task.errorMessage, 'error');
       }
+      this.emit();
+      return;
+    }
+    const remoteTaskId = String(result?.data?.task_id || '');
+    if (!remoteTaskId) {
+      // Accepted without an ID: the generation cannot be tracked or ruled out.
+      this.markSubmitUnconfirmed(task, '生成接口未返回 Task ID');
+      this.emit();
+      return;
+    }
+    // The platform accepted the generation. Nothing below may turn that into
+    // a failure: local bookkeeping errors only affect how it is recorded.
+    task.attempts = Number(task.attempts || 0) + 1;
+    task.lastSubmittedAt = Date.now();
+    task.taskId = remoteTaskId;
+    task.taskIds = [...(task.taskIds || []), remoteTaskId];
+    task.status = 'generating';
+    let journaled = false;
+    try {
+      journaled = this.store.recordSubmission?.({
+        localTaskId: task.id,
+        taskId: remoteTaskId,
+        accountId: account.id,
+        flowcutTaskId: task.flowcutTaskId || '',
+        submittedAt: task.lastSubmittedAt,
+      }) === true;
+      this.accounts.markAuthenticated(account.id);
+      this.recordTask(
+        task,
+        `账号“${account.name}”提交成功，正在生成视频 · Task ID ${remoteTaskId}`,
+        'success',
+      );
+      this.store.log(`账号“${account.name}”已提交任务，Task ID：${remoteTaskId}`);
+    } catch (error) {
+      console.error('[seedance] bookkeeping after an accepted submission failed', error);
+    }
+    if (!journaled && this.store.persistError) {
+      this.onUnsavedSubmission({
+        taskId: remoteTaskId,
+        localTaskId: task.id,
+        flowcutTaskId: task.flowcutTaskId || '',
+        accountName: account.name,
+      });
     }
     this.emit();
   }
@@ -889,5 +948,7 @@ class QueueEngine {
 module.exports = {
   QueueEngine,
   EDITABLE_STATUSES,
+  UNCONFIRMED_SUBMIT_HINT,
   isTransientNetworkError,
+  isUncertainSubmitError,
 };

@@ -350,7 +350,12 @@ class SeedanceRuntime {
       task.lastDownloadedAt = Date.now();
       task.autoDownloadError = "";
       task.nextAutoDownloadAt = 0;
-      this.engine.recordTask(task, `视频已下载：${result.destination}`, "success");
+      try {
+        this.engine.recordTask(task, `视频已下载：${result.destination}`, "success");
+      } catch (error) {
+        // The file is complete on disk; a logging problem must not undo that.
+        console.error("[seedance] download bookkeeping failed", error);
+      }
       return result;
     } finally {
       this.downloadControllers.delete(id);
@@ -404,6 +409,8 @@ class SeedanceRuntime {
     });
     this.accountManager.initialize();
     this.engine = new QueueEngine(this.store, this.accountManager, () => this.emit());
+    this.engine.onUnsavedSubmission = (submission) =>
+      this.onPersistenceProblem({ source: "Seedance 任务库", unsavedSubmission: submission });
     this.flowcutBridge = new FlowCutBridge({
       engine: this.engine,
       store: this.store,

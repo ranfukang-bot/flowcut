@@ -23,6 +23,7 @@ const {
 const { SeedanceRuntime } = require("./seedance-runtime");
 const { protectLoginNavigation } = require('./web-login-navigation');
 const { PublisherRuntime } = require("./publisher-runtime");
+const { startRuntimeLogMaintenance } = require("./runtime-log-maintenance");
 const { version: appVersion } = require("../package.json");
 
 app.commandLine.appendSwitch("disable-blink-features", "AutomationControlled");
@@ -55,6 +56,7 @@ let localSiteHealthTimer = null;
 let localSiteHealthFailures = 0;
 let workbenchStarted = false;
 let shutdownStarted = false;
+let stopRuntimeLogMaintenance = null;
 const loginWindows = new Map();
 const workerWindows = new Map();
 const pendingJobs = new Map();
@@ -494,6 +496,11 @@ function startLocalSiteHealthMonitor() {
 }
 
 async function startLocalFlowcut() {
+  if (!stopRuntimeLogMaintenance) {
+    stopRuntimeLogMaintenance = startRuntimeLogMaintenance(app.getPath("userData"), {
+      onError: (error, file) => console.warn(`运行日志清理暂时失败（${file}）：${error.message}`),
+    });
+  }
   const siteUrl = store.state.settings.flowcutUrl.replace(/\/+$/, "");
   if (await siteReady(siteUrl)) {
     await syncSeedanceBridgeKey(siteUrl);
@@ -553,6 +560,10 @@ async function startLocalFlowcut() {
           store.state.settings.credentialsMasterKey,
         FLOWCUT_PERSIST_PATH: path.join(runtimeDirectory, "data"),
         WRANGLER_LOG_PATH: path.join(logDirectory, "wrangler.log"),
+        // Wrangler otherwise writes every debug event, even at console log level.
+        // Keep ordinary stdout/stderr diagnostics under our bounded log policy.
+        WRANGLER_WRITE_LOGS: "false",
+        WRANGLER_LOG: "warn",
         MINIFLARE_REGISTRY_PATH: path.join(runtimeDirectory, "registry"),
         // Local video work does not need Cloudflare's IP geolocation lookup.
         CLOUDFLARE_CF_FETCH_ENABLED: "false",
@@ -1355,6 +1366,8 @@ app.on("before-quit", () => {
   app.isQuitting = true;
   if (shutdownStarted) return;
   shutdownStarted = true;
+  stopRuntimeLogMaintenance?.();
+  stopRuntimeLogMaintenance = null;
   bridge?.stop();
   seedanceRuntime?.stop();
   publisherRuntime?.stop();

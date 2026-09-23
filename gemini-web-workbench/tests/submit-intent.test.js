@@ -180,8 +180,55 @@ test("a definite refusal recorded in the journal is not mistaken for an unconfir
   await engineFor(store, client).tick();
   faults.stateLocked = false;
   const reopened = new WorkbenchStore(directory);
-  assert.notEqual(reopened.getTask("local-1").status, "submit_unconfirmed");
-  assert.equal(fs.existsSync(path.join(directory, "submitted-tasks.jsonl")), false, "settled records are pruned");
+  const task = reopened.getTask("local-1");
+  assert.equal(task.status, "failed", "the refusal itself is restored, not the older queued state");
+  assert.match(task.errorMessage, /restricted content/);
+  const engine = engineFor(reopened, client);
+  await engine.tick();
+  await engine.tick();
+  assert.equal(client.submits, 1, "not retried without the person asking");
+  assert.equal(fs.existsSync(path.join(directory, "submitted-tasks.jsonl")), false, "pruned once the outcome is saved");
+  assert.equal(new WorkbenchStore(directory).getTask("local-1").status, "failed");
+});
+
+test("a refusal is restored even when only the outcome save failed", async (t) => {
+  const directory = tempDirectory(t);
+  const faults = diskFaults(t);
+  const store = new WorkbenchStore(directory);
+  store.updateSettings({ running: true });
+  addQueued(store);
+  const client = tiktok({
+    submit: () => {
+      faults.stateLocked = true; // "submitting" was saved; the answer cannot be
+      throw Object.assign(new Error("prompt contains restricted content"), { code: 40010, outcome: "rejected" });
+    },
+  });
+  await engineFor(store, client).tick();
+  faults.stateLocked = false;
+  const reopened = new WorkbenchStore(directory);
+  assert.equal(reopened.getTask("local-1").status, "failed");
+  await engineFor(reopened, client).tick();
+  assert.equal(client.submits, 1);
+});
+
+test("a rate-limit answer is restored with its wait time", async (t) => {
+  const directory = tempDirectory(t);
+  const faults = diskFaults(t);
+  const store = new WorkbenchStore(directory);
+  store.updateSettings({ running: true });
+  addQueued(store);
+  const client = tiktok({
+    submit: () => {
+      throw Object.assign(new Error("TikTok HTTP 429: too many requests"), { status: 429, outcome: "rejected" });
+    },
+  });
+  faults.stateLocked = true;
+  await engineFor(store, client).tick();
+  const waitUntil = store.getTask("local-1").nextRetryAt;
+  faults.stateLocked = false;
+  const restored = new WorkbenchStore(directory).getTask("local-1");
+  assert.equal(restored.status, "retry_wait");
+  assert.equal(restored.nextRetryAt, waitUntil);
 });
 
 test("a torn last line left by a crash does not swallow the next attempt record", async (t) => {

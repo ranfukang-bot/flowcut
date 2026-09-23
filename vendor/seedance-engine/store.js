@@ -249,8 +249,43 @@ class WorkbenchStore {
       task.logs = [{ time: Date.now(), level: 'info', message: task.activity }, ...(task.logs || [])].slice(0, 80);
       delete task.restoredFromJournal;
     }
+    this.applyRecordedRefusals();
     this.applyUnsettledIntents(unmatched);
     this.moveUnmatchedSubmissions(unmatched);
+  }
+
+  // Restores a definite refusal whose outcome the saved task list missed
+  // (it still shows the attempt, or an older state from before it).
+  applyRecordedRefusals() {
+    const labels = { rejected: '平台已明确拒绝', 'rate-limited': '平台限流，稍后自动重试', auth: '等待 TikTok 登录', quota: '模型额度不足' };
+    for (const entry of this.journalEntries) {
+      if (entry.type !== 'resolved' || this.isFlowcutTaskCleared(entry.flowcutTaskId)) continue;
+      let task = this.getTask(entry.localTaskId);
+      if (!task) {
+        const intent = this.journalEntries.find((item) => item.type === 'intent' && item.intentId === entry.intentId);
+        if (!intent?.snapshot?.id) continue;
+        task = { ...intent.snapshot, logs: [] };
+        this.data.tasks.push(task);
+        this.journalRecovery.restored.push({ localTaskId: task.id, taskId: '', flowcutTaskId: task.flowcutTaskId || '' });
+      }
+      const intents = task.submitIntents || [];
+      const known = intents.includes(entry.intentId);
+      const stillSubmitting = known && task.status === 'submitting' && intents[intents.length - 1] === entry.intentId;
+      if (known && !stillSubmitting) continue;
+      const result = entry.result || (entry.outcome === 'rejected'
+        ? { status: 'failed', submitOutcome: 'rejected', errorMessage: '提交失败：平台已明确拒绝（重启前未能保存详细原因）', completedAt: Date.now() }
+        : { status: 'queued' });
+      for (const [field, value] of Object.entries(result)) {
+        if (value === null) delete task[field];
+        else task[field] = value;
+      }
+      if (!known) task.submitIntents = [...intents, entry.intentId].slice(-20);
+      const message = `软件重启后已按提交记录恢复上次提交结果：${labels[entry.outcome] || entry.outcome}`;
+      task.activity = message;
+      task.activityLevel = entry.outcome === 'rejected' ? 'error' : 'info';
+      task.activityAt = Date.now();
+      task.logs = [{ time: Date.now(), level: task.activityLevel, message }, ...(task.logs || [])].slice(0, 80);
+    }
   }
 
   // An attempt recorded before sending, with no answer recorded and unknown
@@ -330,16 +365,14 @@ class WorkbenchStore {
   // A record may only leave the journal once the saved task list holds it.
   isJournalEntryDurable(entry) {
     if (this.isFlowcutTaskCleared(entry.flowcutTaskId)) return true;
-    // The saved list already holds the outcome that followed this answer.
-    if (entry.type === 'resolved') return true;
     const task = this.getTask(entry.localTaskId);
-    if (entry.type === 'intent') {
-      // Settled by a recorded refusal (pruned together), or known to the list.
-      const refused = this.journalEntries.some(
-        (item) => item.type === 'resolved' && item.intentId === entry.intentId,
-      );
-      return refused || Boolean(task && (task.submitIntents || []).includes(entry.intentId));
+    const intents = task?.submitIntents || [];
+    if (entry.type === 'resolved') {
+      // Held until a saved list shows this attempt with its outcome applied.
+      const stillSubmitting = task?.status === 'submitting' && intents[intents.length - 1] === entry.intentId;
+      return Boolean(task && intents.includes(entry.intentId) && !stillSubmitting);
     }
+    if (entry.type === 'intent') return Boolean(task && intents.includes(entry.intentId));
     return Boolean(task && (task.taskIds || []).map(String).includes(String(entry.taskId)));
   }
 

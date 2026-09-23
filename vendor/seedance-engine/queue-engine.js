@@ -40,6 +40,19 @@ function submissionSnapshot(task) {
   return JSON.parse(JSON.stringify(snapshot));
 }
 
+// The task fields a definite refusal changes, restored after a restart.
+const REFUSAL_FIELDS = [
+  'status', 'errorCode', 'errorMessage', 'submitOutcome', 'completedAt',
+  'nextRetryAt', 'nextUploadRetryAt', 'accountId', 'accountName', 'taskId',
+  'imageItems', 'uploadProgress', 'model',
+];
+
+function refusalResult(task) {
+  const result = {};
+  for (const field of REFUSAL_FIELDS) result[field] = task[field] === undefined ? null : task[field];
+  return JSON.parse(JSON.stringify(result));
+}
+
 const UNCONFIRMED_SUBMIT_HINT =
   '为避免重复生成，没有自动重新提交。请到 TikTok Symphony 生成历史核对：已生成可在历史中取回视频；确认没有生成时，请为该商品重新创建任务。';
 
@@ -936,40 +949,51 @@ class QueueEngine {
       this.submitsPausedForPersistence = false;
       this.store.log('本机提交记录已可保存，恢复提交新任务');
     }
-    // Only needed while the journal is the sole record of this attempt.
-    const recordRefusal = (outcome) => {
-      if (!stateSaved) this.store.recordSubmission?.({ type: 'resolved', intentId, localTaskId: task.id, outcome });
-    };
     let result;
     try {
       result = await this.accounts.client(account.id).submitTask(task);
     } catch (error) {
+      let refusal = '';
       if (isUncertainSubmitError(error)) {
         // Checked first: an unreadable answer may still hide an accepted job.
         this.markSubmitUnconfirmed(task, error.message);
       } else if (this.accounts.isQuotaError(error)) {
-        recordRefusal('quota');
+        refusal = 'quota';
         this.switchAfterQuota(task, account.id, error.message);
       } else if (this.setAuthRequired(error, account.id)) {
-        recordRefusal('auth');
+        refusal = 'auth';
         this.releaseTaskAccount(task);
         task.status = 'upload_wait';
         task.nextUploadRetryAt = Date.now() + 30_000;
         task.errorMessage = '等待 TikTok 登录';
         this.recordTask(task, '提交暂停：等待其他已登录账号', 'error');
       } else if (/too many|rate.?limit|concurren|频繁|并发|HTTP 429/i.test(error.message)) {
-        recordRefusal('rate-limited');
+        refusal = 'rate-limited';
         task.status = 'retry_wait';
         task.nextRetryAt = Date.now() + 60_000;
         this.recordTask(task, '平台限流或并发已满，稍后继续使用同一模型');
       } else {
-        recordRefusal('rejected');
+        refusal = 'rejected';
         task.status = 'failed';
         task.submitOutcome = 'rejected';
         task.errorMessage = `提交失败：${error.message}`;
         task.completedAt = Date.now();
         this.recordTask(task, task.errorMessage, 'error');
         this.store.log(task.errorMessage, 'error');
+      }
+      // If the task list cannot hold this definite answer, the journal keeps
+      // it, so a restart restores it instead of the older "queued" state.
+      if (refusal) {
+        const outcomeSaved = typeof this.store.save === 'function' ? this.store.save() !== false : true;
+        if (!outcomeSaved) {
+          this.store.recordSubmission?.({
+            type: 'resolved',
+            intentId,
+            localTaskId: task.id,
+            outcome: refusal,
+            result: refusalResult(task),
+          });
+        }
       }
       this.emit();
       return;

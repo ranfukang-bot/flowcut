@@ -72,6 +72,7 @@ class QueueEngine {
     this.remotePollState = new Map();
     // Called when an accepted generation's Task ID could not be stored durably.
     this.onUnsavedSubmission = () => {};
+    this.submitsPausedForPersistence = false;
   }
 
   get authenticated() {
@@ -898,12 +899,45 @@ class QueueEngine {
       return;
     }
     task.model = requireModel(selectedModel);
+    const previousStatus = task.status;
+    const intentId = crypto.randomUUID();
     task.status = 'submitting';
     task.errorCode = '';
     task.errorMessage = '';
     task.submitOutcome = '';
     task.submitStartedAt = Date.now();
+    task.submitIntents = [...(task.submitIntents || []), intentId].slice(-20);
+    // Write-ahead: the attempt must be on disk before the request leaves, so a
+    // restart can never take a possibly accepted job for one that was never sent.
+    const intentRecorded = this.store.recordSubmission?.({
+      type: 'intent',
+      intentId,
+      localTaskId: task.id,
+      accountId: account.id,
+      flowcutTaskId: task.flowcutTaskId || '',
+      at: task.submitStartedAt,
+      snapshot: submissionSnapshot(task),
+    }) === true;
     this.recordTask(task, `正在使用账号“${account.name}” · ${modelLabel(task.model)} 提交生成任务`);
+    const stateSaved = typeof this.store.save === 'function' ? this.store.save() !== false : true;
+    if (!intentRecorded && !stateSaved) {
+      task.status = previousStatus;
+      task.submitIntents = task.submitIntents.filter((id) => id !== intentId);
+      const message = `本机无法保存提交记录（${this.store.persistError?.message || '写入失败'}），为避免重启后重复生成，已暂停提交新任务；已提交的任务继续查询，恢复保存后自动继续`;
+      if (!this.submitsPausedForPersistence) this.store.log(message, 'error');
+      this.submitsPausedForPersistence = true;
+      this.recordTask(task, message, 'error');
+      this.emit();
+      return 'not-durable';
+    }
+    if (this.submitsPausedForPersistence) {
+      this.submitsPausedForPersistence = false;
+      this.store.log('本机提交记录已可保存，恢复提交新任务');
+    }
+    // Only needed while the journal is the sole record of this attempt.
+    const recordRefusal = (outcome) => {
+      if (!stateSaved) this.store.recordSubmission?.({ type: 'resolved', intentId, localTaskId: task.id, outcome });
+    };
     let result;
     try {
       result = await this.accounts.client(account.id).submitTask(task);
@@ -912,18 +946,22 @@ class QueueEngine {
         // Checked first: an unreadable answer may still hide an accepted job.
         this.markSubmitUnconfirmed(task, error.message);
       } else if (this.accounts.isQuotaError(error)) {
+        recordRefusal('quota');
         this.switchAfterQuota(task, account.id, error.message);
       } else if (this.setAuthRequired(error, account.id)) {
+        recordRefusal('auth');
         this.releaseTaskAccount(task);
         task.status = 'upload_wait';
         task.nextUploadRetryAt = Date.now() + 30_000;
         task.errorMessage = '等待 TikTok 登录';
         this.recordTask(task, '提交暂停：等待其他已登录账号', 'error');
       } else if (/too many|rate.?limit|concurren|频繁|并发|HTTP 429/i.test(error.message)) {
+        recordRefusal('rate-limited');
         task.status = 'retry_wait';
         task.nextRetryAt = Date.now() + 60_000;
         this.recordTask(task, '平台限流或并发已满，稍后继续使用同一模型');
       } else {
+        recordRefusal('rejected');
         task.status = 'failed';
         task.submitOutcome = 'rejected';
         task.errorMessage = `提交失败：${error.message}`;
@@ -952,6 +990,7 @@ class QueueEngine {
     try {
       journaled = this.store.recordSubmission?.({
         type: 'accepted',
+        intentId,
         localTaskId: task.id,
         taskId: remoteTaskId,
         accountId: account.id,
@@ -1054,7 +1093,9 @@ class QueueEngine {
           );
           continue;
         }
-        await this.submitTask(task, account);
+        const submitted = await this.submitTask(task, account);
+        // Nothing may be sent while attempts cannot be recorded; polling goes on.
+        if (submitted === 'not-durable') break;
         if (task.status === 'generating') {
           slotCache.set(account.id, slots - 1);
         }

@@ -166,7 +166,9 @@ class WorkbenchStore {
       if (!line.trim()) continue;
       try {
         const entry = JSON.parse(line);
-        if (entry?.localTaskId && entry?.taskId) entries.push(entry);
+        if (entry?.localTaskId && (entry.taskId || ['intent', 'resolved'].includes(entry.type))) {
+          entries.push(entry);
+        }
       } catch {
         // A line cut off by a crash; complete lines before it are still valid.
       }
@@ -180,6 +182,7 @@ class WorkbenchStore {
   applySubmissionJournal() {
     const unmatched = [];
     for (const entry of this.journalEntries) {
+      if (!entry.taskId) continue;
       if (this.isFlowcutTaskCleared(entry.flowcutTaskId)) continue;
       const taskId = String(entry.taskId);
       let task = this.getTask(entry.localTaskId);
@@ -200,6 +203,9 @@ class WorkbenchStore {
       }
       task.taskId = taskId;
       task.taskIds = [...(task.taskIds || []).filter((id) => String(id) !== taskId), taskId];
+      if (entry.intentId && !(task.submitIntents || []).includes(entry.intentId)) {
+        task.submitIntents = [...(task.submitIntents || []), entry.intentId].slice(-20);
+      }
       task.accountId = accountId || task.accountId;
       task.status = 'generating';
       task.errorCode = '';
@@ -213,7 +219,37 @@ class WorkbenchStore {
       task.logs = [{ time: Date.now(), level: 'info', message: task.activity }, ...(task.logs || [])].slice(0, 80);
       delete task.restoredFromJournal;
     }
+    this.applyUnsettledIntents(unmatched);
     this.moveUnmatchedSubmissions(unmatched);
+  }
+
+  // An attempt recorded before sending, with no answer recorded and unknown
+  // to the saved task list, may have reached TikTok: hold it for checking.
+  applyUnsettledIntents(unmatched) {
+    const settled = new Set(
+      this.journalEntries
+        .filter((entry) => entry.type === 'resolved' || entry.taskId)
+        .map((entry) => entry.intentId)
+        .filter(Boolean),
+    );
+    for (const entry of this.journalEntries) {
+      if (entry.type !== 'intent' || settled.has(entry.intentId)) continue;
+      if (this.isFlowcutTaskCleared(entry.flowcutTaskId)) continue;
+      let task = this.getTask(entry.localTaskId);
+      if (task && (task.submitIntents || []).includes(entry.intentId)) continue;
+      if (!task) {
+        if (!entry.snapshot?.id) {
+          unmatched.push({ entry, reason: '提交前的记录找不到对应任务，也没有任务快照' });
+          continue;
+        }
+        task = { ...entry.snapshot, logs: [] };
+        this.data.tasks.push(task);
+        this.journalRecovery.restored.push({ localTaskId: task.id, taskId: '', flowcutTaskId: task.flowcutTaskId || '' });
+      }
+      task.submitIntents = [...(task.submitIntents || []), entry.intentId].slice(-20);
+      // The generic restart rule below turns this into "submit_unconfirmed".
+      task.status = 'submitting';
+    }
   }
 
   // Keeps records that cannot be applied in a separate file (never deleted)
@@ -221,7 +257,7 @@ class WorkbenchStore {
   moveUnmatchedSubmissions(unmatched) {
     const before = this.journalEntries.length;
     for (const { entry, reason } of unmatched) {
-      this.journalRecovery.unmatched.push({ taskId: String(entry.taskId), reason, entry });
+      this.journalRecovery.unmatched.push({ taskId: String(entry.taskId || '未返回'), reason, entry });
       try {
         withFsRetry(() => {
           const descriptor = fs.openSync(this.unmatchedJournalPath, 'a');
@@ -256,7 +292,16 @@ class WorkbenchStore {
   // A record may only leave the journal once the saved task list holds it.
   isJournalEntryDurable(entry) {
     if (this.isFlowcutTaskCleared(entry.flowcutTaskId)) return true;
+    // The saved list already holds the outcome that followed this answer.
+    if (entry.type === 'resolved') return true;
     const task = this.getTask(entry.localTaskId);
+    if (entry.type === 'intent') {
+      // Settled by a recorded refusal (pruned together), or known to the list.
+      const refused = this.journalEntries.some(
+        (item) => item.type === 'resolved' && item.intentId === entry.intentId,
+      );
+      return refused || Boolean(task && (task.submitIntents || []).includes(entry.intentId));
+    }
     return Boolean(task && (task.taskIds || []).map(String).includes(String(entry.taskId)));
   }
 

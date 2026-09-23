@@ -1,0 +1,958 @@
+let accountsConfig = [];
+let currentSettings = null;
+let statusData = { running: false, accounts: [] };
+
+async function api(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const isJson = (res.headers.get('content-type') || '').includes('application/json');
+  const data = isJson ? await res.json() : null;
+  if (!res.ok) throw new Error((data && data.error) || `请求失败 (${res.status})`);
+  return data;
+}
+
+// 保存账号列表。服务端对"这次没改动、但配置不合格"的老账号只发 warning 不拦截
+// （否则一个坏账号会把人锁死，连修它删它都做不了），所以这些 warning 必须显示出来，
+// 不然用户要等到那个账号真的跑不动了才知道。
+async function putAccounts(next) {
+  const res = await api('PUT', '/api/accounts', next);
+  if (Array.isArray(res?.accounts)) next.splice(0, next.length, ...res.accounts);
+  const warnings = (res && res.warnings) || [];
+  showAccountWarnings(warnings);
+  return res;
+}
+
+function showAccountWarnings(warnings) {
+  const el = document.getElementById('accounts-warning');
+  if (!el) return;
+  if (!warnings.length) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML =
+    '<b>这些账号还不能跑：</b><ul style="margin:6px 0 0;padding-left:20px;">' +
+    warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('') +
+    '</ul>';
+  el.classList.remove('hidden');
+}
+
+function showGlobalError(msg) {
+  const el = document.getElementById('global-error');
+  if (!msg) {
+    el.classList.add('hidden');
+    el.textContent = '';
+    return;
+  }
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+function fmtRemaining(ms) {
+  if (ms <= 0) return '已到时间';
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  if (h > 0) return `还要 ${h} 小时 ${m} 分`;
+  const s = Math.floor((ms % 60000) / 1000);
+  return `还要 ${m} 分 ${s} 秒`;
+}
+
+// ===================== 账号列表渲染 =====================
+
+// 顶部概览：进来第一眼要能回答"几个号在跑 / 今天发了多少 / 还剩多少没发 /
+// 有没有事等我处理"。之前这些数字散在每张卡片里，得一张张看过去才拼得出来。
+function renderStats() {
+  const box = document.getElementById('stats');
+  if (!box) return;
+
+  const runtimes = statusData.accounts || [];
+  const enabled = accountsConfig.filter((a) => a.enabled !== false).length;
+  let publishedToday = 0;
+  let quotaToday = 0;
+  let pending = 0;
+  let needsMe = 0;
+  for (const r of runtimes) {
+    publishedToday += r.publishedToday || 0;
+    if (r.dailyLimit) quotaToday += r.dailyLimit;
+    pending += r.remaining || 0;
+    if (r.paused) needsMe += 1;
+  }
+
+  const tile = (k, v, unit, alert) =>
+    `<div class="stat${alert ? ' alert' : ''}">
+       <span class="k">${k}</span>
+       <span class="v">${v}${unit ? `<small>${unit}</small>` : ''}</span>
+     </div>`;
+
+  box.innerHTML = [
+    tile('启用中的账号', enabled, accountsConfig.length > enabled ? `/ 共 ${accountsConfig.length}` : ''),
+    tile('今天已发布', publishedToday, quotaToday ? `/ ${quotaToday}` : ''),
+    tile('待发布视频', pending, '条'),
+    tile('需要你处理', needsMe, needsMe ? '个账号' : '', needsMe > 0),
+  ].join('');
+}
+
+const collapsedPhones = new Set();
+function phoneGroupOf(account) {
+  return typeof account.phoneGroup === 'string' ? account.phoneGroup.trim() : '';
+}
+
+function renderAccounts() {
+  const list = document.getElementById('accounts-list');
+  const empty = document.getElementById('accounts-empty');
+  list.innerHTML = '';
+  if (accountsConfig.length === 0) {
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  const statusByName = new Map(statusData.accounts.map((a) => [a.name, a]));
+  const groups = new Map();
+  const groupNames = [...new Set(accountsConfig.map(phoneGroupOf))]
+    .sort((a, b) => !a ? 1 : !b ? -1 : a.localeCompare(b, 'zh-CN', { numeric: true }));
+  for (const name of groupNames) {
+    const members = accountsConfig.filter(a => phoneGroupOf(a) === name);
+    const group = document.createElement('details');
+    group.className = 'phone-group';
+    group.open = !collapsedPhones.has(name);
+    group.innerHTML = `<summary><span>${escapeHtml(name || '未分组')}</span><small>${members.length} 个账号</small></summary><div class="phone-accounts"></div>`;
+    group.addEventListener('toggle', () => {
+      if (!group.isConnected) return;
+      if (group.open) collapsedPhones.delete(name); else collapsedPhones.add(name);
+    });
+    list.appendChild(group);
+    groups.set(name, group.querySelector('.phone-accounts'));
+  }
+
+  accountsConfig.forEach((account, idx) => {
+    const runtime = statusByName.get(account.name);
+    const card = document.createElement('div');
+    card.className = 'account-card';
+
+    const enabled = account.enabled !== false;
+    // state = 气泡样式(ok/paused/processing)，edge = 卡片左侧竖条颜色。
+    // 分开是因为竖条要能区分"正常等着(绿)"和"正在处理(蓝)"，而气泡只有三种配色。
+    let stateHtml = '';
+    let edge = 'idle';
+    // "已停用""尚未扫描"用中性色：它们不是出问题，标成红色只会白白抢走注意力
+    if (!enabled) {
+      stateHtml = `<span class="state off">已停用</span>`;
+    } else if (!runtime) {
+      stateHtml = `<span class="state off">尚未扫描</span>`;
+    } else if (runtime.processing) {
+      stateHtml = `<span class="state processing">正在处理…</span>`;
+      edge = 'busy';
+    } else if (runtime.paused) {
+      stateHtml = `<span class="state paused">已暂停</span>`;
+      edge = 'bad';
+    } else if (runtime.retryAt && runtime.retryAt > Date.now()) {
+      stateHtml = `<span class="state processing">重试中 ${fmtRemaining(runtime.retryAt - Date.now())}</span>`;
+      edge = 'warn';
+    } else if (runtime.quotaExhausted) {
+      const tz = runtime.timezone || 'Asia/Jakarta';
+      stateHtml = `<span class="state off" title="按 ${escapeAttr(tz)} 的时间算，过了当地0点自动刷新">今日额度已满 ${runtime.publishedToday}/${runtime.dailyLimit}</span>`;
+      edge = 'idle';
+    } else if (runtime.inPostingWindow === false) {
+      const wait = runtime.nextWindowStart ? fmtRemaining(runtime.nextWindowStart - Date.now()) : '';
+      if (runtime.scheduleMode === 'slots') {
+        const tip = `今天的发布节点用掉 ${runtime.slotsUsedToday}/${runtime.slotsTotal} 个。错过的节点不补发。`;
+        stateHtml = `<span class="state off" title="${escapeAttr(tip)}">等下一个时间节点${wait ? '，还要等 ' + wait : ''}</span>`;
+      } else {
+        stateHtml = `<span class="state off" title="只在设置里指定的时间段内发布">未到发布时段${wait ? '，还要等 ' + wait : ''}</span>`;
+      }
+      edge = 'idle';
+    } else if (runtime.total === 0) {
+      stateHtml = `<span class="state processing">文件夹里没有视频</span>`;
+      edge = 'warn';
+    } else if (runtime.remaining === 0) {
+      stateHtml = `<span class="state ok">已发完，等新视频</span>`;
+      edge = 'ok';
+    } else {
+      stateHtml = `<span class="state ok">${fmtRemaining(runtime.nextTime - Date.now())}后发下一条</span>`;
+      edge = 'ok';
+    }
+    card.dataset.state = edge;
+
+    // 还没扫描过的账号没有进度可言，那一格整个不显示，别摆一个"已发 -"在那
+    const progressHtml = runtime
+      ? `<span class="progress">已发 ${runtime.doneIndex + 1 < 0 ? 0 : runtime.doneIndex + 1}/${runtime.total}</span>`
+      : '';
+    const quotaBadge =
+      runtime && runtime.dailyLimit
+        ? `<span class="tag" title="今日已发/每日上限">今日 ${runtime.publishedToday}/${runtime.dailyLimit}</span>`
+        : '';
+
+    const actions = [];
+    if (enabled && runtime && runtime.paused && runtime.pauseCode === 'uncertain_publish') {
+      actions.push(`<button data-action="resolve-published" data-name="${escapeAttr(account.name)}">确认已发布</button>`);
+      actions.push(`<button data-action="resolve-retry" data-name="${escapeAttr(account.name)}">确认未发布，重试</button>`);
+    } else if (enabled && runtime) {
+      if (runtime.paused) {
+        actions.push(`<button data-action="resume" data-name="${escapeAttr(account.name)}">继续</button>`);
+      } else {
+        actions.push(`<button data-action="pause" data-name="${escapeAttr(account.name)}">暂停</button>`);
+      }
+    }
+    if (enabled) actions.push(`<button data-action="scan" data-name="${escapeAttr(account.name)}">立即扫描</button>`);
+    actions.push(`<button data-action="edit" data-idx="${idx}">编辑</button>`);
+
+    // 三层结构：账号名+状态一行(最显眼) / 路径进度这些细节一行(弱化) / 操作按钮一行
+    card.innerHTML = `
+      <div class="ac-head">
+        <span class="name">${escapeHtml(account.name)}</span>
+        <span class="tag">${{ adspower: 'AdsPower', hubstudio: 'Hubstudio', bitbrowser: 'BitBrowser' }[account.browser] || account.browser}</span>
+        <span class="spacer"></span>
+        ${stateHtml}
+      </div>
+      <div class="ac-meta">
+        ${progressHtml}
+        ${quotaBadge}
+      </div>
+      <div class="ac-path" title="${escapeAttr(account.videoFolder)}">${escapeHtml(account.videoFolder)}</div>
+      <div class="actions">${actions.join('')}</div>
+      ${runtime && runtime.paused && runtime.pauseReason ? `<div class="reason">${escapeHtml(runtime.pauseReason)}</div>` : ''}
+      ${runtime && !runtime.paused && runtime.retryAt && runtime.retryAt > Date.now() && runtime.lastError
+        ? `<div class="reason" style="color:var(--amber);background:var(--amber-bg);border-color:color-mix(in srgb, var(--amber) 20%, transparent);">上次失败（已自动重试 ${runtime.consecutiveFailures} 次）：${escapeHtml(runtime.lastError)}</div>`
+        : ''}
+    `;
+    groups.get(phoneGroupOf(account)).appendChild(card);
+  });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = String(str ?? '');
+  return div.innerHTML;
+}
+function escapeAttr(str) {
+  return escapeHtml(str).replace(/"/g, '&quot;');
+}
+
+document.getElementById('accounts-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  const action = btn.dataset.action;
+  try {
+    if (action === 'edit') {
+      openAccountModal(Number(btn.dataset.idx));
+      return;
+    }
+    const name = btn.dataset.name;
+    if (action === 'scan') {
+      btn.disabled = true;
+      btn.textContent = '扫描中…';
+      try {
+        const result = await api('POST', `/api/accounts/${encodeURIComponent(name)}/scan`);
+        if (result.deferred) {
+          alert('这个账号正等待上一条的发布结果确认，暂时不能扫描文件夹。');
+        } else {
+          alert(`扫描完成：新增 ${result.added ?? 0} 个，移除 ${result.removed ?? 0} 个，队列共 ${result.total ?? 0} 个视频。\n如果这里是0，说明程序没能在填的那个文件夹路径里找到视频文件，回去编辑账号核对一下路径。`);
+        }
+      } catch (err) {
+        alert('扫描失败：' + err.message);
+      }
+      await refreshStatus();
+      return;
+    }
+    if (action === 'pause') await api('POST', `/api/accounts/${encodeURIComponent(name)}/pause`);
+    if (action === 'resume') await api('POST', `/api/accounts/${encodeURIComponent(name)}/resume`);
+    if (action === 'resolve-published') await api('POST', `/api/accounts/${encodeURIComponent(name)}/resolve`, { decision: 'published' });
+    if (action === 'resolve-retry') await api('POST', `/api/accounts/${encodeURIComponent(name)}/resolve`, { decision: 'retry' });
+    await refreshStatus();
+  } catch (err) {
+    showGlobalError(err.message);
+  }
+});
+
+// ===================== 账号编辑弹窗 =====================
+
+const modal = document.getElementById('account-modal');
+const accountForm = document.getElementById('account-form');
+
+function openAccountModal(idx) {
+  document.getElementById('account-form-error').classList.add('hidden');
+  const isEdit = idx !== null && idx !== undefined;
+  document.getElementById('account-modal-title').textContent = isEdit ? '编辑账号' : '添加账号';
+  document.getElementById('a-delete-btn').style.display = isEdit ? 'inline-block' : 'none';
+
+  const account = isEdit ? accountsConfig[idx] : {};
+  document.getElementById('a-original-name').value = isEdit ? account.name : '';
+  document.getElementById('a-name').value = account.name || '';
+  document.getElementById('a-phone-group').value = phoneGroupOf(account);
+  document.getElementById('phone-group-options').innerHTML = [...new Set(accountsConfig.map(phoneGroupOf).filter(Boolean))]
+    .map(name => `<option value="${escapeAttr(name)}"></option>`).join('');
+  document.getElementById('a-browser').value = account.browser || 'bitbrowser';
+  document.getElementById('a-profileid').value = profileIdOf(account);
+  document.getElementById('a-folder').value = account.videoFolder || '';
+  document.getElementById('a-hashtags').value = (account.hashtagKeywords || ['fyp', 'tiktok', 'tiktokshop']).join(',');
+
+  updateBrowserFields();
+  modal.classList.remove('hidden');
+}
+
+function closeAccountModal() {
+  modal.classList.add('hidden');
+}
+
+function profileIdOf(account) {
+  if (account.browser === 'hubstudio') return account.containerCode || '';
+  if (account.browser === 'bitbrowser') return account.browserId || '';
+  return account.profileId || '';
+}
+
+const PROFILE_ID_LABELS = {
+  adspower: '环境ID（AdsPower环境列表里的ID）',
+  hubstudio: '环境ID（containerCode）',
+  bitbrowser: '环境ID（比特浏览器窗口环境的id，可以从右边下拉框按名字选）',
+};
+
+let bitbrowserProfilesLoaded = false;
+
+function updateBrowserFields() {
+  const browser = document.getElementById('a-browser').value;
+  document.getElementById('a-profileid-label').textContent = PROFILE_ID_LABELS[browser] || '环境ID';
+  const picker = document.getElementById('a-bitbrowser-picker');
+  const hint = document.getElementById('a-bitbrowser-hint');
+  const isBit = browser === 'bitbrowser';
+  picker.style.display = isBit ? 'inline-block' : 'none';
+  hint.style.display = isBit ? 'block' : 'none';
+  if (isBit && !bitbrowserProfilesLoaded) {
+    bitbrowserProfilesLoaded = true;
+    loadBitBrowserProfiles();
+  }
+}
+
+async function loadBitBrowserProfiles() {
+  const picker = document.getElementById('a-bitbrowser-picker');
+  try {
+    const profiles = await api('GET', '/api/bitbrowser/profiles');
+    picker.innerHTML =
+      '<option value="">从列表选择…</option>' +
+      profiles.map((p) => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name || p.id)}${p.remark ? ' - ' + escapeHtml(p.remark) : ''}</option>`).join('');
+  } catch (err) {
+    picker.innerHTML = '<option value="">读取失败，手动填ID</option>';
+    bitbrowserProfilesLoaded = false; // 允许下次重新尝试
+  }
+}
+
+document.getElementById('a-bitbrowser-picker').addEventListener('change', (e) => {
+  if (e.target.value) document.getElementById('a-profileid').value = e.target.value;
+});
+
+document.getElementById('a-browser').addEventListener('change', updateBrowserFields);
+document.getElementById('btn-add-account').addEventListener('click', () => openAccountModal(null));
+document.getElementById('a-cancel-btn').addEventListener('click', closeAccountModal);
+
+document.getElementById('a-browse-btn').addEventListener('click', async () => {
+  try {
+    const data = await api('POST', '/api/pick-folder');
+    if (data.path) document.getElementById('a-folder').value = data.path;
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+document.getElementById('a-delete-btn').addEventListener('click', async () => {
+  const originalName = document.getElementById('a-original-name').value;
+  if (!await confirmPublisher(`确定删除账号"${originalName}"吗？（不会删除本地视频文件，只是从列表里移除）`)) return;
+  try {
+    const next = accountsConfig.filter((a) => a.name !== originalName);
+    await putAccounts(next);
+    accountsConfig = next;
+    closeAccountModal();
+    renderAccounts();
+  } catch (err) {
+    const el = document.getElementById('account-form-error');
+    el.textContent = err.message;
+    el.classList.remove('hidden');
+  }
+});
+
+function splitList(value) {
+  return value.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+accountForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const originalName = document.getElementById('a-original-name').value;
+  const browser = document.getElementById('a-browser').value;
+
+  // 保留旧配置和账号级额度/时区等字段，升级不覆写用户已有设置。
+  const previous = accountsConfig.find((a) => a.name === originalName);
+  const account = {
+    ...(previous || {}),
+    name: document.getElementById('a-name').value.trim(),
+    phoneGroup: document.getElementById('a-phone-group').value.trim(),
+    browser,
+    videoFolder: document.getElementById('a-folder').value.trim(),
+    enabled: previous?.enabled !== false,
+    hashtagKeywords: splitList(document.getElementById('a-hashtags').value),
+  };
+  if (browser === 'adspower') {
+    account.profileId = document.getElementById('a-profileid').value.trim();
+  } else if (browser === 'hubstudio') {
+    account.containerCode = document.getElementById('a-profileid').value.trim();
+  } else {
+    account.browserId = document.getElementById('a-profileid').value.trim();
+  }
+
+  // 保留原有账号的启用状态等未在表单里出现的字段
+  const existingIdx = accountsConfig.findIndex((a) => a.name === originalName);
+  const next = [...accountsConfig];
+  if (existingIdx >= 0) {
+    account.enabled = accountsConfig[existingIdx].enabled;
+    next[existingIdx] = { ...accountsConfig[existingIdx], ...account };
+  } else {
+    next.push(account);
+  }
+
+  try {
+    await putAccounts(next);
+    accountsConfig = next;
+    closeAccountModal();
+    renderAccounts();
+    // 保存后马上扫一次文件夹，不用等启动自动发布或等30秒的定时扫描才知道路径填对没对。
+    try {
+      await api('POST', `/api/accounts/${encodeURIComponent(account.name)}/scan`);
+    } catch {
+      // 扫描失败不影响保存本身，账号卡片上的状态/日志区会体现出来
+    }
+    await refreshStatus();
+  } catch (err) {
+    const el = document.getElementById('account-form-error');
+    el.textContent = err.message;
+    el.classList.remove('hidden');
+  }
+});
+
+// ===================== 全局设置 =====================
+
+// 只显示当前选中那个推送渠道需要填的字段，其它藏起来
+function updateNotifyFields() {
+  const provider = document.getElementById('s-notify-provider').value;
+  document.querySelectorAll('.notify-cfg').forEach((el) => {
+    el.style.display = el.dataset.provider === provider ? 'grid' : 'none';
+  });
+}
+
+document.getElementById('s-notify-provider').addEventListener('change', updateNotifyFields);
+
+document.getElementById('btn-test-notify').addEventListener('click', async (e) => {
+  const btn = e.target;
+  btn.disabled = true;
+  btn.textContent = '发送中…';
+  try {
+    await api('POST', '/api/notifications/test');
+    alert('测试通知已发出，去看看收到没有。\n如果没收到，检查一下填的token/地址对不对。');
+  } catch (err) {
+    alert('发送失败：' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '发送一条测试通知';
+  }
+});
+
+// ===== 发布时间节点编辑器 =====
+const DEFAULT_SLOTS = [
+  { start: '11:30', end: '12:30', label: '午休高峰' },
+  { start: '16:30', end: '17:30', label: '下班通勤' },
+  { start: '19:30', end: '20:30', label: '核心晚高峰' },
+  { start: '21:30', end: '22:30', label: '睡前冲动期' },
+];
+let slotRows = [];
+let usingDefaultSlots = false;
+
+function hmToMin(text) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(text || '').trim());
+  if (!m) return null;
+  const h = Number(m[1]), mi = Number(m[2]);
+  return h > 23 || mi > 59 ? null : h * 60 + mi;
+}
+
+function renderSlots() {
+  const box = document.getElementById('slots-editor');
+  box.innerHTML = slotRows.map((slot, i) => `
+    <div class="slot-row" data-idx="${i}">
+      <input type="time" class="slot-start" value="${escapeAttr(slot.start)}">
+      <span class="slot-dash">到</span>
+      <input type="time" class="slot-end" value="${escapeAttr(slot.end)}">
+      <input type="text" class="slot-label" maxlength="20" placeholder="备注（可留空）" value="${escapeAttr(slot.label || '')}">
+      <button type="button" class="ghost slot-del" title="删掉这个节点">✕</button>
+    </div>`).join('');
+  updateSlotsSummary();
+}
+
+function readSlotsFromForm() {
+  return [...document.querySelectorAll('#slots-editor .slot-row')].map((row) => ({
+    start: row.querySelector('.slot-start').value.trim(),
+    end: row.querySelector('.slot-end').value.trim(),
+    label: row.querySelector('.slot-label').value.trim(),
+  }));
+}
+
+// 把配错的地方当场说清楚，而不是等保存到后端再报错
+function slotsProblem(slots) {
+  if (!slots.length) return '至少要留一个时间节点，否则永远不会发布';
+  for (const s of slots) {
+    const a = hmToMin(s.start), b = hmToMin(s.end);
+    if (a === null || b === null) return '时间要填成 19:30 这种 24 小时制';
+    if (b <= a) return `${s.start}-${s.end}：结束时间要晚于开始时间，跨午夜请拆成两个节点`;
+  }
+  const sorted = [...slots].sort((x, y) => hmToMin(x.start) - hmToMin(y.start));
+  for (let i = 1; i < sorted.length; i += 1) {
+    if (hmToMin(sorted[i].start) < hmToMin(sorted[i - 1].end)) {
+      return `${sorted[i - 1].start}-${sorted[i - 1].end} 和 ${sorted[i].start}-${sorted[i].end} 时间重叠了，会在几分钟内连发两条`;
+    }
+  }
+  return '';
+}
+
+function updateSlotsSummary() {
+  const el = document.getElementById('slots-summary');
+  if (!el) return;
+  const slots = readSlotsFromForm();
+  const problem = slotsProblem(slots);
+  if (problem) {
+    el.innerHTML = `<b style="color:var(--red)">${escapeHtml(problem)}</b>`;
+    return;
+  }
+  const limit = Number(document.getElementById('s-daily-limit').value) || 0;
+  const sorted = [...slots].sort((a, b) => hmToMin(a.start) - hmToMin(b.start));
+  let note = `节点内开始上传，过点后允许本条通过安全检查再完成；过点不新开上传。<br>按这些节点，每天最多发 <b>${sorted.length}</b> 条`;
+  if (limit && limit < sorted.length) note += `；但每日额度是 ${limit} 条，所以实际最多 <b>${limit}</b> 条（发满就停，剩下的节点空着）`;
+  if (limit && limit > sorted.length) note += `；每日额度设的是 ${limit} 条，比节点还多，多出来的发不掉——要么加节点，要么把额度改成 ${sorted.length}`;
+  if (usingDefaultSlots) {
+    note = '<b style="color:var(--amber)">这是升级后的默认节点，你还没自己配过。' +
+      '以前"时段内随时发"的设置已经不再生效——不想用节点就把上面的开关关掉。</b><br>' + note;
+  }
+  el.innerHTML = note;
+}
+
+document.getElementById('s-slot-add').addEventListener('click', () => {
+  slotRows = readSlotsFromForm();
+  slotRows.push({ start: '12:00', end: '13:00', label: '' });
+  renderSlots();
+});
+document.getElementById('slots-editor').addEventListener('click', (e) => {
+  const del = e.target.closest('.slot-del');
+  if (!del) return;
+  slotRows = readSlotsFromForm();
+  slotRows.splice(Number(del.closest('.slot-row').dataset.idx), 1);
+  renderSlots();
+});
+document.getElementById('slots-editor').addEventListener('input', updateSlotsSummary);
+document.getElementById('s-daily-limit').addEventListener('input', updateSlotsSummary);
+document.getElementById('s-slots-enabled').addEventListener('change', updateScheduleMode);
+
+// 两种模式二选一，只显示当前这套的输入框，免得两套摆在一起看不出哪个在生效
+function updateScheduleMode() {
+  const useSlots = document.getElementById('s-slots-enabled').checked;
+  for (const id of ['slots-editor-field']) {
+    document.getElementById(id).style.display = useSlots ? '' : 'none';
+  }
+  for (const id of ['window-legacy-field', 'window-start-field', 'window-end-field']) {
+    document.getElementById(id).style.display = useSlots ? 'none' : '';
+  }
+}
+
+function fillSettingsForm(settings) {
+  document.getElementById('s-min-hours').value = (settings.minIntervalMs / 3600000).toFixed(2);
+  document.getElementById('s-max-hours').value = (settings.maxIntervalMs / 3600000).toFixed(2);
+  document.getElementById('s-concurrency').value = settings.concurrency || 1;
+  document.getElementById('s-scan-seconds').value = Math.round((settings.folderScanIntervalMs || 30000) / 1000);
+  document.getElementById('s-delete-after-publish').checked = settings.deleteAfterPublish !== false;
+  document.getElementById('s-close-profile').checked = settings.closeProfileAfterCycle !== false;
+  document.getElementById('s-daily-limit').value = settings.dailyPublishLimit ?? 0;
+  document.getElementById('s-timezone').value = settings.timezone || 'Asia/Jakarta';
+
+  const window = settings.postingWindow || {};
+  document.getElementById('s-window-start').value = window.startHour ?? 12;
+  document.getElementById('s-window-end').value = window.endHour ?? 24;
+
+  // 没配过 postingSlots 的老配置：默认就是节点模式，用内置的四个波峰节点
+  const slotCfg = settings.postingSlots || {};
+  document.getElementById('s-slots-enabled').checked = slotCfg.enabled !== false;
+  slotRows = (Array.isArray(slotCfg.slots) && slotCfg.slots.length ? slotCfg.slots : DEFAULT_SLOTS)
+    .map((x) => ({ start: x.start || '', end: x.end || '', label: x.label || '' }));
+  // 从旧版本升级上来的配置里没有 postingSlots，会直接落到节点模式。这是有意的
+  // 行为变更，但得让人看见——尤其是以前明确把时间限制关掉了的。
+  usingDefaultSlots = !Array.isArray(slotCfg.slots) || !slotCfg.slots.length;
+  renderSlots();
+  updateScheduleMode();
+
+  const notif = settings.notifications || {};
+  document.getElementById('s-notify-enabled').checked = Boolean(notif.enabled);
+  document.getElementById('s-notify-provider').value = notif.provider || 'telegram';
+  document.getElementById('s-notify-tg-token').value = (notif.telegram || {}).botToken || '';
+  document.getElementById('s-notify-tg-chat').value = (notif.telegram || {}).chatId || '';
+  document.getElementById('s-notify-wecom-url').value = (notif.wecom || {}).webhookUrl || '';
+  document.getElementById('s-notify-bark-url').value = (notif.bark || {}).serverUrl || '';
+  document.getElementById('s-notify-webhook-url').value = (notif.webhook || {}).url || '';
+  updateNotifyFields();
+
+  const bit = settings.bitbrowser || {};
+  document.getElementById('s-bit-baseurl').value = bit.baseUrl || '';
+
+  const ads = settings.adspower || {};
+  document.getElementById('s-ads-baseurl').value = ads.baseUrl || '';
+  document.getElementById('s-ads-apikey').value = ads.apiKey || '';
+
+  const hub = settings.hubstudio || {};
+  document.getElementById('s-hub-baseurl').value = hub.baseUrl || '';
+  document.getElementById('s-hub-apikey').value = hub.apiKey || '';
+  document.getElementById('s-hub-openpath').value = hub.openPath || '/api/v1/browser/start';
+  document.getElementById('s-hub-closepath').value = hub.closePath || '/api/v1/browser/stop';
+  document.getElementById('s-hub-idfield').value = hub.requestIdField || 'containerCode';
+  document.getElementById('s-hub-portfield').value = hub.responseDebugPortField || 'debuggingPort';
+}
+
+document.getElementById('settings-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const settings = { ...currentSettings };
+  settings.minIntervalMs = Math.round(Number(document.getElementById('s-min-hours').value) * 3600000);
+  settings.maxIntervalMs = Math.round(Number(document.getElementById('s-max-hours').value) * 3600000);
+  settings.concurrency = Number(document.getElementById('s-concurrency').value);
+  settings.folderScanIntervalMs = Number(document.getElementById('s-scan-seconds').value) * 1000;
+  settings.deleteAfterPublish = document.getElementById('s-delete-after-publish').checked;
+  settings.closeProfileAfterCycle = document.getElementById('s-close-profile').checked;
+  settings.dailyPublishLimit = Number(document.getElementById('s-daily-limit').value) || 0;
+  settings.timezone = document.getElementById('s-timezone').value;
+  const useSlots = document.getElementById('s-slots-enabled').checked;
+  const slots = readSlotsFromForm().sort((a, b) => hmToMin(a.start) - hmToMin(b.start));
+  if (useSlots) {
+    const problem = slotsProblem(slots);
+    if (problem) { showGlobalError(`发布时间节点：${problem}`); return; }
+  }
+  settings.postingSlots = { enabled: useSlots, slots };
+  settings.postingWindow = {
+    // 节点模式下这一段留着不动，方便随时切回去
+    enabled: !useSlots,
+    startHour: Number(document.getElementById('s-window-start').value),
+    endHour: Number(document.getElementById('s-window-end').value),
+  };
+  settings.notifications = {
+    ...(currentSettings.notifications || {}),
+    enabled: document.getElementById('s-notify-enabled').checked,
+    provider: document.getElementById('s-notify-provider').value,
+    telegram: {
+      botToken: document.getElementById('s-notify-tg-token').value.trim(),
+      chatId: document.getElementById('s-notify-tg-chat').value.trim(),
+    },
+    wecom: { webhookUrl: document.getElementById('s-notify-wecom-url').value.trim() },
+    bark: { serverUrl: document.getElementById('s-notify-bark-url').value.trim() },
+    webhook: { url: document.getElementById('s-notify-webhook-url').value.trim() },
+  };
+  settings.bitbrowser = {
+    baseUrl: document.getElementById('s-bit-baseurl').value.trim(),
+  };
+  settings.adspower = {
+    baseUrl: document.getElementById('s-ads-baseurl').value.trim(),
+    apiKey: document.getElementById('s-ads-apikey').value.trim(),
+  };
+  settings.hubstudio = {
+    ...(currentSettings.hubstudio || {}),
+    baseUrl: document.getElementById('s-hub-baseurl').value.trim(),
+    apiKey: document.getElementById('s-hub-apikey').value.trim(),
+    openPath: document.getElementById('s-hub-openpath').value.trim(),
+    closePath: document.getElementById('s-hub-closepath').value.trim(),
+    requestIdField: document.getElementById('s-hub-idfield').value.trim(),
+    responseDebugPortField: document.getElementById('s-hub-portfield').value.trim(),
+  };
+  try {
+    await api('PUT', '/api/settings', settings);
+    currentSettings = settings;
+    showGlobalError(null);
+    alert('已保存');
+  } catch (err) {
+    showGlobalError(err.message);
+  }
+});
+
+// ===================== 全局开始/停止 + 状态轮询 =====================
+
+document.getElementById('btn-start').addEventListener('click', async () => {
+  try {
+    await api('POST', '/api/orchestrator/start');
+    await refreshStatus();
+  } catch (err) {
+    showGlobalError(err.message);
+  }
+});
+document.getElementById('btn-stop').addEventListener('click', async () => {
+  try {
+    await api('POST', '/api/orchestrator/stop');
+    await refreshStatus();
+  } catch (err) {
+    showGlobalError(err.message);
+  }
+});
+
+async function refreshStatus() {
+  try {
+    statusData = await api('GET', '/api/status');
+    const badge = document.getElementById('status-badge');
+    badge.textContent = statusData.running ? '运行中' : '已停止';
+    badge.className = statusData.running ? 'running' : 'stopped';
+    document.getElementById('btn-start').disabled = statusData.running;
+    document.getElementById('btn-stop').disabled = !statusData.running;
+    if (statusData.settingsError) showGlobalError(statusData.settingsError);
+    renderStats();
+    renderAccounts();
+  } catch (err) {
+    showGlobalError(err.message);
+  }
+}
+
+// ===================== 日志 =====================
+
+function appendLog(entry) {
+  const panel = document.getElementById('log-panel');
+  const line = document.createElement('div');
+  const time = new Date(entry.time).toLocaleTimeString();
+  line.className = entry.level;
+  line.innerHTML = `<span class="t">${time}</span>[${escapeHtml(entry.account)}] ${escapeHtml(entry.message)}`;
+  panel.appendChild(line);
+  while (panel.childElementCount > 400) panel.removeChild(panel.firstChild);
+  panel.scrollTop = panel.scrollHeight;
+}
+
+async function initLogs() {
+  try {
+    const logs = await api('GET', '/api/logs');
+    logs.forEach(appendLog);
+  } catch (err) {
+    // 首次加载失败不阻塞其它功能
+  }
+  const source = new EventSource('/api/logs/stream');
+  source.onmessage = (event) => appendLog(JSON.parse(event.data));
+}
+
+// ===================== 初始化 =====================
+
+// 时区下拉：用完整的 IANA 列表，做哪个地区都能选到。
+// 必须在 fillSettingsForm 之前填好选项，否则 select.value = 存量值 会静默失败、
+// 下拉显示空白，用户一保存就把时区改没了。
+const PINNED_TIMEZONES = [
+  ['Asia/Jakarta', '印尼西部 WIB（雅加达）'],
+  ['Asia/Makassar', '印尼中部 WITA'],
+  ['Asia/Jayapura', '印尼东部 WIT'],
+  ['Asia/Kuala_Lumpur', '马来西亚（吉隆坡）'],
+  ['Asia/Manila', '菲律宾（马尼拉）'],
+  ['Asia/Bangkok', '泰国（曼谷）'],
+  // 越南要用 Asia/Saigon：Asia/Ho_Chi_Minh 虽然能用，但不在
+  // Intl.supportedValuesOf('timeZone') 的返回值里，写它会和下面的完整列表对不上
+  ['Asia/Saigon', '越南（胡志明市）'],
+  ['Asia/Singapore', '新加坡'],
+  ['Asia/Tokyo', '日本（东京）'],
+  ['Asia/Shanghai', '中国大陆（北京时间）'],
+  ['Europe/London', '英国（伦敦）'],
+  ['America/New_York', '美国东部（纽约）'],
+  ['America/Los_Angeles', '美国西部（洛杉矶）'],
+];
+
+function populateTimezones(currentValue) {
+  const sel = document.getElementById('s-timezone');
+  if (!sel) return;
+  let all = [];
+  try {
+    all = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
+  } catch {
+    all = [];
+  }
+  const pinnedKeys = PINNED_TIMEZONES.map(([v]) => v);
+  const rest = all.filter((z) => !pinnedKeys.includes(z));
+
+  const opt = (v, label) => `<option value="${escapeAttr(v)}">${escapeHtml(label)}</option>`;
+  let html =
+    '<optgroup label="常用跨境地区">' + PINNED_TIMEZONES.map(([v, l]) => opt(v, `${l} — ${v}`)).join('') + '</optgroup>';
+  if (rest.length) html += '<optgroup label="全部时区">' + rest.map((z) => opt(z, z)).join('') + '</optgroup>';
+  // 存量值可能是别名(如 Asia/Ho_Chi_Minh)，不在完整列表里；补一个选项进去，
+  // 否则赋值会静默落空、下拉变空白。
+  if (currentValue && !pinnedKeys.includes(currentValue) && !rest.includes(currentValue)) {
+    html += '<optgroup label="当前设置">' + opt(currentValue, currentValue) + '</optgroup>';
+  }
+  sel.innerHTML = html;
+}
+
+async function init() {
+  try {
+    currentSettings = await api('GET', '/api/settings');
+    populateTimezones(currentSettings.timezone || 'Asia/Jakarta');
+    fillSettingsForm(currentSettings);
+  } catch (err) {
+    showGlobalError('读取全局设置失败: ' + err.message);
+  }
+  try {
+    accountsConfig = await api('GET', '/api/accounts');
+  } catch (err) {
+    showGlobalError('读取账号列表失败: ' + err.message);
+  }
+  await refreshStatus();
+  initLogs();
+  setInterval(refreshStatus, 3000);
+}
+
+init();
+
+// ===================== 选品粗筛 =====================
+// 定位：把 fastmoss 榜单从几十条砍到十几条，少扫几十个码。替代不了扫码本身
+// （导出里没有广告佣金、库存、七天趋势）。唯一比 Excel 强的是记住你的判断。
+
+let pickerRows = [];
+// 记住上次选的文件，这样改门槛就能直接重算，不用再拖一次文件。
+// (第一版没做，测试时发现改了门槛数字没反应——用户只会以为功能坏了)
+let pickerFile = null;
+// 记住这次筛选的元信息(原表多少条、筛掉了什么、文件名)。标记否决后要重绘表格，
+// 不留着的话标题会变成"原表 10 条""来自当前结果"，把真实来源丢了。
+let pickerMeta = null;
+
+async function screenFile(file) {
+  const errEl = document.getElementById('p-error');
+  const resEl = document.getElementById('p-result');
+  errEl.classList.add('hidden');
+  if (!file) return;
+  if (!/\.xlsx$/i.test(file.name)) {
+    errEl.textContent = `只支持 .xlsx 文件，你选的是「${file.name}」。fastmoss 导出时选 Excel 格式。`;
+    errEl.classList.remove('hidden');
+    return;
+  }
+  resEl.innerHTML = '<div class="muted" style="padding:16px 0;">正在读取…</div>';
+  try {
+    pickerFile = file;
+    const buf = await file.arrayBuffer();
+    // 大文件直接 btoa(String.fromCharCode(...)) 会爆栈，分块转
+    let binary = '';
+    const bytes = new Uint8Array(buf);
+    for (let i = 0; i < bytes.length; i += 8192) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    }
+    const data = await api('POST', '/api/products/screen', {
+      fileBase64: btoa(binary),
+      minCommission: Number(document.getElementById('p-min-commission').value),
+      minShopSales: Number(document.getElementById('p-min-shopsales').value),
+      requireCommission: document.getElementById('p-require-commission').checked,
+    });
+    pickerRows = data.passed;
+    pickerMeta = { total: data.total, reasons: data.reasons, missingFields: data.missingFields, fileName: file.name };
+    renderPickerResult(data, file.name);
+  } catch (err) {
+    resEl.innerHTML = '';
+    errEl.textContent = err.message;
+    errEl.classList.remove('hidden');
+  }
+}
+
+function renderPickerResult(data, fileName) {
+  const r = data.reasons;
+  const cut = [
+    r.noCommission ? `没有佣金数据 ${r.noCommission} 条` : '',
+    r.lowCommission ? `佣金不达标 ${r.lowCommission} 条` : '',
+    r.smallShop ? `店铺太小 ${r.smallShop} 条` : '',
+    r.offShelf ? `已下架 ${r.offShelf} 条` : '',
+  ].filter(Boolean).join('、');
+
+  const rows = data.passed.map((p, i) => {
+    const judged = p.verdict === 'rejected'
+      ? `<span class="tag" style="background:var(--red-bg);color:var(--red);border-color:transparent;">${p.verdictAt} 否决过${p.verdictNote ? '：' + escapeHtml(p.verdictNote) : ''}</span>`
+      : p.verdict === 'picked'
+        ? `<span class="tag" style="background:var(--green-bg);color:var(--green);border-color:transparent;">${p.verdictAt} 已选用</span>`
+        : '';
+    return `
+      <tr data-name="${escapeAttr(p.name)}" ${p.verdict === 'rejected' ? 'class="dimmed"' : ''}>
+        <td class="num">${p.rank ?? '-'}</td>
+        <td class="num strong">${p.commission ?? '-'}%</td>
+        <td class="num">${p.sales != null ? p.sales.toLocaleString() : '-'}</td>
+        <td class="num">${p.avgPrice != null ? 'Rp' + p.avgPrice.toLocaleString() : '-'}</td>
+        <td class="num">${p.shopSales != null ? p.shopSales.toLocaleString() : '-'}</td>
+        <td>${escapeHtml(p.listedAt)}</td>
+        <td>${escapeHtml(p.name)}<br><span class="muted">${escapeHtml(p.shop)} · ${escapeHtml(p.category)}</span> ${judged}</td>
+        <td class="acts">
+          <button data-pv="rejected" data-i="${i}">否决</button>
+          <button data-pv="picked" data-i="${i}">选用</button>
+          ${p.verdict ? `<button data-pv="" data-i="${i}">撤销</button>` : ''}
+        </td>
+      </tr>`;
+  }).join('');
+
+  document.getElementById('p-result').innerHTML = `
+    <div class="group">
+      <h3>候选 ${data.passed.length} 条（原表 ${data.total} 条）</h3>
+      <div class="hint" style="margin-bottom:10px;">
+        来自「${escapeHtml(fileName)}」。${cut ? '筛掉了：' + cut + '。' : ''}
+        <br>这 ${data.passed.length} 条还要扫码确认 <b>${data.missingFields.join(' / ')}</b>，导出里没有这些。
+      </div>
+      ${data.passed.length ? `
+      <div class="tablewrap">
+        <table class="ptable">
+          <thead><tr>
+            <th>榜</th><th>佣金</th><th>销量</th><th>客单价</th><th>店铺销量</th><th>上架</th><th>商品</th><th></th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>` : '<div class="muted">没有商品通过筛选，把上面的门槛调低一点再试。</div>'}
+    </div>`;
+}
+
+document.getElementById('p-file').addEventListener('change', (e) => screenFile(e.target.files[0]));
+
+// 门槛一改就用刚才那份文件重算，边调边看剩几条
+for (const id of ['p-min-commission', 'p-min-shopsales', 'p-require-commission']) {
+  document.getElementById(id).addEventListener('change', () => {
+    if (pickerFile) screenFile(pickerFile);
+  });
+}
+
+const dropZone = document.getElementById('p-drop');
+['dragenter', 'dragover'].forEach((ev) => dropZone.addEventListener(ev, (e) => {
+  e.preventDefault();
+  dropZone.classList.add('over');
+}));
+['dragleave', 'drop'].forEach((ev) => dropZone.addEventListener(ev, (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('over');
+}));
+dropZone.addEventListener('drop', (e) => screenFile(e.dataTransfer.files[0]));
+
+// 否决/选用：存到服务端，下次导入同一个品会直接标出来
+document.getElementById('p-result').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-pv]');
+  if (!btn) return;
+  const row = pickerRows[Number(btn.dataset.i)];
+  if (!row) return;
+  const verdict = btn.dataset.pv;
+  let note = '';
+  if (verdict === 'rejected') {
+    note = prompt(`否决「${row.name.slice(0, 30)}…」\n\n为什么？（可留空，写了下次能看到）\n比如：库存只有200 / 广告佣金才1%`, '') ?? '';
+  }
+  try {
+    await api('POST', '/api/products/verdicts', { name: row.name, verdict, note });
+    row.verdict = verdict;
+    row.verdictNote = note;
+    row.verdictAt = new Date().toISOString().slice(0, 10);
+    renderPickerResult({ ...pickerMeta, passed: pickerRows }, pickerMeta.fileName);
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+function confirmPublisher(message) {
+  if (document.querySelector('.publisher-confirm')) return Promise.resolve(false);
+  return new Promise(resolve => {
+    const previous = document.activeElement, dialog = document.createElement('dialog');
+    dialog.className = 'publisher-confirm'; dialog.setAttribute('aria-label', '确认操作');
+    const text = document.createElement('p'); text.textContent = message;
+    const cancel = document.createElement('button'); cancel.textContent = '取消';
+    const approve = document.createElement('button'); approve.textContent = '确认';
+    let done = false;
+    const finish = value => { if (done) return; done = true; dialog.remove(); if (previous?.isConnected) previous.focus(); resolve(value); };
+    cancel.onclick = () => finish(false); approve.onclick = () => finish(true);
+    dialog.oncancel = event => { event.preventDefault(); finish(false); };
+    dialog.onclose = () => finish(false);
+    dialog.append(text, cancel, approve); document.body.append(dialog);
+    try { dialog.showModal(); cancel.focus(); } catch { finish(false); }
+  });
+}

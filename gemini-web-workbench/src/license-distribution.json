@@ -1,0 +1,30 @@
+{
+  "defaultControlPlaneId": "cloudflare-owner-v1",
+  "legacyControlPlaneId": "chatgpt-sites-v1",
+  "controlPlanes": [
+    {
+      "id": "cloudflare-owner-v1",
+      "url": "https://flowcut-license-control.ranfukang.workers.dev",
+      "publicJwk": {
+        "key_ops": ["verify"],
+        "ext": true,
+        "kty": "EC",
+        "x": "WkNXuFs3sD6sIbSjyDRvEefJOTmHuuvd4_RB7Kp-dv4",
+        "y": "j946H7FRGFOlJtXad5qgP6oM5w0r8iH8srWfTba5PRE",
+        "crv": "P-256"
+      }
+    },
+    {
+      "id": "chatgpt-sites-v1",
+      "url": "https://flowcut-ai-video-studio.grahams-onion-5orjsy.chatgpt.site",
+      "publicJwk": {
+        "key_ops": ["verify"],
+        "ext": true,
+        "kty": "EC",
+        "x": "vDRVwfVXIZbbwSPkj8-2DfGMcSXcvi81ar-aJHL6okw",
+        "y": "irvswcHB2MKdmsSelfWLr6LgbMwQVrUxQSBR4cIgUhA",
+        "crv": "P-256"
+      }
+    }
+  ]
+}

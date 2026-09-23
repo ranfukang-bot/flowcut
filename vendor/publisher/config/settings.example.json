@@ -1,0 +1,83 @@
+{
+  "_说明": "复制为 settings.json 后按需修改。这个文件里放的是跨账号共用的默认值，单个账号可以在 accounts.json 里用 hashtagKeywords 覆盖。",
+  "minIntervalMs": 5400000,
+  "maxIntervalMs": 9000000,
+  "folderScanIntervalMs": 30000,
+  "concurrency": 1,
+  "videoExtensions": [
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".webm"
+  ],
+  "hashtagKeywords": [
+    "fyp",
+    "tiktok",
+    "tiktokshop"
+  ],
+  "_deleteAfterPublish说明": "确认发布成功后，是否把源视频文件移到回收站。开着的话文件夹本身就是待发布清单：夹子里还有视频=没发完，没了就该加新的。只在真正确认发布成功的那一刻才会移（不确定/失败/暂停都不会动文件）。是移到回收站不是永久删除，误删还能捞回来。",
+  "deleteAfterPublish": true,
+  "_closeProfileAfterCycle说明": "确认发布成功之后，是否让指纹浏览器把该账号的窗口关掉。一个开着的窗口要占一千多MB内存，账号多了电脑扛不住。注意只在【确认发布成功】时才关：出错或者发布结果不确定时会一直留着窗口，因为那种情况的处理办法就是人打开这个号去看一眼（内容列表到底发出去没有、是不是哪个检查开关被关了），关掉就没得看了。下一条到点了会重新开，登录状态和指纹都是指纹浏览器自己存着的，重开还是原样。设为 false 就一直开着不关。",
+  "closeProfileAfterCycle": true,
+  "_quota说明": "每个账号每天最多发几条，按 timezone 指定的时区算一天的边界，超过就停下等第二天当地0点自动刷新额度。dailyPublishLimit 填0表示不限制。timezone 支持任意 IANA 时区（网页上有完整下拉可选），做哪个地区就填哪个地区的时区。",
+  "dailyPublishLimit": 4,
+  "timezone": "Asia/Jakarta",
+  "_postingSlots说明": "固定发布时间节点(推荐，默认开启)。一天几个流量波峰档口，每个档口当天最多发一条，实际发布时刻在 start-end 这个区间里随机取。【过点就不发】：视频做晚了就当天少发几条，不会在晚上把额度硬塞完。节点之间不能重叠。enabled 设为 false 就回到下面 postingWindow 那套「时段内随时发」。时间都按 timezone 指定的当地时间算。",
+  "postingSlots": {
+    "enabled": true,
+    "slots": [
+      { "start": "11:30", "end": "12:30", "label": "午休高峰" },
+      { "start": "16:30", "end": "17:30", "label": "下班通勤" },
+      { "start": "19:30", "end": "20:30", "label": "核心晚高峰" },
+      { "start": "21:30", "end": "22:30", "label": "睡前冲动期" }
+    ]
+  },
+  "_postingWindow说明": "只在这个时间段内发布(按 timezone 指定的当地时间，24小时制)。默认中午12点到午夜0点(endHour=24表示到午夜)。防的是：额度一到当地0点刷新，文件夹里堆着视频的话会连发好几条，没有真人会在凌晨发布。时段之外攒着的额度不会丢，等时段开始接着发。enabled设为false就关掉这个限制，恢复成只看发布间隔不看时间点。",
+  "postingWindow": {
+    "enabled": false,
+    "startHour": 12,
+    "endHour": 24
+  },
+  "_retry说明": "临时故障(页面超时、指纹浏览器没开、网络抖动)会按这个间隔自动重试，不打扰你；数组有几项就最多重试几次，全用完还不行才暂停并通知。注意：只要有可能已经点过发布按钮，一律不会自动重试，避免同一条发两遍。",
+  "retryBackoffMs": [
+    300000,
+    900000,
+    2400000
+  ],
+  "notifications": {
+    "_说明": "账号真正需要你处理时推一条消息。provider 可选 telegram / wecom / bark / webhook，填好对应那一段即可。",
+    "enabled": false,
+    "provider": "telegram",
+    "telegram": {
+      "botToken": "",
+      "chatId": ""
+    },
+    "wecom": {
+      "webhookUrl": ""
+    },
+    "bark": {
+      "serverUrl": ""
+    },
+    "webhook": {
+      "url": ""
+    }
+  },
+  "_dom说明": "各国语言共用DOM识别，无需填写界面翻译。音乐和内容检查必须双绿，未知或超时停止。",
+  "adspower": {
+    "baseUrl": "http://local.adspower.net:50325",
+    "apiKey": ""
+  },
+  "hubstudio": {
+    "_说明": "已对照官方文档确认：POST /api/v1/browser/start (打开) 和 /api/v1/browser/stop (关闭)，环境ID字段是containerCode，调试端口在返回值的data.debuggingPort。如果客户端「开发者」页面里的『安全校验』是开启状态，把生成的API Key填到下面的apiKey；关闭状态则不用填。",
+    "baseUrl": "http://127.0.0.1:6873",
+    "apiKey": "",
+    "openPath": "/api/v1/browser/start",
+    "closePath": "/api/v1/browser/stop",
+    "requestIdField": "containerCode",
+    "responseDebugPortField": "debuggingPort"
+  },
+  "bitbrowser": {
+    "_说明": "免费版就能用。本地API地址在比特浏览器客户端「系统设置」里能查到，默认一般是 http://127.0.0.1:54345，如果连不上先去客户端核对这个端口。",
+    "baseUrl": "http://127.0.0.1:54345"
+  }
+}

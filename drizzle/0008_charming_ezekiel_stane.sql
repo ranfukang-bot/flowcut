@@ -1,0 +1,22 @@
+CREATE TABLE `script_pipeline_tasks` (
+	`id` text PRIMARY KEY NOT NULL,
+	`title` text NOT NULL,
+	`status` text DEFAULT 'rewrite_queued' NOT NULL,
+	`progress` integer DEFAULT 5 NOT NULL,
+	`source_script` text NOT NULL,
+	`project_context` text DEFAULT '' NOT NULL,
+	`rewritten_script` text DEFAULT '' NOT NULL,
+	`extraction_json` text DEFAULT '' NOT NULL,
+	`storyboard_json` text DEFAULT '' NOT NULL,
+	`raw_groups_json` text DEFAULT '[]' NOT NULL,
+	`optimized_groups_json` text DEFAULT '[]' NOT NULL,
+	`gemini_account_id` text,
+	`provider` text DEFAULT 'gemini-web' NOT NULL,
+	`bridge_claimed_at` text,
+	`bridge_worker_id` text,
+	`gemini_failures` integer DEFAULT 0 NOT NULL,
+	`gemini_retry_at` text,
+	`error` text,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL
+);

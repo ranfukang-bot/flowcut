@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "FlowCut · FastMoss 选品",
+  "version": "1.4.0",
+  "description": "选品时保存商品 ID，直接送入 FlowCut 商品库",
+  "permissions": [
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.fastmoss.com/*",
+    "https://fastmoss.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "action": {
+    "default_title": "打开 FastMoss 选品助手"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

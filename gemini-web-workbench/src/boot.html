@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <title>FlowCut 正在启动</title>
+    <style>
+      :root { font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif; background: #f5f5f1; color: #15171a; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; }
+      main { width: min(520px, calc(100% - 40px)); box-sizing: border-box; padding: 40px; border: 1px solid #dedfd9; border-radius: 22px; background: white; box-shadow: 0 24px 80px rgba(20,22,26,.09); text-align: center; }
+      i { display: grid; place-items: center; width: 62px; height: 62px; margin: 0 auto 20px; border-radius: 18px; background: #b8ff34; color: #111; font-size: 28px; font-style: normal; font-weight: 900; box-shadow: 0 12px 30px rgba(153,220,42,.28); }
+      h1 { margin: 0 0 10px; font-size: 25px; }
+      p { margin: 0; color: #777d84; line-height: 1.7; }
+      #error { margin-top: 15px; color: #a84438; }
+      form { display: grid; gap: 15px; margin-top: 28px; text-align: left; }
+      label { display: grid; gap: 7px; color: #565e58; font-size: 13px; font-weight: 700; }
+      input { min-height: 46px; box-sizing: border-box; border: 1px solid #cfd5ce; border-radius: 10px; outline: none; padding: 0 13px; color: #171c18; background: #fcfdfa; font: inherit; }
+      input:focus { border-color: #8eca21; box-shadow: 0 0 0 3px rgba(184,255,52,.2); }
+      button { min-height: 48px; margin-top: 3px; border: 0; border-radius: 10px; background: #aeef31; color: #172015; cursor: pointer; font-size: 14px; font-weight: 800; }
+      button:disabled { cursor: wait; opacity: .55; }
+      small { display: block; margin-top: 18px; color: #929992; font-size: 11px; line-height: 1.55; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <i>F</i>
+      <div id="loading">
+        <h1>正在启动 FlowCut</h1>
+        <p>个人本机版 · 正在启动商品库与视频工作台…</p>
+      </div>
+      <p id="error"></p>
+    </main>
+    <script>
+      const params = new URLSearchParams(location.search);
+      const errorBox = document.getElementById("error");
+      const error = params.get("error");
+      if (error) errorBox.textContent = error;
+    </script>
+  </body>
+</html>

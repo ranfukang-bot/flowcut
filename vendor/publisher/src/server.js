@@ -1,0 +1,292 @@
+import { installFlowCutRoutes, accountFolder } from './flowcut-integration.js';
+import fs from 'node:fs';
+import { acquireInstance } from './single-instance.js';
+import express from 'express';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import {
+  ensureConfigFiles,
+  loadSettings,
+  saveSettings,
+  loadAllAccounts,
+  saveAccounts,
+  TEXT_PRESETS,
+  DEFAULT_TEXT_PRESET,
+  REQUIRED_TEXT_KEYS,
+  SAFETY_CRITICAL_TEXT_KEYS,
+  resolvePostingPlan,
+} from './config.js';
+import * as controller from './controller.js';
+import { recentLogs, subscribe } from './logBus.js';
+import { createAdapter } from './browserAdapters/index.js';
+import { sendTestNotification } from './notifier.js';
+import { screenProducts, loadVerdicts, saveVerdict } from './productScreen.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PORT = Number(process.env.PORT) || 18776;
+const DATA_ROOT = process.env.FLOWCUT_PUBLISHER_DATA_DIR || path.join(__dirname, '..');
+
+acquireInstance(DATA_ROOT);
+ensureConfigFiles();
+
+const app = express();
+installFlowCutRoutes(app, express, DATA_ROOT);
+// 选品表格用 base64 放在 JSON 里传，默认 100kb 不够，放宽到 2mb
+app.use(express.json({ limit: '2mb' }));
+app.use(express.static(path.join(__dirname, '..', 'public')));
+
+function handleError(res, err) {
+  console.error(err);
+  res.status(400).json({ error: err.message });
+}
+
+app.get('/api/status', (req, res) => {
+  try {
+    res.json(controller.getStatus());
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+app.post('/api/orchestrator/start', (req, res) => {
+  try {
+    controller.start();
+    res.json({ running: controller.isRunning() });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+app.post('/api/orchestrator/stop', (req, res) => {
+  controller.stop();
+  res.json({ running: controller.isRunning() });
+});
+
+app.get('/api/settings', (req, res) => {
+  try {
+    res.json(loadSettings());
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+app.put('/api/settings', (req, res) => {
+  try {
+    const settings = req.body;
+    if (!settings || typeof settings !== 'object') throw new Error('设置内容格式不对');
+    if (!settings.minIntervalMs || !settings.maxIntervalMs) throw new Error('必须填写发布间隔的最小值和最大值');
+    if (settings.minIntervalMs > settings.maxIntervalMs) throw new Error('间隔最小值不能大于最大值');
+    const window = settings.postingWindow;
+    if (window && window.enabled && Number(window.startHour) >= Number(window.endHour)) {
+      throw new Error('允许发布的时间段：开始时间必须早于结束时间，否则会一直卡在时间段外发不出去');
+    }
+    // 配错的节点宁可当场拒绝，也不要存进去——存进去之后每一轮tick都会抛错，
+    // 表现成"所有账号都莫名其妙暂停"，比保存失败难查得多。
+    if (settings.postingSlots && settings.postingSlots.enabled !== false) {
+      resolvePostingPlan(settings); // 格式/顺序/重复都在这里校验，不合法直接抛
+      if (!settings.postingSlots.slots || !settings.postingSlots.slots.length) {
+        throw new Error('至少要留一个发布时间节点，否则永远不会发布');
+      }
+    }
+    saveSettings(settings);
+    res.json({ ok: true });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+app.get('/api/accounts', (req, res) => {
+  try {
+    res.json(loadAllAccounts());
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+app.put('/api/accounts', (req, res) => {
+  try {
+    const accounts = req.body;
+    if (!Array.isArray(accounts)) throw new Error('账号列表格式不对');
+
+    const names = new Set();
+    const warnings = [];
+    for (const account of accounts) {
+      if (!account.name || !account.name.trim()) throw new Error('每个账号都要填名称');
+      if (names.has(account.name)) throw new Error(`账号名称重复: ${account.name}`);
+      names.add(account.name);
+      account.videoFolder = accountFolder(DATA_ROOT, account.name);
+      fs.mkdirSync(account.videoFolder, {recursive:true});
+      if (account.browser === 'adspower' && !account.profileId) throw new Error(`账号 "${account.name}" 是AdsPower但没填环境ID`);
+      if (account.browser === 'hubstudio' && !account.containerCode) throw new Error(`账号 "${account.name}" 是Hubstudio但没填环境ID`);
+      if (account.browser === 'bitbrowser' && !account.browserId) throw new Error(`账号 "${account.name}" 是比特浏览器但没填环境ID`);
+    }
+
+    saveAccounts(accounts);
+    res.json({ ok: true, warnings, accounts });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+app.post('/api/accounts/:name/scan', async (req, res) => {
+  try {
+    const result = await controller.scanAccountNow(req.params.name);
+    res.json({ ok: true, ...(result || {}) });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+app.post('/api/accounts/:name/pause', (req, res) => {
+  try {
+    controller.setAccountPaused(req.params.name, true);
+    res.json({ ok: true });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+app.post('/api/accounts/:name/resume', (req, res) => {
+  try {
+    controller.setAccountPaused(req.params.name, false);
+    res.json({ ok: true });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+app.post('/api/accounts/:name/resolve', async (req, res) => {
+  try {
+    const { decision } = req.body || {};
+    if (decision !== 'published' && decision !== 'retry') throw new Error('decision 必须是 published 或 retry');
+    await controller.resolveUncertain(req.params.name, decision);
+    res.json({ ok: true });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+// "发送测试通知"按钮：故意把错误原样抛给前端，方便用户看出是哪里填错了
+app.post('/api/notifications/test', async (req, res) => {
+  try {
+    await sendTestNotification(loadSettings());
+    res.json({ ok: true });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+// 界面文案的预设和元信息统一由服务端提供，避免前端再抄一份键名清单(那会变成
+// 第三处真值来源，迟早跟 config.js 对不上)。预设的值全部来自 src/config.js。
+//
+// 只提供【验证过】的预设：印尼语是从真实界面扒下来的；英语只填代码里本来就出现过
+// 的英文词，安全项故意留空，不编造翻译——留空会被保存校验拦下来，逼着用户对照自己
+// 的界面填，这比给一套看着像配好了、实际是错的翻译要好。
+//
+// globalPreset / globalText 是给前端复刻同一套合并规则用的：账号语言和全局语言不
+// 一致时不继承 globalText，前端要能算出跟服务端一样的"实际生效值"。
+app.get('/api/text-presets', (req, res) => {
+  try {
+    const settings = loadSettings();
+    res.json({
+      presets: TEXT_PRESETS,
+      defaultPreset: DEFAULT_TEXT_PRESET,
+      mode: 'dom',
+      requiredKeys: REQUIRED_TEXT_KEYS,
+      safetyCriticalKeys: SAFETY_CRITICAL_TEXT_KEYS,
+      globalPreset: settings.textPreset || DEFAULT_TEXT_PRESET,
+      globalText: settings.text || {},
+    });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+// 供添加账号弹窗里"从比特浏览器读取环境列表"用，这样不用手动去找/抄环境ID。
+app.get('/api/bitbrowser/profiles', async (req, res) => {
+  try {
+    const settings = loadSettings();
+    const adapter = createAdapter('bitbrowser', settings);
+    const profiles = await adapter.listProfiles();
+    res.json(profiles);
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+// 打开系统原生的"选择文件夹"对话框（目前只支持 Windows；其它系统请直接把路径粘贴进输入框）。
+app.post('/api/pick-folder', (req, res) => {
+  if (process.platform !== 'win32') {
+    return res.status(501).json({ error: '当前系统不支持自动弹出文件夹选择框，请直接把文件夹路径粘贴到输入框里' });
+  }
+  const script =
+    'Add-Type -AssemblyName System.Windows.Forms; ' +
+    '$f = New-Object System.Windows.Forms.FolderBrowserDialog; ' +
+    "if ($f.ShowDialog() -eq 'OK') { Write-Output $f.SelectedPath }";
+  execFile('powershell.exe', ['-NoProfile', '-Command', script], { timeout: 120000 }, (err, stdout) => {
+    if (err) return res.status(500).json({ error: `无法打开文件夹选择框: ${err.message}` });
+    const selected = stdout.trim();
+    res.json({ path: selected || null });
+  });
+});
+
+// ===== 选品粗筛 =====
+// 把 fastmoss 导出的榜单表读进来，按门槛筛一遍。
+// 注意这一步替代不了扫码看详情——导出里没有广告佣金、库存和七天趋势。
+app.post('/api/products/screen', (req, res) => {
+  try {
+    const { fileBase64, minCommission, minShopSales, requireCommission } = req.body || {};
+    if (!fileBase64) throw new Error('没有收到文件');
+    const buf = Buffer.from(fileBase64, 'base64');
+    res.json(screenProducts(buf, {
+      minCommission: Number(minCommission),
+      minShopSales: Number(minShopSales),
+      requireCommission,
+    }));
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+// 记住"这个品我否决过/选用了"。榜单每次导出大量重复，没有这个记录
+// 就会把同一个品反复扫码判断一遍——这是这个功能唯一比 Excel 强的地方。
+app.get('/api/products/verdicts', (req, res) => {
+  try {
+    res.json(loadVerdicts());
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+app.post('/api/products/verdicts', (req, res) => {
+  try {
+    const { name, verdict, note } = req.body || {};
+    res.json({ ok: true, saved: saveVerdict(name, verdict, note) });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+app.get('/api/logs', (req, res) => {
+  res.json(recentLogs());
+});
+
+app.get('/api/logs/stream', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  const unsubscribe = subscribe((entry) => {
+    res.write(`data: ${JSON.stringify(entry)}\n\n`);
+  });
+  req.on('close', unsubscribe);
+});
+
+const server = app.listen(PORT, '127.0.0.1', () => console.log(`FlowCut publisher ready: ${PORT}`));
+server.on('error', err => { console.error(err.message); process.exitCode = 1; });
+function shutdown() { controller.stop(); server.close(() => process.exit(0)); }
+process.on('SIGTERM', shutdown);
+process.once('disconnect', shutdown);
+process.parentPort?.on('message', event => { if (event.data === 'stop') shutdown(); });

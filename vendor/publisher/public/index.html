@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlowCut 发布管理</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>FlowCut 发布管理</h1>
+  <div id="global-controls">
+    <span id="status-badge" class="stopped">已停止</span>
+    <button id="btn-start" class="primary">启动自动发布</button>
+    <button id="btn-stop">停止</button>
+  </div>
+</header>
+
+<main>
+  <div id="global-error" class="error-banner hidden"></div>
+
+  <!-- 概览数字由 app.js 的 renderStats() 填充 -->
+  <div id="stats"></div>
+
+  <section class="card" id="accounts-section">
+    <div class="section-header">
+      <h2>账号列表</h2>
+      <button id="btn-add-account" class="primary">+ 添加账号</button>
+    </div>
+    <div id="accounts-warning" class="error-banner hidden"></div>
+    <div id="accounts-empty" style="display:none;">还没有账号，点击右上角"添加账号"开始。</div>
+    <div id="accounts-list"></div>
+  </section>
+
+  <section class="card">
+    <details id="picker-details">
+      <summary>选品粗筛（fastmoss 榜单导出）</summary>
+
+      <div class="hint" style="margin-bottom:14px;">
+        把 fastmoss 导出的榜单表拖进来，按佣金门槛先筛一遍，把几十条砍到十几条再去扫码。
+        <br>
+        <b>它替代不了扫码</b>：导出里没有广告佣金、没有库存、"销量环比"那一列是空的，
+        所以你那三条标准它一条都判断不了，还是得扫码进去看。它省的是"扫 50 个"变成"扫 10 个"。
+        <br>
+        <b>比 Excel 强的地方只有一个</b>：你点过"否决"的品，下次再出现在榜单里会直接标出来，
+        不用重复判断第二遍。
+      </div>
+
+      <div class="group">
+        <h3>筛选门槛</h3>
+        <div class="form-grid">
+          <div class="field">
+            <label>最低佣金比例（%）</label>
+            <input type="number" min="0" max="100" step="0.5" id="p-min-commission" value="8">
+          </div>
+          <div class="field">
+            <label>店铺累计销量至少（0=不限）</label>
+            <input type="number" min="0" step="1000" id="p-min-shopsales" value="0">
+            <div class="hint">用来排掉刚开的小店。填 10000 之类的值试试。</div>
+          </div>
+          <div class="field span2">
+            <label><input type="checkbox" id="p-require-commission" checked> 排除没有佣金数据的商品</label>
+            <div class="hint">
+              导出里约一半商品的佣金比例是空的，这些店铺累计销量普遍低一个数量级。
+              如果你确认"空"就是不开放带货，勾着能省不少事。
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <h3>选择榜单文件</h3>
+        <div id="p-drop">
+          把 fastmoss 导出的 .xlsx 拖到这里，或者<label for="p-file" class="linklike">点击选择文件</label>
+          <input type="file" id="p-file" accept=".xlsx" hidden>
+        </div>
+        <div id="p-error" class="error-banner hidden" style="margin-top:12px;"></div>
+      </div>
+
+      <div id="p-result"></div>
+    </details>
+  </section>
+
+  <section class="card">
+    <details id="settings-details">
+      <summary>全局设置</summary>
+      <form id="settings-form">
+        <div class="group">
+          <h3>发布节奏</h3>
+          <div class="form-grid">
+            <div class="field">
+              <label>发布间隔 最短（小时）</label>
+              <input type="number" min="0.1" step="0.1" id="s-min-hours" required>
+            </div>
+            <div class="field">
+              <label>发布间隔 最长（小时）</label>
+              <input type="number" min="0.1" step="0.1" id="s-max-hours" required>
+            </div>
+            <div class="field">
+              <label>同时最多运行几个账号</label>
+              <input type="number" min="1" step="1" id="s-concurrency" required>
+              <div class="hint">建议先用 1，全部账号排队跑，最稳妥。</div>
+            </div>
+            <div class="field">
+              <label>文件夹检查间隔（秒）</label>
+              <input type="number" min="5" step="5" id="s-scan-seconds" required>
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>每日额度与发布时段</h3>
+          <div class="form-grid">
+            <div class="field">
+              <label>每个账号每天最多发几条</label>
+              <input type="number" min="0" step="1" id="s-daily-limit">
+              <div class="hint">填 0 表示不限。按下面的时区算"一天"，发够就停，第二天当地0点自动刷新。</div>
+            </div>
+            <div class="field">
+              <label>时区</label>
+              <!-- 选项由 app.js 的 populateTimezones() 动态生成：常用跨境地区置顶 + 完整IANA列表 -->
+              <select id="s-timezone"></select>
+              <div class="hint">做哪个地区就选哪个地区的时区，额度和发布时段都按当地时间算。</div>
+            </div>
+            <div class="field span2">
+              <label><input type="checkbox" id="s-slots-enabled"> 只在固定的时间节点发布（推荐）</label>
+              <div class="hint">
+                带货的转化集中在几个流量波峰（午休、下班、晚高峰、睡前）。均匀铺开发会把额度浪费在低谷期，
+                而且一条带货视频要两三个小时在初始流量池里跑完播和互动，发太密后一条会直接截断前一条的流量。<br>
+                每个节点当天<b>最多发一条</b>，实际时刻在这个区间里随机取。
+                <b>过点就不发</b>——视频做晚了就当天少发几条，第二天中午从容开始，
+                不会在晚上把四条硬塞进去。
+              </div>
+            </div>
+            <div class="field span2" id="slots-editor-field">
+              <label>时间节点（当地时间，24小时制）</label>
+              <div id="slots-editor"></div>
+              <button type="button" class="ghost" id="s-slot-add">+ 加一个节点</button>
+              <div class="hint" id="slots-summary"></div>
+            </div>
+            <div class="field span2" id="window-legacy-field">
+              <div class="hint">关掉上面那个开关就回到旧的"时间段内随时发"：</div>
+            </div>
+            <div class="field" id="window-start-field">
+              <label>几点开始（当地时间，24小时制）</label>
+              <input type="number" min="0" max="23" step="1" id="s-window-start">
+            </div>
+            <div class="field" id="window-end-field">
+              <label>几点结束（24=到午夜）</label>
+              <input type="number" min="1" max="24" step="1" id="s-window-end">
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>发布完之后做什么</h3>
+          <div class="form-grid">
+            <div class="field span2">
+              <label><input type="checkbox" id="s-close-profile"> 确认发布成功后，关掉该账号的指纹浏览器窗口</label>
+              <div class="hint">
+                一个开着的窗口要占一千多MB内存，账号多了电脑会很吃力。开着这项的话，
+                <b>只在确认发布成功那一刻</b>才关，下一条到点了再重新开。
+                出错或者发布结果不确定的时候<b>会一直留着窗口</b>——那种情况本来就要你打开这个号
+                看一眼（内容列表到底发出去没有、是不是哪个检查开关被关了），关掉你就没得看了。
+                关窗口不影响登录状态和指纹，那些是指纹浏览器自己存着的，重开还是原样。
+              </div>
+            </div>
+            <div class="field span2">
+              <label><input type="checkbox" id="s-delete-after-publish"> 确认发布成功后，把源视频文件移到回收站</label>
+              <div class="hint">
+                开着的话，文件夹本身就是"待发布清单"：里面还有视频=没发完，空了就该加新的，不用再对照进度列表。
+                只在真正确认发布成功那一刻才移（不确定/失败/暂停都不会动）——是移到回收站，不是永久删除，误删还能捞回来。
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>出问题时通知我</h3>
+          <div class="hint" style="margin-bottom:10px;">
+            只有真正需要你处理的时候才会推送（比如发布结果不确定、配置填错了）。
+            页面超时、指纹浏览器没开这类临时问题会自己重试，不打扰你。
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label><input type="checkbox" id="s-notify-enabled"> 启用通知</label>
+            </div>
+            <div class="field">
+              <label>推送到哪</label>
+              <select id="s-notify-provider">
+                <option value="telegram">Telegram 机器人</option>
+                <option value="wecom">企业微信群机器人</option>
+                <option value="bark">Bark（iPhone推送）</option>
+                <option value="webhook">自定义 Webhook</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-grid notify-cfg" data-provider="telegram">
+            <div class="field">
+              <label>Bot Token</label>
+              <input type="text" id="s-notify-tg-token" placeholder="找 @BotFather 创建机器人后给你的一长串">
+            </div>
+            <div class="field">
+              <label>Chat ID</label>
+              <input type="text" id="s-notify-tg-chat" placeholder="找 @userinfobot 发一条消息就能拿到">
+            </div>
+          </div>
+
+          <div class="form-grid narrow notify-cfg" data-provider="wecom">
+            <div class="field">
+              <label>群机器人 Webhook 地址</label>
+              <input type="text" id="s-notify-wecom-url" placeholder="企业微信群 → 群设置 → 群机器人 → 添加后复制地址">
+            </div>
+          </div>
+
+          <div class="form-grid narrow notify-cfg" data-provider="bark">
+            <div class="field">
+              <label>Bark 推送地址</label>
+              <input type="text" id="s-notify-bark-url" placeholder="装好Bark这个App后，App首页显示的那个地址">
+            </div>
+          </div>
+
+          <div class="form-grid narrow notify-cfg" data-provider="webhook">
+            <div class="field">
+              <label>Webhook 地址</label>
+              <input type="text" id="s-notify-webhook-url" placeholder="会往这个地址POST一段JSON">
+            </div>
+          </div>
+
+          <div style="margin-top:10px;">
+            <button type="button" id="btn-test-notify">发送一条测试通知</button>
+            <span class="hint" style="margin-left:8px;">先"保存全局设置"，再点这个测试</span>
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>比特浏览器 BitBrowser 连接设置</h3>
+          <div class="form-grid">
+            <div class="field">
+              <label>本地API地址</label>
+              <input type="text" id="s-bit-baseurl">
+              <div class="hint">在比特浏览器客户端"系统设置"里能看到，默认一般是 http://127.0.0.1:54345。</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>AdsPower 连接设置</h3>
+          <div class="form-grid">
+            <div class="field">
+              <label>本地API地址</label>
+              <input type="text" id="s-ads-baseurl">
+            </div>
+            <div class="field">
+              <label>API Key（团队版才需要，没有就留空）</label>
+              <input type="text" id="s-ads-apikey">
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>Hubstudio 连接设置</h3>
+          <div class="form-grid">
+            <div class="field">
+              <label>本地API地址</label>
+              <input type="text" id="s-hub-baseurl">
+            </div>
+            <div class="field">
+              <label>API Key（客户端「开发者」页面里"安全校验"开启时才需要）</label>
+              <input type="text" id="s-hub-apikey">
+            </div>
+          </div>
+          <details style="margin-top:8px;">
+            <summary class="muted">高级：接口路径/字段名（默认值已按官方文档确认，一般不用改）</summary>
+            <div class="form-grid" style="margin-top:10px;">
+              <div class="field">
+                <label>打开环境接口路径</label>
+                <input type="text" id="s-hub-openpath">
+              </div>
+              <div class="field">
+                <label>关闭环境接口路径</label>
+                <input type="text" id="s-hub-closepath">
+              </div>
+              <div class="field">
+                <label>请求体里环境ID字段名</label>
+                <input type="text" id="s-hub-idfield">
+              </div>
+              <div class="field">
+                <label>返回值里调试端口字段名</label>
+                <input type="text" id="s-hub-portfield">
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="primary">保存全局设置</button>
+        </div>
+      </form>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2>运行日志</h2>
+    <div id="log-panel"></div>
+  </section>
+</main>
+
+<div id="account-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3 id="account-modal-title">添加账号</h3>
+    <div id="account-form-error" class="error-banner hidden"></div>
+    <form id="account-form">
+      <input type="hidden" id="a-original-name">
+      <div class="form-grid">
+        <div class="field">
+          <label>账号名称（随便起，用来区分）</label>
+          <input type="text" id="a-name" required>
+        </div>
+        <div class="field">
+          <label for="a-phone-group">所属手机</label>
+          <input type="text" id="a-phone-group" list="phone-group-options" maxlength="60" placeholder="例如：印尼1号手机、菲律宾1号手机">
+          <datalist id="phone-group-options"></datalist>
+          <div class="hint">选择已有分组，或输入新手机名称。同一部手机填相同名称；留空则放在未分组。</div>
+        </div>
+        <div class="field">
+          <label>用哪个指纹浏览器</label>
+          <select id="a-browser">
+            <option value="bitbrowser">比特浏览器 BitBrowser</option>
+            <option value="adspower">AdsPower</option>
+            <option value="hubstudio">Hubstudio</option>
+          </select>
+        </div>
+        <div class="field">
+          <label id="a-profileid-label">环境ID</label>
+          <div class="row">
+            <input type="text" id="a-profileid" required>
+            <select id="a-bitbrowser-picker" style="display:none;max-width:160px;">
+              <option value="">从列表选择…</option>
+            </select>
+          </div>
+          <div class="hint" id="a-bitbrowser-hint" style="display:none;">选一下会自动把ID填到左边的框里，读取失败的话手动去比特浏览器"浏览器窗口"列表里核对ID。</div>
+        </div>
+        <div class="field span2">
+          <label>独立视频目录（保存账号时自动设置）</label>
+          <div class="row">
+            <input type="text" id="a-folder" readonly placeholder="保存后由工作台自动创建">
+            <button type="button" id="a-browse-btn" hidden>浏览…</button>
+          </div>
+          <div class="hint">工作台自动创建独立目录。成品检查放行后，视频会自动进入这里。</div>
+        </div>
+        <div class="field span2">
+          <label>话题标签（逗号分隔，会依次点击历史标签里的这些 #标签）</label>
+          <input type="text" id="a-hashtags" placeholder="fyp,tiktok,tiktokshop">
+        </div>
+      </div>
+
+      <div class="group">
+        <h3>TikTok Studio 通用识别</h3>
+        <div class="hint">
+          自动按页面结构识别上传、商品、AI声明、立即发布和检查结果，<b>无需选择国家或填写界面翻译</b>。
+          只有音乐版权和内容检查两项都明确通过才发布；红色、检查未完成、检查关闭或未知结构都会停止。
+          <br>页面改版或账号缺少商品橱窗等功能时会报错暂停，不会猜按钮、不会跳过检查。
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" id="a-delete-btn" class="danger" style="display:none;">删除这个账号</button>
+        <span style="flex:1;"></span>
+        <button type="button" id="a-cancel-btn">取消</button>
+        <button type="submit" class="primary">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,689 @@
+// 匿名本地浏览器夹具，不连接账号，不包含真实快照/商品数据。
+import test, { before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
+import pw from 'playwright-core';
+import { installTkqInPage } from '../src/browser/injected.js';
+
+let browser, page;
+before(async () => {
+  const executablePath = process.env.CHROMIUM_PATH || [
+    'C:/Program Files/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+  ].find(existsSync);
+  // 独立临时profile，不读取/关闭用户浏览器。启动失败算失败，不静默跳过测试。
+  browser = await pw.chromium.launch(executablePath ? { executablePath } : {});
+  page = await browser.newPage();
+});
+after(async () => { await browser?.close(); });
+
+const switchHtml = '<div data-state="checked"><input role="switch" type="checkbox" checked></div>';
+const resultHtml = '<div class="status-wrapper">' +
+  '<div class="status-result status-checking" data-show="false"><span class="spinning">…</span><span class="status-tip">任意语言</span></div>' +
+  '<div class="status-result status-warn" data-show="false"><span class="status-tip" style="color:var(--ui-text-danger)">任意语言</span></div>' +
+  '<div class="status-result status-ready" data-show="false">任意语言</div>' +
+  '<div class="status-result status-success" data-show="true"><span class="status-tip" style="color:var(--ui-text-success)">任意语言</span></div></div>';
+
+async function fresh() {
+  await page.setContent('<style>:root{--ui-text-danger:red;--ui-text-success:green;--ui-text-warning:orange}' +
+    '[data-show="false"]{display:none}.info-progress{height:4px}.collapsed+.options-form{display:none}' +
+    '[role="dialog"]{position:fixed;inset:10px;background:white;border:1px solid}button{min-width:40px;min-height:25px}</style>' +
+    '<div data-e2e="upload_status_container"><div class="info-status success">任意语言</div><div class="info-progress success" style="width:100%"></div></div>' +
+    '<div class="caption-editor"><div contenteditable="true">#fyp #tiktok #tiktokshop</div></div>' +
+    '<div class="anchor-tag-container"><button><span data-icon="Plus">+</span>任意语言</button></div>' +
+    '<div data-e2e="advanced_settings_container" class="more-collapse"><div class="more-btn">任意语言</div></div>' +
+    '<div class="options-form"><div data-e2e="aigc_container">' + switchHtml + '</div><div data-e2e="disclose_content_container"><input type="checkbox"></div></div>' +
+    '<div data-e2e="schedule_container"><input type="radio" name="postSchedule" value="schedule"><input type="radio" name="postSchedule" value="post_now" checked></div>' +
+    '<div class="checks-root"><div class="copyright-check"><div data-e2e="copyright_container">' + switchHtml + '</div>' + resultHtml +
+    '</div><div class="content-check__divider"></div><div class="content-check">' + switchHtml + resultHtml + '</div></div>' +
+    '<button data-e2e="post_video_button">任意语言</button>');
+  await page.evaluate(() => {
+    window.postClicks = 0; window.aiConfirmed = false;
+    document.querySelector('[data-e2e="post_video_button"]').onclick = () => { window.postClicks++; };
+  });
+  await page.evaluate(installTkqInPage, { text: {}, hashtagKeywords: ['fyp', 'tiktok', 'tiktokshop'] });
+}
+
+async function setState(area, state) {
+  await page.evaluate(([area, state]) => {
+    const root = document.querySelector(area === 'music' ? '.copyright-check' : '.content-check');
+    root.querySelectorAll('.status-result').forEach((el) => { el.dataset.show = String(el.classList.contains('status-' + state)); });
+  }, [area, state]);
+}
+
+// opts 用来仿真"商品名里带 TikTok 不接受的字符"这种情况：
+//   productName 表格里的商品名、prefill 名称框里被预填的值、badChars 页面判为非法的字符。
+// 不传就是原来的正常商品，已有用例一行都不用改。
+async function mockProductWorkflow(opts = {}) {
+  await page.evaluate((opts) => {
+    const productName = opts.productName || 'Test product name';
+    const prefill = opts.prefill || 'Test product';
+    const badChars = opts.badChars || [];
+    const keepConfirmEnabledWhenInvalid = Boolean(opts.keepConfirmEnabledWhenInvalid);
+    const button = (type) => '<button class="TUXButton--' + type + '">任意语言</button>';
+    const footer = () => '<div class="common-modal-footer">' + button('secondary') + button('primary') + '</div>';
+    const show = (cls, html) => {
+      const el = document.createElement('div'); el.className = 'TUXModal common-modal ' + cls;
+      el.setAttribute('role', 'dialog'); el.innerHTML = html; document.body.append(el); return el;
+    };
+    document.querySelector('.anchor-tag-container button').onclick = () => {
+      const type = show('', '<div class="anchor-modal"><button role="combobox" aria-label="33">任意语言</button><div class="button-group">' + button('secondary') + button('primary') + '</div></div>');
+      type.querySelector('.TUXButton--primary').onclick = () => {
+        type.classList.add('no-mask-modal');
+        const select = show('product-selector-modal', '<div class="product-selector-container">' +
+          '<div class="product-search-input"><input type="text"></div><button class="product-search-icon">?</button>' +
+          '<table class="product-table"><tbody><tr><td><input type="radio"><span class="product-name">' + productName + '</span></td><td class="product-tb-cell">10000000000001</td></tr></tbody></table></div>' + footer());
+        const next = select.querySelector('.TUXButton--primary'); next.disabled = true;
+        select.querySelector('input[type=radio]').onchange = () => { next.disabled = false; };
+        next.onclick = () => {
+          select.remove();
+          const name = show('', '<div class="common-modal-body"><input type="text">' +
+            '<div class="err" style="color:var(--ui-text-danger);height:16px"></div>' +
+            '<div class="TUXFormField-wordCount">12/30</div></div>' + footer());
+          const nameInput = name.querySelector('input'), err = name.querySelector('.err');
+          const confirm = name.querySelector('.TUXButton--primary');
+          // TikTok 存在两种真实表现：有的页面会禁用按钮；菲律宾这次抓到的 DOM
+          // 按钮仍显示可用，但点击非法名称时什么也不做。
+          const invalidChars = () => [...new Set([...nameInput.value])].filter((c) => badChars.includes(c));
+          const validate = () => {
+            const hit = invalidChars();
+            err.textContent = hit.length ? 'Remove invalid characters: ' + hit.join(' ') : '';
+            confirm.disabled = !keepConfirmEnabledWhenInvalid && hit.length > 0;
+            nameInput.setAttribute('aria-invalid', String(hit.length > 0));
+          };
+          nameInput.addEventListener('input', () => {
+            if (opts.validateAfterSubmit) {
+              err.textContent = ''; nameInput.setAttribute('aria-invalid', 'false');
+            } else validate();
+          });
+          nameInput.value = prefill;
+          if (!opts.validateAfterSubmit) validate();
+          confirm.onclick = () => {
+            if (opts.validateAfterSubmit && invalidChars().length) {
+              setTimeout(validate, 150);
+              return;
+            }
+            if (invalidChars().length) return;
+            const finalName = nameInput.value.trim();
+            type.remove(); name.remove();
+            const anchor = document.createElement('div'); anchor.className = 'anchor-container';
+            anchor.innerHTML = '<span class="content-anchor-label">' + finalName + '</span>'; document.body.append(anchor);
+          };
+        };
+      };
+    };
+  }, opts);
+}
+
+// 直接驱动名称框：把弹窗和"哪些字符非法"喂进去，拿到 fixInvalidAnchorName 的结果。
+async function runNameFix({ prefill, badChars = [], staticError = null, keepConfirmEnabledWhenInvalid = false }) {
+  await page.setContent('<style>:root{--ui-text-danger:red}[role="dialog"]{position:fixed;inset:10px;background:white;border:1px solid}' +
+    'input{width:300px;height:24px}button{min-width:40px;min-height:25px}</style>' +
+    '<div role="dialog" class="TUXModal common-modal"><div class="common-modal-body"><input type="text">' +
+    '<div class="err" style="color:var(--ui-text-danger);height:16px"></div>' +
+    '<div class="TUXFormField-wordCount">12/30</div></div>' +
+    '<div class="common-modal-footer"><button class="TUXButton--primary">任意语言</button></div></div>');
+  await page.evaluate(({ prefill, badChars, staticError, keepConfirmEnabledWhenInvalid }) => {
+    const input = document.querySelector('input'), err = document.querySelector('.err');
+    const btn = document.querySelector('.TUXButton--primary');
+    if (staticError) {
+      // 页面只说"名称不合法"，不点名是哪个字符，怎么改都不放行
+      err.textContent = staticError; btn.disabled = true; input.value = prefill;
+      input.setAttribute('aria-invalid', 'true');
+    } else {
+      const validate = () => {
+        const hit = [...new Set([...input.value])].filter((c) => badChars.includes(c));
+        err.textContent = hit.length ? 'Remove invalid characters: ' + hit.join(' ') : '';
+        btn.disabled = !keepConfirmEnabledWhenInvalid && hit.length > 0;
+        input.setAttribute('aria-invalid', String(hit.length > 0));
+      };
+      input.addEventListener('input', validate);
+      input.value = prefill; validate();
+    }
+  }, { prefill, badChars, staticError, keepConfirmEnabledWhenInvalid });
+  await page.evaluate(installTkqInPage, { text: {}, hashtagKeywords: [] });
+  return page.evaluate(() => {
+    const modal = document.querySelector('[role="dialog"]'), input = modal.querySelector('input');
+    return window.__tkq.fixInvalidAnchorName(modal, input)
+      .then((name) => ({ ok: true, name }), (e) => ({ ok: false, msg: e.message }));
+  });
+}
+
+test('空语言配置注入和无弹窗闸门正常', async () => {
+  await fresh();
+  await page.evaluate(() => { window.__tkq.checkForAppCrash(); window.__tkq.assertProductPickerClosed('测试'); });
+});
+
+for (const lang of ['id-ID', 'fil-PH', 'th-TH', 'ms-MY', 'en-US']) {
+  test('翻译替换夹具 ' + lang + ' 双绿通过（不代表当地实测）', async () => {
+    await fresh();
+    await page.evaluate((lang) => { document.documentElement.lang = lang; document.querySelectorAll('.status-tip').forEach((e) => { e.textContent = lang + ' 随机文案'; }); }, lang);
+    assert.equal(await page.evaluate(() => window.__tkq.getChecksState().passed), true);
+    assert.equal(await page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe(1800)), true);
+  });
+}
+
+for (const [area, state] of [['music','warn'], ['content','warn'], ['music','checking'], ['content','checking'], ['content','ready']]) {
+  test(area + '=' + state + '，隐藏绿字不能放行', async () => {
+    await fresh(); await setState(area, state);
+    assert.equal(await page.evaluate(() => window.__tkq.getChecksState().passed), false);
+    await assert.rejects(page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe(50)), /发布安全检查未通过/);
+    await assert.rejects(page.evaluate(() => window.__tkq.clickPublishButton()), /发布安全检查未通过/);
+    assert.equal(await page.evaluate(() => window.postClicks), 0);
+  });
+}
+
+test('检查中转换为双绿后，仍需绿色状态稳定才放行', async () => {
+  await fresh(); await setState('content', 'checking');
+  const elapsed = await page.evaluate(async () => {
+    const start = Date.now();
+    setTimeout(() => {
+      document.querySelectorAll('.content-check .status-result').forEach((el) => {
+        el.dataset.show = String(el.classList.contains('status-success'));
+      });
+    }, 150);
+    await window.__tkq.waitForChecksPassAndAssertSafe(2200);
+    return Date.now() - start;
+  });
+  assert.ok(elapsed >= 1150);
+  assert.equal(await page.evaluate(() => window.postClicks), 0);
+});
+
+for (const variation of ['disabled', 'missing', 'ancestor-hidden', 'data-show-false', 'duplicate-green', 'yellow', 'unknown', 'conflicting']) {
+  test('异常检查结构 ' + variation + ' 阻止放行', async () => {
+    await fresh();
+    await page.evaluate((variation) => {
+      const root = document.querySelector('.content-check'), success = root.querySelector('.status-success');
+      if (variation === 'disabled') root.querySelector('input').checked = false;
+      if (variation === 'missing') root.remove();
+      if (variation === 'ancestor-hidden') root.style.display = 'none';
+      if (variation === 'data-show-false') { success.dataset.show = 'false'; success.style.display = 'block'; }
+      if (variation === 'duplicate-green') root.querySelector('.status-wrapper').append(success.cloneNode(true));
+      if (variation === 'yellow') success.querySelector('.status-tip').style.color = 'var(--ui-text-warning)';
+      if (variation === 'unknown') success.className = 'status-result new-unknown';
+      if (variation === 'conflicting') root.querySelector('.status-warn').dataset.show = 'true';
+    }, variation);
+    assert.equal(await page.evaluate(() => window.__tkq.getChecksState().passed), false);
+    await assert.rejects(page.evaluate(() => window.__tkq.clickPublishButton()), /发布安全检查未通过/);
+    assert.equal(await page.evaluate(() => window.postClicks), 0);
+  });
+}
+
+// 检查开关偶尔会莫名其妙是关着的(页面没渲染完就被读到、或者TikTok自己抽风)。
+// 这不是"内容没通过"，不该叫人来处理——自己把开关打开重跑一遍就行。
+// 但这里有条不能松的线：只做【打开】这一个方向，而且真的红/黄必须照样拦住。
+async function turnCheckOff(area, { stuck = false } = {}) {
+  await page.evaluate(([area, stuck]) => {
+    const root = document.querySelector(area === 'music' ? '.copyright-check' : '.content-check');
+    const wrap = root.querySelector('[data-state]');
+    const input = root.querySelector('input[role="switch"]');
+    wrap.dataset.state = 'unchecked';
+    input.checked = false;
+    input.onclick = stuck
+      ? (e) => { e.preventDefault(); input.checked = false; }        // 点了也打不开
+      : () => { input.checked = true; wrap.dataset.state = 'checked'; }; // 真实页面的行为
+  }, [area, stuck]);
+}
+
+for (const area of ['music', 'content']) {
+  test(`${area} 检查开关被关掉时自动打开重跑，不打扰人`, async () => {
+    await fresh();
+    await turnCheckOff(area);
+    const result = await page.evaluate(() =>
+      window.__tkq.waitForChecksPassAndAssertSafe(8000).then(() => 'ok', (e) => e.message));
+    assert.equal(result, 'ok', '开关自动打开后应该正常通过');
+    const on = await page.evaluate((area) => {
+      const sel = area === 'music' ? '.copyright-check' : '.content-check';
+      return document.querySelector(sel + ' input[role="switch"]').checked;
+    }, area);
+    assert.equal(on, true, '开关应该被打开');
+  });
+}
+
+test('开关卡住打不开时停下，并且报成可以重试的那类错', async () => {
+  await fresh();
+  await turnCheckOff('music', { stuck: true });
+  const result = await page.evaluate(() =>
+    window.__tkq.waitForChecksPassAndAssertSafe(8000).then(() => 'PUBLISHED', (e) => e.message));
+  assert.notEqual(result, 'PUBLISHED', '检查没跑就绝不能放行');
+  assert.match(result, /版权检查开关处于关闭状态/);
+  // 这句话如果混进去，errorPolicy 会按 CONTENT_PATTERNS 判成永不重试，
+  // 那就又变回"每次抽风都要人来点一下"了
+  assert.doesNotMatch(result, /发布安全检查未通过/, '不能落进不可重试那一类');
+});
+
+test('真的红色结果不会被当成开关问题放过', async () => {
+  await fresh();
+  await setState('content', 'warn');
+  const result = await page.evaluate(() =>
+    window.__tkq.waitForChecksPassAndAssertSafe(5000).then(() => 'PUBLISHED', (e) => e.message));
+  assert.notEqual(result, 'PUBLISHED');
+  assert.match(result, /发布安全检查未通过/, '内容判红必须走不可重试那条路');
+});
+
+// 上传等多久看的是【卡住没有】，不是【用了多久】。
+// 原来写死等 3 分钟：网速慢的时候视频还在传(进度条明明在涨)就被判"等待元素超时"，
+// 然后整轮重来——重来又得从头传一遍，网速慢的人永远发不出去。
+// fresh() 的夹具默认是"传完了"，测上传过程要先退回起点
+async function resetUploadToStart() {
+  await page.evaluate(() => {
+    const c = document.querySelector('[data-e2e="upload_status_container"]');
+    c.querySelector('.info-progress').classList.remove('success');
+    c.querySelector('.info-status').classList.remove('success');
+    c.querySelector('.info-progress').style.width = '0%';
+    document.querySelector('.caption-editor [contenteditable="true"]').textContent = '';
+  });
+}
+
+async function setUploadProgress(pct, { done = false, error = false } = {}) {
+  await page.evaluate(([pct, done, error]) => {
+    const c = document.querySelector('[data-e2e="upload_status_container"]');
+    const prog = c.querySelector('.info-progress');
+    const status = c.querySelector('.info-status');
+    prog.style.width = pct + '%';
+    prog.classList.toggle('success', done);
+    status.classList.toggle('success', done);
+    prog.classList.toggle('error', error);
+  }, [pct, done, error]);
+}
+
+test('上传慢但进度一直在涨，不能判失败', async () => {
+  await fresh();
+  // fresh() 的夹具默认是"已上传完成"，这里要退回到"刚开始传"
+  await resetUploadToStart();
+  const result = await page.evaluate(() => {
+    // 进度每 100ms 涨一点，总耗时远超 stallMs(800ms)——只要"在动"就不该超时
+    const prog = document.querySelector('.info-progress');
+    const status = document.querySelector('.info-status');
+    let pct = 0;
+    const timer = setInterval(() => {
+      pct += 4;
+      prog.style.width = pct + '%';
+      if (pct >= 100) {
+        clearInterval(timer);
+        prog.classList.add('success');
+        status.classList.add('success');
+        document.querySelector('.caption-editor [contenteditable="true"]').textContent = '123456';
+      }
+    }, 100);
+    // stallMs 给 3000：要够跨过传完之后那 1200ms 的"标题稳定"窗口
+    return window.__tkq.waitForUploadComplete('123456.mp4', 3000, 60000).then(() => 'ok', (e) => e.message);
+  });
+  assert.equal(result, 'ok', '进度在涨就该一直等');
+});
+
+test('进度真的停住不动才算失败，并说清卡在几%', async () => {
+  await fresh();
+  await resetUploadToStart();
+  await setUploadProgress(99);
+  const result = await page.evaluate(() =>
+    window.__tkq.waitForUploadComplete('123456.mp4', 800, 60000).then(() => 'PASSED', (e) => e.message));
+  assert.notEqual(result, 'PASSED');
+  assert.match(result, /卡住/);
+  assert.match(result, /99%/, '要告诉人卡在哪，不能只说"等待元素超时"');
+});
+
+test('传完了但默认标题一直不出现，也要能退出，不能空转到硬上限', async () => {
+  await fresh();
+  await setUploadProgress(100, { done: true });
+  const started = Date.now();
+  const result = await page.evaluate(() =>
+    window.__tkq.waitForUploadComplete('从来不会出现的标题.mp4', 800, 60000).then(() => 'PASSED', (e) => e.message));
+  assert.notEqual(result, 'PASSED');
+  assert.match(result, /默认标题/);
+  // 曾经在这个分支里给计时器"续命"，结果是永远等不到超时，一直空转到硬上限
+  assert.ok(Date.now() - started < 20000, '应该在 stallMs 附近退出，不是熬满 60 秒');
+});
+
+test('上传报错立刻停，不用等到超时', async () => {
+  await fresh();
+  await resetUploadToStart();
+  await setUploadProgress(30, { error: true });
+  const started = Date.now();
+  const result = await page.evaluate(() =>
+    window.__tkq.waitForUploadComplete('123456.mp4', 60000, 90000).then(() => 'PASSED', (e) => e.message));
+  assert.match(result, /视频上传失败/);
+  assert.ok(Date.now() - started < 5000, '报错就该立刻退出');
+});
+
+test('上传99%或未知结构不能算完成，不读完成提示文案', async () => {
+  await fresh();
+  assert.equal(await page.evaluate(() => window.__tkq.getUploadState().state), 'success');
+  await page.evaluate(() => { document.querySelector('.info-progress').className = 'info-progress info'; document.querySelector('.info-progress').style.width = '99%'; });
+  assert.equal(await page.evaluate(() => window.__tkq.getUploadState().state), 'uploading');
+  await page.evaluate(() => document.querySelector('[data-e2e="upload_status_container"]').remove());
+  assert.equal(await page.evaluate(() => window.__tkq.getUploadState().state), 'unknown');
+});
+
+test('上传就绪需等待默认标题稳定，不依赖翻译', async () => {
+  await fresh(); await page.locator('[contenteditable]').fill('test-file');
+  await page.evaluate(() => window.__tkq.waitForUploadComplete('test-file.mp4'));
+});
+
+test('任何语言/未知用途弹窗都拦住', async () => {
+  await fresh();
+  await page.evaluate(() => document.body.insertAdjacentHTML('beforeend', '<div role="dialog">X Y Z</div>'));
+  await assert.rejects(page.evaluate(() => window.__tkq.assertProductPickerClosed('发布')), /弹窗仍然打开/);
+  await assert.rejects(page.evaluate(() => window.__tkq.clickPublishButton()), /弹窗仍然打开/);
+  assert.equal(await page.evaluate(() => window.postClicks), 0);
+});
+
+test('立即发布按value定位，不误选顺序在前面的定时发布', async () => {
+  await fresh(); await page.locator('input[value=schedule]').check();
+  await page.evaluate(() => window.__tkq.setPublishNow());
+  assert.equal(await page.locator('input[value=post_now]').isChecked(), true);
+});
+
+test('AI声明先展开，按aigc容器定位，不触碰广告声明', async () => {
+  await fresh();
+  await page.evaluate(() => {
+    const advanced = document.querySelector('[data-e2e=advanced_settings_container]'); advanced.classList.add('collapsed');
+    advanced.querySelector('.more-btn').onclick = () => advanced.classList.remove('collapsed');
+    const input = document.querySelector('[data-e2e=aigc_container] input'); input.checked = false; input.parentElement.dataset.state = 'unchecked';
+    input.onchange = () => { input.parentElement.dataset.state = input.checked ? 'checked' : 'unchecked'; };
+  });
+  await page.evaluate(() => window.__tkq.setAiDisclosure());
+  assert.equal(await page.locator('[data-e2e=aigc_container] input').isChecked(), true);
+  assert.equal(await page.locator('[data-e2e=disclose_content_container] input').isChecked(), false);
+});
+
+for (const known of [true, false]) {
+  test('AI首次确认：' + (known ? '已验证结构可确认' : '未知弹窗不确认'), async () => {
+    await fresh();
+    await page.evaluate((known) => {
+      const input = document.querySelector('[data-e2e=aigc_container] input'); input.checked = false; input.parentElement.dataset.state = 'unchecked';
+      input.onclick = (event) => {
+        event.preventDefault();
+        const modal = document.createElement('div'); modal.setAttribute('role', 'dialog');
+        modal.innerHTML = '<div class="modal-content"><h2>任意语言</h2>' +
+          (known ? '<div class="modal-bullet">1</div><div class="modal-bullet">2</div><div class="modal-bullet">3</div>' : '') +
+          '</div><div class="common-modal-footer"><button data-type="neutral">X</button><button data-type="primary">Y</button></div>';
+        modal.querySelector('[data-type=primary]').onclick = () => { window.aiConfirmed = true; input.checked = true; input.parentElement.dataset.state = 'checked'; modal.remove(); };
+        document.body.append(modal);
+      };
+    }, known);
+    if (known) {
+      await page.evaluate(() => window.__tkq.setAiDisclosure());
+      assert.equal(await page.evaluate(() => window.aiConfirmed), true);
+    } else {
+      await assert.rejects(page.evaluate(() => window.__tkq.setAiDisclosure()), /未知确认弹窗/);
+      assert.equal(await page.evaluate(() => window.aiConfirmed), false);
+    }
+  });
+}
+
+// 挂车时 TikTok 会拿商品名预填一个"锚点名称"，有些商品名里带它自己不接受的字符
+// （实际遇到过 – 和 丨），主按钮就一直是灰的，整轮卡死在"等待元素超时"。
+// 页面自己会红字点名是哪个字符，照着删就行 —— 比在代码里维护一张非法字符黑名单靠谱，
+// 以后 TikTok 再新增什么字符也照样管用。改这个名称不会挂错商品：商品是靠上一步的
+// 精确商品ID选中的，这个框只是视频上显示的标签。
+for (const [label, prefill, badChars, expected] of [
+  ['实际遇到的 en dash', 'Canned Beef 150g – Rea', ['–'], 'Canned Beef 150g Rea'],
+  ['实际遇到的 丨', 'Minyak Oles 丨 Original', ['丨'], 'Minyak Oles Original'],
+  ['没见过的字符也能修(不靠黑名单)', 'Serum ★ Glow ☆ 30ml', ['★', '☆'], 'Serum Glow 30ml'],
+  ['本来就合法的名称原样不动', 'Canned Beef 150g Rea', ['–'], 'Canned Beef 150g Rea'],
+]) {
+  test('商品锚点名称非法字符：' + label, async () => {
+    const r = await runNameFix({ prefill, badChars });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.name, expected);
+  });
+}
+
+test('商品锚点名称非法字符：页面一次只报一个也要能连着修完', async () => {
+  await page.setContent('<style>:root{--ui-text-danger:red}[role="dialog"]{position:fixed;inset:10px;background:white;border:1px solid}' +
+    'input{width:300px;height:24px}button{min-width:40px;min-height:25px}</style>' +
+    '<div role="dialog" class="TUXModal common-modal"><div class="common-modal-body"><input type="text">' +
+    '<div class="err" style="color:var(--ui-text-danger);height:16px"></div>' +
+    '<div class="TUXFormField-wordCount">12/30</div></div>' +
+    '<div class="common-modal-footer"><button class="TUXButton--primary">任意语言</button></div></div>');
+  await page.evaluate(() => {
+    const input = document.querySelector('input'), err = document.querySelector('.err');
+    const btn = document.querySelector('.TUXButton--primary'), bad = ['–', '丨'];
+    const validate = () => {
+      const hit = [...input.value].find((c) => bad.includes(c));
+      err.textContent = hit ? 'Remove invalid characters: ' + hit : '';
+      btn.disabled = Boolean(hit);
+    };
+    input.addEventListener('input', validate);
+    input.value = 'A–B丨C'; validate();
+  });
+  await page.evaluate(installTkqInPage, { text: {}, hashtagKeywords: [] });
+  const r = await page.evaluate(() => {
+    const modal = document.querySelector('[role="dialog"]'), input = modal.querySelector('input');
+    return window.__tkq.fixInvalidAnchorName(modal, input).then((name) => ({ ok: true, name }), (e) => ({ ok: false, msg: e.message }));
+  });
+  assert.equal(r.ok, true, r.msg);
+  assert.equal(r.name, 'ABC');
+});
+
+test('商品锚点名称非法字符：按钮仍显示可用时也不能提前放行', async () => {
+  // 2026-09-03 菲律宾真实 DOM：input aria-invalid=true 且有红字，但主按钮的
+  // disabled=false / aria-disabled=false。旧实现会把按钮可用误判成名称合法。
+  const r = await runNameFix({
+    prefill: 'Canned Beef Instant 150g – Rea',
+    badChars: ['–'],
+    keepConfirmEnabledWhenInvalid: true,
+  });
+  assert.equal(r.ok, true, r.msg);
+  assert.equal(r.name, 'Canned Beef Instant 150g Rea');
+});
+
+test('商品锚点名称非法字符：页面不点名是哪个字符时报错交人，不瞎删', async () => {
+  // 猜着删字符可能把名称删成别的商品的样子，宁可停下来让人看一眼
+  const r = await runNameFix({ prefill: 'Some Product Name', staticError: 'Nama produk tidak valid' });
+  assert.equal(r.ok, false);
+  assert.match(r.msg, /Nama produk tidak valid/);
+  assert.match(r.msg, /人工/);
+});
+
+test('商品锚点名称非法字符：整条挂车流程能自己走完', async () => {
+  await fresh();
+  await mockProductWorkflow({ productName: 'Canned Beef 150g – Rea 400g', prefill: 'Canned Beef 150g – Rea', badChars: ['–'] });
+  const result = await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  assert.equal(result.anchorName, 'Canned Beef 150g Rea');
+  assert.equal(await page.evaluate(() => window.__tkq.assertReadyToPublish()), true);
+});
+
+test('商品锚点名称非法字符：真实的可点击假象下整条挂车流程也能走完', async () => {
+  await fresh();
+  await mockProductWorkflow({
+    productName: 'Canned Beef Instant 150g – Rea 400g',
+    prefill: 'Canned Beef Instant 150g – Rea',
+    badChars: ['–'],
+    keepConfirmEnabledWhenInvalid: true,
+  });
+  const result = await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  assert.equal(result.anchorName, 'Canned Beef Instant 150g Rea');
+  assert.equal(await page.evaluate(() => window.__tkq.assertReadyToPublish()), true);
+});
+
+test('商品锚点名称：身份校验用清理前的原始预填值，清理不能成为挂错商品的口子', async () => {
+  await fresh();
+  // 预填值跟表格里选中的商品对不上 —— 必须立刻停，不能"先清理再对比"把它蒙混过去
+  await mockProductWorkflow({ productName: 'Canned Beef 150g', prefill: 'Totally Other – Item', badChars: ['–'] });
+  await assert.rejects(page.evaluate(() => window.__tkq.addProductLink('10000000000001')), /商品确认名称与所选商品不一致/);
+});
+
+test('商品名称提交后才异步报非法字符：清理并再次提交后核对锚点', async () => {
+  await fresh();
+  await mockProductWorkflow({
+    productName: '⑦ [EXCLUSIVE CREATOR] Sample product',
+    prefill: '⑦ [EXCLUSIVE CREATOR] Sample',
+    badChars: ['⑦'], keepConfirmEnabledWhenInvalid: true, validateAfterSubmit: true,
+  });
+  const result = await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  assert.equal(result.anchorName, '[EXCLUSIVE CREATOR] Sample');
+  assert.equal(await page.evaluate(() => window.__tkq.assertReadyToPublish()), true);
+});
+
+test('商品全流程靠结构和精确ID；本地模拟点击最终按钮一次', async () => {
+  await fresh(); await mockProductWorkflow();
+  const result = await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  assert.equal(result.anchorName, 'Test product');
+  assert.equal(await page.evaluate(() => window.__tkq.assertReadyToPublish()), true);
+  assert.deepEqual(await page.evaluate(() => window.__tkq.clickPublishButton()), { clicked: true, prematureCheck: false });
+  assert.equal(await page.evaluate(() => window.postClicks), 1);
+});
+
+test('检查通过后变红：最终点击再次校验，不发出点击', async () => {
+  await fresh(); await mockProductWorkflow();
+  await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  await page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe(1800));
+  await setState('content', 'warn');
+  await assert.rejects(page.evaluate(() => window.__tkq.clickPublishButton()), /发布安全检查未通过/);
+  assert.equal(await page.evaluate(() => window.postClicks), 0);
+});
+
+test('发布后任何新弹窗都报不确定，不替用户确认', async () => {
+  await fresh(); await mockProductWorkflow();
+  await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  await page.evaluate(() => { document.querySelector('[data-e2e=post_video_button]').onclick = () => document.body.insertAdjacentHTML('beforeend', '<div role="dialog"><button>未知语言确认</button></div>'); });
+  assert.equal((await page.evaluate(() => window.__tkq.clickPublishButton())).prematureCheck, true);
+});
+
+test('重装助手清除上一轮商品确认，不能用旧锚点发布', async () => {
+  await fresh(); await mockProductWorkflow();
+  await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  await page.evaluate(installTkqInPage, { hashtagKeywords: ['fyp', 'tiktok', 'tiktokshop'] });
+  await assert.rejects(page.evaluate(() => window.__tkq.assertReadyToPublish()), /没有本次精确商品ID/);
+});
+
+for (const variation of ['ai', 'schedule', 'upload', 'caption', 'product', 'button']) {
+  test('最终闸门重新核对 ' + variation + '，不发出点击', async () => {
+    await fresh(); await mockProductWorkflow();
+    await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+    await page.evaluate((variation) => {
+      if (variation === 'ai') document.querySelector('[data-e2e=aigc_container] input').checked = false;
+      if (variation === 'schedule') document.querySelector('input[value=post_now]').checked = false;
+      if (variation === 'upload') document.querySelector('.info-progress').classList.remove('success');
+      if (variation === 'caption') document.querySelector('[contenteditable]').textContent += ' left-over-filename';
+      if (variation === 'product') document.querySelector('.content-anchor-label').textContent = 'another product';
+      if (variation === 'button') document.querySelector('[data-e2e=post_video_button]').disabled = true;
+    }, variation);
+    await assert.rejects(page.evaluate(() => window.__tkq.clickPublishButton()));
+    assert.equal(await page.evaluate(() => window.postClicks), 0);
+  });
+}
+
+test('真实控制台JS：无需语言字段保存账号，且保留旧配置（模拟API，不写用户数据）', async () => {
+  const example = JSON.parse(readFileSync(new URL('../config/settings.example.json', import.meta.url), 'utf8'));
+  let saved;
+  const existing = { name: 'fixture', browser: 'bitbrowser', browserId: 'test-profile', videoFolder: 'C:/fixture', enabled: false,
+    hashtagKeywords: ['fyp'], textPreset: 'custom', textOverrides: { appCrashMarkers: ['X', 'Y'] }, dailyPublishLimit: 7 };
+  await page.route('http://console.test/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/' || path === '/app.js' || path === '/style.css') {
+      const file = path === '/' ? 'index.html' : path.slice(1);
+      const body = readFileSync(new URL('../public/' + file, import.meta.url), 'utf8');
+      return route.fulfill({ body, contentType: path === '/' ? 'text/html' : path.endsWith('.js') ? 'text/javascript' : 'text/css' });
+    }
+    if (path === '/api/logs/stream') return route.fulfill({ body: '', contentType: 'text/event-stream' });
+    let value = {};
+    if (path === '/api/settings') value = example;
+    if (path === '/api/accounts') {
+      if (route.request().method() === 'PUT') { saved = route.request().postDataJSON(); value = { ok: true, warnings: [] }; }
+      else value = [existing];
+    }
+    if (path === '/api/status') value = { running: false, accounts: [] };
+    if (path === '/api/bitbrowser/profiles') value = [];
+    return route.fulfill({ json: value });
+  });
+  await page.goto('http://console.test/');
+  await page.waitForFunction(() => accountsConfig.length === 1);
+  await page.evaluate(() => openAccountModal(0));
+  await page.locator('#a-name').fill('fixture-edited');
+  await page.locator('#a-phone-group').fill('印尼1号手机');
+  await page.locator('#account-form button[type=submit]').click();
+  await page.waitForFunction(() => document.querySelector('#account-modal').classList.contains('hidden'));
+  assert.equal(saved[0].name, 'fixture-edited');
+  assert.equal(saved[0].phoneGroup, '印尼1号手机');
+  assert.match(await page.locator('.phone-group summary').innerText(), /印尼1号手机/);
+  await page.evaluate(() => openAccountModal(0));
+  assert.equal(await page.locator('#a-phone-group').inputValue(), '印尼1号手机');
+  await page.evaluate(() => {
+    closeAccountModal();
+    accountsConfig.push({ ...accountsConfig[0], name: 'second', phoneGroup: '' });
+    renderAccounts();
+  });
+  assert.equal(await page.locator('.phone-group').count(), 2);
+  assert.match(await page.locator('.phone-group summary').last().innerText(), /未分组/);
+  assert.equal(saved[0].enabled, false);
+  assert.equal(saved[0].dailyPublishLimit, 7);
+  assert.deepEqual(saved[0].textOverrides, existing.textOverrides);
+  assert.equal(saved[0].textPreset, 'custom');
+});
+
+test('真实控制台JS：发布时间节点能改能存，配错了当场拦住（模拟API，不写用户数据）', async () => {
+  const example = JSON.parse(readFileSync(new URL('../config/settings.example.json', import.meta.url), 'utf8'));
+  let saved = null;
+  await page.route('http://slots.test/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/' || path === '/app.js' || path === '/style.css') {
+      const file = path === '/' ? 'index.html' : path.slice(1);
+      const body = readFileSync(new URL('../public/' + file, import.meta.url), 'utf8');
+      return route.fulfill({ body, contentType: path === '/' ? 'text/html' : path.endsWith('.js') ? 'text/javascript' : 'text/css' });
+    }
+    if (path === '/api/logs/stream') return route.fulfill({ body: '', contentType: 'text/event-stream' });
+    let value = {};
+    if (path === '/api/settings') {
+      if (route.request().method() === 'PUT') { saved = route.request().postDataJSON(); value = { ok: true }; }
+      else value = example;
+    }
+    if (path === '/api/accounts') value = [];
+    if (path === '/api/status') value = { running: false, accounts: [] };
+    if (path === '/api/bitbrowser/profiles') value = [];
+    return route.fulfill({ json: value });
+  });
+  await page.goto('http://slots.test/');
+  // 全局设置是折叠的 <details>，不展开的话里面的元素既点不了，innerText 也读成空
+  await page.evaluate(() => { document.getElementById('settings-details').open = true; });
+  await page.waitForFunction(() => document.querySelectorAll('#slots-editor .slot-row').length > 0);
+
+  // 默认把四个波峰节点摆出来，用户一眼能看到几点发
+  assert.deepEqual(
+    await page.locator('#slots-editor .slot-start').evaluateAll((els) => els.map((e) => e.value)),
+    ['11:30', '16:30', '19:30', '21:30']
+  );
+  // 界面要直说"按这些节点每天最多几条"，否则额度设成4、节点只有3个时会白等
+  assert.match(await page.locator('#slots-summary').innerText(), /每天最多发 4 条/);
+
+  // 配错了要当场拦住，而不是存进去让每一轮tick都报错
+  await page.locator('#slots-editor .slot-row').first().locator('.slot-end').fill('10:00');
+  assert.match(await page.locator('#slots-summary').innerText(), /结束时间要晚于开始时间/);
+  await page.locator('#slots-editor .slot-row').first().locator('.slot-end').fill('17:00');
+  assert.match(await page.locator('#slots-summary').innerText(), /时间重叠/);
+  await page.locator('#settings-form button[type=submit]').click();
+  assert.equal(saved, null, '配错的时候不能发出保存请求');
+
+  // 改回来，再删掉一个节点，存
+  await page.locator('#slots-editor .slot-row').first().locator('.slot-end').fill('12:30');
+  await page.locator('#slots-editor .slot-row').last().locator('.slot-del').click();
+  page.once('dialog', (d) => d.accept());
+  await page.locator('#settings-form button[type=submit]').click();
+  await page.waitForFunction(() => true);
+  await page.waitForTimeout(200);
+  assert.ok(saved, '改对了就该存下去');
+  assert.equal(saved.postingSlots.enabled, true);
+  assert.deepEqual(saved.postingSlots.slots.map((x) => x.start), ['11:30', '16:30', '19:30']);
+  assert.equal(saved.postingSlots.slots[0].label, '午休高峰', '备注要跟着一起存');
+
+  // 切回旧的"时段内随时发"：节点编辑器收起来，时段输入框露出来
+  await page.locator('#s-slots-enabled').uncheck();
+  assert.equal(await page.locator('#slots-editor-field').isVisible(), false);
+  assert.equal(await page.locator('#window-start-field').isVisible(), true);
+  saved = null;
+  page.once('dialog', (d) => d.accept());
+  await page.locator('#settings-form button[type=submit]').click();
+  await page.waitForTimeout(200);
+  assert.equal(saved.postingSlots.enabled, false);
+  assert.equal(saved.postingWindow.enabled, true, '关掉节点就该由时段接管，不能两个都关掉变成随时发');
+});
+
+test('控制台移除了15项翻译表单且保留旧配置', () => {
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.equal(html.includes('a-text-fields'), false);
+  assert.equal(app.includes('currentPresetKey'), false);
+  assert.equal(app.includes('...(previous || {})'), true);
+});

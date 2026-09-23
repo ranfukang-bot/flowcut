@@ -1,0 +1,84 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/gemini-web-workbench/node_modules/
+/gemini-web-workbench/node_modules.bad-*/
+/gemini-web-workbench/release/
+/gemini-web-workbench/release-self-contained/
+/gemini-web-workbench/release-*/
+/gemini-web-workbench/dist-protected/
+/gemini-web-workbench/.test-desktop-runtime*/
+/.test-auth-runtime/
+/.tmp-unstable-dev/
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/.vinext/
+/out/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+.dev.vars*
+/.local-runtime/
+/.flowcut-cloudflare/
+/backups/
+
+# vercel
+.vercel
+
+# typescript
+next-env.d.ts
+*.tsbuildinfo
+/dist/
+/.wrangler/
+/outputs/
+/work/
+/higgsfield-local-api/data/
+.sites-dev.out.log
+.sites-dev.err.log
+
+gemini-web-workbench/runtime-deps/
+
+# Source-only GitHub backup: never publish generated builds or personal data.
+**/node_modules/
+/gemini-web-workbench/dist-staging/
+/gemini-web-workbench/verification/
+/.tmp-*/
+**/.scheduler-test-*/
+**/bridge-config.json
+**/workbench-state.json
+/vendor/publisher/config/accounts.json
+/vendor/publisher/config/settings.json
+/vendor/publisher/state/
+/vendor/publisher/logs/
+*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.exe
+*.asar
+*.jsc
+*.zip

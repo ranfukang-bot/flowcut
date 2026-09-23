@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self'; script-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gemini 网页执行器</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <span class="eyebrow">FLOWCUT LOCAL EXECUTOR</span>
+          <h1>Gemini 网页 Pro 执行器</h1>
+          <p>使用独立账号登录态，把 FlowCut 的 Gem 设定和商品图自动送入 Gemini 网页版。</p>
+        </div>
+        <div id="bridge-status" class="status offline">正在连接 FlowCut</div>
+      </header>
+
+      <section class="summary">
+        <article><span>登录账号</span><strong id="account-count">0</strong></article>
+        <article><span>当前任务</span><strong id="active-count">0</strong></article>
+        <article><span>队列状态</span><strong id="queue-label">运行中</strong></article>
+        <button id="queue-toggle" class="secondary">暂停接单</button>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Gemini 账号</h2>
+            <p>每个账号使用完全独立的浏览器数据；一个账号同时处理一条任务，多账号可并发。</p>
+          </div>
+          <button id="add-account" class="primary">＋ 添加账号</button>
+        </div>
+        <div id="account-list" class="account-list"></div>
+        <div id="empty-accounts" class="empty">
+          <b>还没有 Gemini 账号</b>
+          <span>点击“添加账号”，在弹出的窗口登录你的 Google Pro 账号；登录后点“保存登录并隐藏”。</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>正在执行</h2>
+            <p>任务会显示到具体账号和当前步骤，完成后自动回传提示词并进入 Seedance。</p>
+          </div>
+        </div>
+        <div id="job-list" class="job-list"></div>
+        <div id="empty-jobs" class="empty compact">当前没有正在执行的 Gemini 任务。</div>
+      </section>
+
+      <section class="panel split">
+        <div>
+          <div class="panel-head">
+            <div>
+              <h2>本机连接</h2>
+              <p>默认自动读取 Seedance 工作台已有的本机 Key，无需重复配置。</p>
+            </div>
+          </div>
+          <form id="settings-form">
+            <label>
+              FlowCut 地址
+              <input id="flowcut-url" value="http://127.0.0.1:4173" />
+            </label>
+            <label>
+              Bridge Key
+              <input id="bridge-key" type="password" placeholder="已自动读取则不用填写" />
+            </label>
+            <button class="secondary" type="submit">保存连接</button>
+          </form>
+        </div>
+        <div>
+          <div class="panel-head">
+            <div>
+              <h2>运行日志</h2>
+              <p id="last-error"></p>
+            </div>
+          </div>
+          <div id="logs" class="logs"></div>
+        </div>
+      </section>
+    </main>
+    <dialog id="account-name-dialog">
+      <form id="account-name-form">
+        <div>
+          <span class="eyebrow">NEW GEMINI ACCOUNT</span>
+          <h2>添加 Gemini 账号</h2>
+          <p>先给账号起一个容易识别的名称，随后会打开独立登录窗口。</p>
+        </div>
+        <label>
+          账号名称
+          <input id="account-name" maxlength="80" required />
+        </label>
+        <div class="dialog-actions">
+          <button id="cancel-account-name" class="secondary" type="button">取消</button>
+          <button class="primary" type="submit">添加并打开登录</button>
+        </div>
+      </form>
+    </dialog>
+    <template id="account-template">
+      <article class="account-card">
+        <div class="account-icon">G</div>
+        <div class="account-main">
+          <div><h3></h3><span class="default-tag">默认</span></div>
+          <p class="account-state"></p>
+        </div>
+        <div class="account-actions">
+          <button data-action="open">打开登录窗口</button>
+          <button data-action="save-login">保存登录并隐藏</button>
+          <button data-action="check">检查登录</button>
+          <button data-action="default">设为默认</button>
+          <button data-action="remove" class="danger">移除</button>
+        </div>
+      </article>
+    </template>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

@@ -12,6 +12,30 @@ const {
 const UNCONFIRMED_RESTART_MESSAGE =
   '软件重新启动时这条任务正在提交，无法确认 TikTok 是否已经收到。为避免重复生成，没有自动重新提交。请到 TikTok Symphony 生成历史核对：已生成可在历史中取回视频；确认没有生成时，请为该商品重新创建任务。';
 
+// A record counts as saved only if it reads back as its own complete line:
+// fsync alone does not prove that. The leading newline separates it from a
+// line cut off by an earlier crash, which would otherwise swallow it.
+function appendJsonLine(file, entry) {
+  const line = JSON.stringify(entry);
+  const bytes = Buffer.from(`\n${line}\n`, 'utf8');
+  withFsRetry(() => {
+    const descriptor = fs.openSync(file, 'a');
+    try {
+      let offset = 0;
+      while (offset < bytes.length) {
+        const written = fs.writeSync(descriptor, bytes, offset, bytes.length - offset);
+        if (!written) throw new Error('提交记录没有写入任何内容');
+        offset += written;
+      }
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+  });
+  const text = withFsRetry(() => fs.readFileSync(file, 'utf8'));
+  if (!text.split(/\r?\n/).includes(line)) throw new Error('提交记录写入后无法完整读回');
+}
+
 function validateState(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return '不是有效的任务库对象';
   if (value.tasks !== undefined && !Array.isArray(value.tasks)) return 'tasks 格式错误';
@@ -281,15 +305,7 @@ class WorkbenchStore {
     for (const { entry, reason } of unmatched) {
       this.journalRecovery.unmatched.push({ taskId: String(entry.taskId || '未返回'), reason, entry });
       try {
-        withFsRetry(() => {
-          const descriptor = fs.openSync(this.unmatchedJournalPath, 'a');
-          try {
-            fs.writeSync(descriptor, `${JSON.stringify({ ...entry, unmatchedReason: reason, movedAt: Date.now() })}\n`);
-            fs.fsyncSync(descriptor);
-          } finally {
-            fs.closeSync(descriptor);
-          }
-        });
+        appendJsonLine(this.unmatchedJournalPath, { ...entry, unmatchedReason: reason, movedAt: Date.now() });
         this.journalEntries = this.journalEntries.filter((item) => item !== entry);
       } catch {
         // Stays in the main journal and is reported again next start.
@@ -330,15 +346,7 @@ class WorkbenchStore {
   recordSubmission(entry) {
     if (this.blocked) return false;
     try {
-      withFsRetry(() => {
-        const descriptor = fs.openSync(this.submissionJournalPath, 'a');
-        try {
-          fs.writeSync(descriptor, `${JSON.stringify(entry)}\n`);
-          fs.fsyncSync(descriptor);
-        } finally {
-          fs.closeSync(descriptor);
-        }
-      });
+      appendJsonLine(this.submissionJournalPath, entry);
       this.journalEntries.push(entry);
       return true;
     } catch {

@@ -183,3 +183,47 @@ test("a definite refusal recorded in the journal is not mistaken for an unconfir
   assert.notEqual(reopened.getTask("local-1").status, "submit_unconfirmed");
   assert.equal(fs.existsSync(path.join(directory, "submitted-tasks.jsonl")), false, "settled records are pruned");
 });
+
+test("a torn last line left by a crash does not swallow the next attempt record", async (t) => {
+  const directory = tempDirectory(t);
+  const faults = diskFaults(t);
+  const store = new WorkbenchStore(directory);
+  store.updateSettings({ running: true });
+  addQueued(store);
+  fs.writeFileSync(path.join(directory, "submitted-tasks.jsonl"), '{"type":"accepted","localTaskId":"x","taskI');
+  const client = tiktok({
+    submit: () => {
+      throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+    },
+  });
+  faults.stateLocked = true; // only the journal can record the attempt
+  await engineFor(store, client).tick();
+  assert.equal(client.submits, 1);
+  faults.stateLocked = false;
+
+  const reopened = new WorkbenchStore(directory);
+  assert.equal(reopened.getTask("local-1").status, "submit_unconfirmed");
+  const engine = engineFor(reopened, client);
+  await engine.tick();
+  await engine.tick();
+  assert.equal(client.submits, 1, "not sent a second time");
+});
+
+test("a record that does not read back is not trusted, so nothing is sent", async (t) => {
+  const directory = tempDirectory(t);
+  const faults = diskFaults(t);
+  const store = new WorkbenchStore(directory);
+  store.updateSettings({ running: true });
+  addQueued(store);
+  const { writeSync } = fs;
+  // A write that reports success but never reaches the file.
+  fs.writeSync = (descriptor, buffer, offset = 0, length = buffer.length - offset) => length;
+  t.after(() => {
+    fs.writeSync = writeSync;
+  });
+  const client = tiktok();
+  faults.stateLocked = true;
+  await engineFor(store, client).tick();
+  assert.equal(client.submits, 0);
+  assert.equal(store.getTask("local-1").status, "queued");
+});

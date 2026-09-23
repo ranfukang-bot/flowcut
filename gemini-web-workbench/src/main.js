@@ -284,6 +284,18 @@ function reportPersistenceProblem(problem) {
     broadcast();
     return;
   }
+  if (problem.unmatchedSubmissions) {
+    const lines = problem.unmatchedSubmissions.map((item) => `Task ID ${item.taskId}：${item.reason}`);
+    persistenceNotices.push({
+      type: "warning",
+      message: "有已提交的生成无法对应到本机任务",
+      detail: `${lines.join("\n")}\n\n这些生成可能已在 TikTok 上完成，但 FlowCut 无法自动追踪和下载。记录已保存在：${problem.file}\n请在 TikTok Symphony 生成历史中按 Task ID 取回视频。`,
+    });
+    if (store?.state) store.log(`${lines.length} 条已提交的生成无法对应到本机任务，记录保存在 ${problem.file}`, "error");
+    showNextPersistenceNotice();
+    broadcast();
+    return;
+  }
   if (problem.recovered) {
     persistenceNotices.push({
       type: "info",

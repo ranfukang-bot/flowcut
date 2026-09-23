@@ -24,6 +24,22 @@ function isUncertainSubmitError(error) {
   return isTransientRequestError(error) || isTransientNetworkError(error);
 }
 
+// Enough of a task to rebuild it if the task list lost it after a submission.
+const SNAPSHOT_FIELDS = [
+  'id', 'order', 'prompt', 'imageItems', 'imageName', 'duration', 'model',
+  'accountId', 'accountName', 'source', 'flowcutTaskId', 'flowcutTaskKind',
+  'tiktokAccountName', 'archiveDirectory', 'productExternalId',
+  'managedLocalFiles', 'excelRow', 'folderIndex', 'createdAt', 'taskIds', 'attempts',
+];
+
+function submissionSnapshot(task) {
+  const snapshot = {};
+  for (const field of SNAPSHOT_FIELDS) {
+    if (task[field] !== undefined) snapshot[field] = task[field];
+  }
+  return JSON.parse(JSON.stringify(snapshot));
+}
+
 const UNCONFIRMED_SUBMIT_HINT =
   '为避免重复生成，没有自动重新提交。请到 TikTok Symphony 生成历史核对：已生成可在历史中取回视频；确认没有生成时，请为该商品重新创建任务。';
 
@@ -935,11 +951,13 @@ class QueueEngine {
     let journaled = false;
     try {
       journaled = this.store.recordSubmission?.({
+        type: 'accepted',
         localTaskId: task.id,
         taskId: remoteTaskId,
         accountId: account.id,
         flowcutTaskId: task.flowcutTaskId || '',
         submittedAt: task.lastSubmittedAt,
+        snapshot: submissionSnapshot(task),
       }) === true;
       this.accounts.markAuthenticated(account.id);
       this.recordTask(

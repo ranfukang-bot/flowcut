@@ -54,8 +54,11 @@ class WorkbenchStore {
     // Append-only record of accepted generations. It survives even when the
     // task list could not be saved after a submission.
     this.submissionJournalPath = path.join(userDataPath, 'submitted-tasks.jsonl');
+    // Records that match no task are moved here and kept; never deleted.
+    this.unmatchedJournalPath = path.join(userDataPath, 'submitted-tasks-unmatched.jsonl');
+    this.journalEntries = [];
+    this.journalRecovery = { restored: [], unmatched: [] };
     this.persistError = null;
-    this.journalDirty = false;
     this.onPersistError = onPersistError;
     this.onPersistRecovered = onPersistRecovered;
     this.blocked = null;
@@ -131,8 +134,8 @@ class WorkbenchStore {
         task.activityAt = Date.now();
       }
     }
-    const journal = this.readSubmissionJournal();
-    this.applySubmissionJournal(journal);
+    this.journalEntries = this.readSubmissionJournal();
+    this.applySubmissionJournal();
     for (const task of this.data.tasks) {
       if (task.status === 'uploading') {
         task.status = 'upload_wait';
@@ -147,8 +150,7 @@ class WorkbenchStore {
         task.activityAt = Date.now();
       }
     }
-    // Cleared by the next successful save, which now contains these Task IDs.
-    this.journalDirty = journal.length > 0;
+    // Saving prunes the journal records this task list now contains.
     this.save();
   }
 
@@ -174,25 +176,88 @@ class WorkbenchStore {
 
   // Adds submissions the saved task list does not know about yet, so a task
   // that was accepted before a failed save is tracked instead of resubmitted.
-  applySubmissionJournal(entries) {
-    for (const entry of entries) {
-      const task = this.data.tasks.find((item) => item.id === entry.localTaskId);
+  // A task missing from the list is rebuilt from the record's snapshot.
+  applySubmissionJournal() {
+    const unmatched = [];
+    for (const entry of this.journalEntries) {
+      if (this.isFlowcutTaskCleared(entry.flowcutTaskId)) continue;
       const taskId = String(entry.taskId);
-      if (!task || (task.taskIds || []).map(String).includes(taskId)) continue;
-      if (entry.accountId && !this.getAccount(entry.accountId)) continue;
+      let task = this.getTask(entry.localTaskId);
+      if (task && (task.taskIds || []).map(String).includes(taskId)) continue;
+      const accountId = entry.accountId || task?.accountId || entry.snapshot?.accountId || '';
+      if (accountId && !this.getAccount(accountId)) {
+        unmatched.push({ entry, reason: '提交所用的 Seedance 账号已不在账号列表中' });
+        continue;
+      }
+      if (!task) {
+        if (!entry.snapshot?.id) {
+          unmatched.push({ entry, reason: '任务库中没有这条任务，也没有可用于恢复的任务快照' });
+          continue;
+        }
+        task = { ...entry.snapshot, logs: [], restoredFromJournal: true };
+        this.data.tasks.push(task);
+        this.journalRecovery.restored.push({ localTaskId: task.id, taskId, flowcutTaskId: task.flowcutTaskId || '' });
+      }
       task.taskId = taskId;
-      task.taskIds = [...(task.taskIds || []), taskId];
-      task.accountId = entry.accountId || task.accountId;
+      task.taskIds = [...(task.taskIds || []).filter((id) => String(id) !== taskId), taskId];
+      task.accountId = accountId || task.accountId;
       task.status = 'generating';
       task.errorCode = '';
       task.errorMessage = '';
-      task.attempts = Number(task.attempts || 0) + 1;
+      // A snapshot is taken after the attempt was already counted.
+      if (!task.restoredFromJournal) task.attempts = Number(task.attempts || 0) + 1;
       task.lastSubmittedAt = Number(entry.submittedAt || Date.now());
       task.activity = `已按提交记录恢复 Task ID ${taskId}，继续追踪生成结果`;
       task.activityLevel = 'info';
       task.activityAt = Date.now();
       task.logs = [{ time: Date.now(), level: 'info', message: task.activity }, ...(task.logs || [])].slice(0, 80);
+      delete task.restoredFromJournal;
     }
+    this.moveUnmatchedSubmissions(unmatched);
+  }
+
+  // Keeps records that cannot be applied in a separate file (never deleted)
+  // and reports them, instead of dropping them when the journal is pruned.
+  moveUnmatchedSubmissions(unmatched) {
+    const before = this.journalEntries.length;
+    for (const { entry, reason } of unmatched) {
+      this.journalRecovery.unmatched.push({ taskId: String(entry.taskId), reason, entry });
+      try {
+        withFsRetry(() => {
+          const descriptor = fs.openSync(this.unmatchedJournalPath, 'a');
+          try {
+            fs.writeSync(descriptor, `${JSON.stringify({ ...entry, unmatchedReason: reason, movedAt: Date.now() })}\n`);
+            fs.fsyncSync(descriptor);
+          } finally {
+            fs.closeSync(descriptor);
+          }
+        });
+        this.journalEntries = this.journalEntries.filter((item) => item !== entry);
+      } catch {
+        // Stays in the main journal and is reported again next start.
+      }
+    }
+    if (this.journalEntries.length !== before) {
+      try {
+        this.writeSubmissionJournal(this.journalEntries);
+      } catch {
+        // The kept copy exists; a duplicate in the main journal is only re-reported.
+      }
+    }
+    if (unmatched.length) {
+      this.data.logs.unshift({
+        time: Date.now(),
+        level: 'error',
+        message: `${unmatched.length} 条已提交的生成无法对应到本机任务，记录已保存在 ${this.unmatchedJournalPath}：${unmatched.map(({ entry }) => entry.taskId).join('、')}`,
+      });
+    }
+  }
+
+  // A record may only leave the journal once the saved task list holds it.
+  isJournalEntryDurable(entry) {
+    if (this.isFlowcutTaskCleared(entry.flowcutTaskId)) return true;
+    const task = this.getTask(entry.localTaskId);
+    return Boolean(task && (task.taskIds || []).map(String).includes(String(entry.taskId)));
   }
 
   recordSubmission(entry) {
@@ -207,20 +272,36 @@ class WorkbenchStore {
           fs.closeSync(descriptor);
         }
       });
-      this.journalDirty = true;
+      this.journalEntries.push(entry);
       return true;
     } catch {
       return false;
     }
   }
 
-  clearSubmissionJournal() {
+  // Called after a successful save: drops only the records it now contains.
+  pruneSubmissionJournal() {
+    if (!this.journalEntries.length) return;
+    const remaining = this.journalEntries.filter((entry) => !this.isJournalEntryDurable(entry));
+    if (remaining.length === this.journalEntries.length) return;
     try {
-      withFsRetry(() => fs.rmSync(this.submissionJournalPath, { force: true }));
-      this.journalDirty = false;
+      this.writeSubmissionJournal(remaining);
+      this.journalEntries = remaining;
     } catch {
-      // Harmless: entries already present in the task list are skipped next time.
+      // Harmless: kept records are checked again after the next save.
     }
+  }
+
+  writeSubmissionJournal(entries) {
+    if (!entries.length) {
+      withFsRetry(() => fs.rmSync(this.submissionJournalPath, { force: true }));
+      return;
+    }
+    writeTextDurable(
+      this.submissionJournalPath,
+      entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n',
+      { backup: 'none' },
+    );
   }
 
   // Returns false instead of throwing: a failed write must not turn an accepted
@@ -242,8 +323,7 @@ class WorkbenchStore {
       if (firstFailure) this.onPersistError?.(this.persistError);
       return false;
     }
-    // Every submission recorded so far is now inside the saved task list.
-    if (this.journalDirty) this.clearSubmissionJournal();
+    this.pruneSubmissionJournal();
     if (this.persistError) {
       const previous = this.persistError;
       this.persistError = null;

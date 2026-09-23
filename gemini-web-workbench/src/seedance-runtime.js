@@ -377,6 +377,17 @@ class SeedanceRuntime {
       throw Object.assign(new Error(this.store.blocked.message), { code: "STATE_BLOCKED" });
     }
     const isFreshEmbeddedState = this.store.loadResult?.status === "fresh";
+    const { restored, unmatched } = this.store.journalRecovery;
+    if (restored.length) {
+      this.store.log(`已按提交记录恢复 ${restored.length} 条任务库中缺失的生成任务：${restored.map((item) => item.taskId).join("、")}`, "warn");
+    }
+    if (unmatched.length) {
+      this.onPersistenceProblem({
+        source: "Seedance 任务库",
+        unmatchedSubmissions: unmatched.map(({ taskId, reason }) => ({ taskId, reason })),
+        file: this.store.unmatchedJournalPath,
+      });
+    }
     if (this.store.loadResult?.status === "recovered") {
       this.onPersistenceProblem({
         source: "Seedance 任务库",

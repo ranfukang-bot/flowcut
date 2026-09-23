@@ -1,3 +1,4 @@
+const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { AuthRequiredError, isTransientRequestError } = require('./tiktok-client');
@@ -22,6 +23,15 @@ function isUncertainSubmitError(error) {
 
 const UNCONFIRMED_SUBMIT_HINT =
   '为避免重复生成，没有自动重新提交。请到 TikTok Symphony 生成历史核对：已生成可在历史中取回视频；确认没有生成时，请为该商品重新创建任务。';
+
+// Tasks that failed before this version recorded an unanswered submit as
+// "提交失败：<network error>"; those are just as unconfirmed.
+function isUncertainLegacyFailure(task) {
+  const message = String(task?.errorMessage || '');
+  if (!message.startsWith('提交失败：')) return false;
+  const reason = message.slice('提交失败：'.length);
+  return /生成接口未返回 Task ID/.test(reason) || isUncertainSubmitError(new Error(reason));
+}
 
 function backoffDelayMs(failures, baseSeconds = 30, maxSeconds = 300) {
   const exponent = Math.max(0, Math.min(4, Number(failures || 1) - 1));
@@ -319,6 +329,91 @@ class QueueEngine {
     this.log('任务已重新加入队列');
     this.pumpUploads();
     this.tick();
+  }
+
+  // A person asked FlowCut to retry a failed task. A new generation is only
+  // started when no earlier one can still be running or already finished:
+  // an existing Task ID is checked first, an unanswered submit is never
+  // resent, and only the task's own prompt, settings and image files are used.
+  async retryFailedTask(id) {
+    const task = this.store.getTask(id);
+    if (!task || task.status !== 'failed') return { action: 'none' };
+    const hold = (action, message) => {
+      task.errorMessage = message;
+      this.recordTask(task, message, 'error');
+      return { action, message };
+    };
+    if (task.taskId) {
+      let remote;
+      try {
+        const history = await this.accounts
+          .client(task.accountId || 'default')
+          .fetchHistory([task.taskId]);
+        remote = (history?.data?.draft_infos || []).find(
+          (item) => String(item.taskId) === String(task.taskId),
+        );
+      } catch (error) {
+        return hold(
+          'check-failed',
+          `重试前需要先核对原任务 Task ID ${task.taskId}，但暂时无法查询（${error.message}）。为避免重复生成，没有重新提交，请稍后再重试。`,
+        );
+      }
+      if (!remote) {
+        return hold(
+          'not-found',
+          `TikTok 生成历史中找不到原任务 Task ID ${task.taskId}，无法确认它是否已经生成。为避免重复生成，没有重新提交；请到 TikTok Symphony 核对，确认没有生成时请为该商品重新创建任务。`,
+        );
+      }
+      if (this.isRemoteSuccess(remote)) {
+        task.status = 'success';
+        task.completedAt = Date.now();
+        task.errorCode = '';
+        task.errorMessage = '';
+        this.applyVideoResult(task, remote);
+        this.recordTask(task, `原任务 Task ID ${task.taskId} 已经生成成功，无需重新生成，将自动下载`, 'success');
+        return { action: 'already-succeeded' };
+      }
+      if (!this.isRemoteFailure(remote)) {
+        task.status = 'generating';
+        task.errorCode = '';
+        task.errorMessage = '';
+        this.recordTask(task, `原任务 Task ID ${task.taskId} 仍在生成，继续追踪，不重新提交`);
+        return { action: 'still-generating' };
+      }
+    } else if (isUncertainLegacyFailure(task)) {
+      this.markSubmitUnconfirmed(task, task.errorMessage.slice('提交失败：'.length));
+      return { action: 'unconfirmed', message: task.errorMessage };
+    }
+    const needsUpload = task.imageItems.some(
+      (item) => !item.uploadedUrl || item.uploadedAccountId !== task.accountId,
+    );
+    // Re-uploading may redo every image (for example on another account).
+    const missing = task.imageItems.filter(
+      (item) => !(item.localPath && fs.existsSync(item.localPath)),
+    );
+    if (needsUpload && missing.length) {
+      return hold(
+        'images-missing',
+        `原任务的图片文件已不存在（${missing.map((item) => item.localPath || item.name).join('、')}），无法按原图片重试；不会改用商品库当前图片。请为该商品重新创建任务。`,
+      );
+    }
+    task.taskId = '';
+    task.errorCode = '';
+    task.errorMessage = '';
+    task.completedAt = 0;
+    task.attempts = 0;
+    task.uploadRetries = 0;
+    task.nextRetryAt = 0;
+    task.nextUploadRetryAt = Date.now();
+    task.status = needsUpload ? 'upload_wait' : 'queued';
+    this.recordTask(
+      task,
+      needsUpload
+        ? 'FlowCut 请求重试：使用原任务的图片重新上传后，按原提示词和参数提交'
+        : 'FlowCut 请求重试：原任务已确认未生成成功，按原提示词、图片和参数重新提交',
+    );
+    this.pumpUploads();
+    return { action: 'resubmitting' };
   }
 
   clearSuccess() {
@@ -950,5 +1045,6 @@ module.exports = {
   EDITABLE_STATUSES,
   UNCONFIRMED_SUBMIT_HINT,
   isTransientNetworkError,
+  isUncertainLegacyFailure,
   isUncertainSubmitError,
 };

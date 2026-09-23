@@ -189,9 +189,29 @@ class FlowCutBridge {
           duration: Number(job.duration || 15),
           managedLocalFiles: imagePaths,
         });
+      } else {
+        await this.resumeRequeuedTask(task);
       }
       await this.acknowledge(job.id, task);
+      // FlowCut reset this task to "waiting" when it was queued again; report
+      // the real local state even if it has not changed since the last sync.
+      this.sentStatus.delete(task.id);
     }
+  }
+
+  // FlowCut queued a task again that already has a local Seedance task with
+  // the same prompt and settings (for example "恢复任务" → "提交 Seedance").
+  async resumeRequeuedTask(task) {
+    if (task.status === 'failed') {
+      const outcome = await this.engine.retryFailedTask(task.id);
+      this.store.log(`FlowCut 请求重试任务 ${task.flowcutTaskId}：${outcome.message || outcome.action}`);
+      return;
+    }
+    if (task.status === 'submit_unconfirmed') {
+      this.engine.recordTask(task, 'FlowCut 请求重试，但这条任务的提交结果尚未确认，没有重新提交', 'error');
+    }
+    // Waiting, uploading, generating or finished tasks continue as they are:
+    // queuing again never starts a second generation for them.
   }
 
   scheduleAutoDownload(task) {

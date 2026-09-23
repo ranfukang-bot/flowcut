@@ -125,12 +125,20 @@ class TikTokClient {
         statusOutcome,
       );
     }
-    if (json?.code !== 0) {
-      const message = json?.message || json?.msg || `接口错误 ${json?.code}`;
+    const code = json && typeof json === 'object' && !Array.isArray(json) ? json.code : undefined;
+    if (code === undefined || code === null || code === '') {
+      // A success status whose body lacks the API's result code proves nothing.
+      throw withOutcome(
+        Object.assign(new Error(`TikTok 接口 HTTP ${response.status} 返回了无法识别的内容（缺少结果代码）`), { status: response.status }),
+        'unknown',
+      );
+    }
+    if (Number(code) !== 0) {
+      const message = json.message || json.msg || `接口错误 ${code}`;
       if (/login|登录|unauthorized|not authorized/i.test(message)) {
         throw withOutcome(new AuthRequiredError(message), 'rejected');
       }
-      throw withOutcome(Object.assign(new Error(message), { code: json?.code }), 'rejected');
+      throw withOutcome(Object.assign(new Error(message), { code }), 'rejected');
     }
     return json;
   }

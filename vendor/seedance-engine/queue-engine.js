@@ -50,9 +50,11 @@ function isUncertainLegacyFailure(task) {
   const message = String(task?.errorMessage || '');
   if (!message.startsWith('提交失败：')) return false;
   const reason = message.slice('提交失败：'.length);
-  // Older versions reported an unreadable success response as "接口 HTTP 200".
+  // Older versions reported an unreadable success response as "接口 HTTP 200",
+  // and a body without a result code as "接口错误 undefined".
   const unreadable = /^接口 HTTP (\d{3})$/.exec(reason);
   if (unreadable) return !/^4/.test(unreadable[1]);
+  if (/^接口错误 (?:undefined|null)?$/.test(reason)) return true;
   return /生成接口未返回 Task ID/.test(reason) || isUncertainSubmitError(new Error(reason));
 }
 

@@ -81,6 +81,15 @@ test("a success status with a truncated body is unconfirmed and never resent", a
   assert.equal(result.submissions(), 1);
 });
 
+for (const [label, body] of [["an empty object", "{}"], ["null", "null"], ["an array", "[]"], ["data without a result code", '{"data":{"task_id":"7390"}}']]) {
+  test(`a success status with ${label} as body is unconfirmed and never resent`, async (t) => {
+    const result = await submitThenRetry(t, () => json(body));
+    assert.equal(result.first.status, "submit_unconfirmed");
+    assert.match(result.first.error, /缺少结果代码/);
+    assert.equal(result.submissions(), 1);
+  });
+}
+
 test("an empty success body is unconfirmed", async (t) => {
   const result = await submitThenRetry(t, () => json(""));
   assert.equal(result.first.status, "submit_unconfirmed");
@@ -121,13 +130,15 @@ test("a plain HTTP 400 refusal is a failure", async (t) => {
   assert.equal(result.first.status, "failed");
 });
 
-test("tasks failed by older versions with an unreadable answer are not resent", async (t) => {
-  const context = setup(t, () => json('{"code":0,"data":{"task_id":"1"}}'));
-  const task = context.store.getTask("local-1");
-  Object.assign(task, { status: "failed", errorMessage: "提交失败：接口 HTTP 200" });
-  context.store.upsertTask(task);
-  const outcome = await context.engine.retryFailedTask("local-1");
-  await context.engine.tick();
-  assert.equal(outcome.action, "unconfirmed");
-  assert.equal(context.submissions(), 0);
-});
+for (const legacy of ["提交失败：接口 HTTP 200", "提交失败：接口错误 undefined"]) {
+  test(`tasks failed by older versions with "${legacy}" are not resent`, async (t) => {
+    const context = setup(t, () => json('{"code":0,"data":{"task_id":"1"}}'));
+    const task = context.store.getTask("local-1");
+    Object.assign(task, { status: "failed", errorMessage: legacy });
+    context.store.upsertTask(task);
+    const outcome = await context.engine.retryFailedTask("local-1");
+    await context.engine.tick();
+    assert.equal(outcome.action, "unconfirmed");
+    assert.equal(context.submissions(), 0);
+  });
+}

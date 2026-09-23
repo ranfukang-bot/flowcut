@@ -9,6 +9,10 @@ const {
   writeTextDurable,
 } = require('./durable-json');
 
+// The journal decides which tasks must not be sent again, so a locked file
+// is waited for a little longer before startup stops.
+const JOURNAL_READ_RETRY_DELAYS_MS = [100, 200, 400, 800, 1600, 3200];
+
 const UNCONFIRMED_RESTART_MESSAGE =
   '软件重新启动时这条任务正在提交，无法确认 TikTok 是否已经收到。为避免重复生成，没有自动重新提交。请到 TikTok Symphony 生成历史核对：已生成可在历史中取回视频；确认没有生成时，请为该商品重新创建任务。';
 
@@ -82,6 +86,8 @@ class WorkbenchStore {
     this.unmatchedJournalPath = path.join(userDataPath, 'submitted-tasks-unmatched.jsonl');
     this.journalEntries = [];
     this.journalRecovery = { restored: [], unmatched: [] };
+    this.pendingUnmatched = new Map();
+    this.movedUnmatched = new Set();
     this.persistError = null;
     this.onPersistError = onPersistError;
     this.onPersistRecovered = onPersistRecovered;
@@ -158,8 +164,19 @@ class WorkbenchStore {
         task.activityAt = Date.now();
       }
     }
-    this.journalEntries = this.readSubmissionJournal();
-    this.applySubmissionJournal();
+    const journal = this.readSubmissionJournal();
+    if (journal.error) {
+      // Its records decide which tasks must not be sent again; never guess.
+      this.blocked = {
+        reason: 'journal-unreadable',
+        file: this.submissionJournalPath,
+        error: journal.error,
+        message: `无法读取 Seedance 提交记录：${this.submissionJournalPath}（${journal.error.message}）。可能被杀毒或备份软件占用。为避免重复生成，FlowCut 已停止启动，没有改动任何文件。请稍后重新打开 FlowCut；如果持续出现，请把 FlowCut 数据文件夹加入杀毒软件白名单。`,
+      };
+      return;
+    }
+    this.journalEntries = journal.entries;
+    this.replaySubmissionJournal();
     for (const task of this.data.tasks) {
       if (task.status === 'uploading') {
         task.status = 'upload_wait';
@@ -181,9 +198,13 @@ class WorkbenchStore {
   readSubmissionJournal() {
     let text = '';
     try {
-      text = withFsRetry(() => fs.readFileSync(this.submissionJournalPath, 'utf8'));
-    } catch {
-      return [];
+      text = withFsRetry(
+        () => fs.readFileSync(this.submissionJournalPath, 'utf8'),
+        JOURNAL_READ_RETRY_DELAYS_MS,
+      );
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { entries: [] };
+      return { entries: [], error };
     }
     const entries = [];
     for (const line of text.split(/\r?\n/)) {
@@ -197,81 +218,129 @@ class WorkbenchStore {
         // A line cut off by a crash; complete lines before it are still valid.
       }
     }
-    return entries;
+    return { entries };
   }
 
-  // Adds submissions the saved task list does not know about yet, so a task
-  // that was accepted before a failed save is tracked instead of resubmitted.
-  // A task missing from the list is rebuilt from the record's snapshot.
-  applySubmissionJournal() {
-    const unmatched = [];
+  // Brings the saved task list up to date with submission attempts it may
+  // have missed. Records are grouped per attempt in the order they were
+  // written, and only each task's latest attempt decides its state, so an
+  // older answer can never overwrite a newer one.
+  replaySubmissionJournal() {
+    const attemptsByTask = new Map();
+    const attemptByKey = new Map();
     for (const entry of this.journalEntries) {
-      if (!entry.taskId) continue;
-      if (this.isFlowcutTaskCleared(entry.flowcutTaskId)) continue;
-      const taskId = String(entry.taskId);
-      let task = this.getTask(entry.localTaskId);
-      if (task && (task.taskIds || []).map(String).includes(taskId)) continue;
-      const accountId = entry.accountId || task?.accountId || entry.snapshot?.accountId || '';
-      if (accountId && !this.getAccount(accountId)) {
-        unmatched.push({ entry, reason: '提交所用的 Seedance 账号已不在账号列表中' });
-        if (!task && entry.snapshot?.id) {
-          task = { ...entry.snapshot, logs: [] };
-          this.data.tasks.push(task);
-        }
-        // Accepted but no longer trackable: never let this task be sent again.
-        if (task) this.holdAcceptedWithoutAccount(task, entry, taskId);
-        continue;
+      const key = entry.intentId || `accepted:${entry.taskId}`;
+      let attempt = attemptByKey.get(key);
+      if (!attempt) {
+        attempt = { intentId: entry.intentId || '', entries: [] };
+        attemptByKey.set(key, attempt);
+        if (!attemptsByTask.has(entry.localTaskId)) attemptsByTask.set(entry.localTaskId, []);
+        attemptsByTask.get(entry.localTaskId).push(attempt);
       }
+      attempt.entries.push(entry);
+    }
+    for (const [localTaskId, attempts] of attemptsByTask) {
+      for (const attempt of attempts) {
+        attempt.accepted = attempt.entries.find((entry) => entry.taskId);
+        attempt.resolved = attempt.entries.find((entry) => entry.type === 'resolved');
+        attempt.snapshot = attempt.accepted?.snapshot || attempt.entries.find((entry) => entry.snapshot)?.snapshot;
+      }
+      const latest = attempts[attempts.length - 1];
+      const flowcutTaskId = latest.entries.find((entry) => entry.flowcutTaskId)?.flowcutTaskId
+        || latest.snapshot?.flowcutTaskId || '';
+      if (this.isFlowcutTaskCleared(flowcutTaskId)) continue;
+      // Accepted work on a removed account is kept aside once its hold is saved.
+      for (const attempt of attempts) {
+        const accountId = attempt.accepted?.accountId || attempt.snapshot?.accountId || '';
+        if (attempt.accepted && accountId && !this.getAccount(accountId)) {
+          this.queueUnmatched(attempt.accepted, '提交所用的 Seedance 账号已不在账号列表中');
+        }
+      }
+      let task = this.getTask(localTaskId);
+      if (task && this.savedListIsCurrent(task, latest)) continue;
       if (!task) {
-        if (!entry.snapshot?.id) {
-          unmatched.push({ entry, reason: '任务库中没有这条任务，也没有可用于恢复的任务快照' });
+        const snapshot = [...attempts].reverse().find((attempt) => attempt.snapshot?.id)?.snapshot;
+        if (!snapshot) {
+          for (const attempt of attempts) {
+            this.queueUnmatched(attempt.accepted || attempt.entries[0], '任务库中没有这条任务，也没有可用于恢复的任务快照');
+          }
           continue;
         }
-        task = { ...entry.snapshot, logs: [], restoredFromJournal: true };
+        task = { ...snapshot, logs: [], restoredFromJournal: true };
         this.data.tasks.push(task);
-        this.journalRecovery.restored.push({ localTaskId: task.id, taskId, flowcutTaskId: task.flowcutTaskId || '' });
+        this.journalRecovery.restored.push({
+          localTaskId: task.id,
+          taskId: String(latest.accepted?.taskId || ''),
+          flowcutTaskId: task.flowcutTaskId || '',
+        });
       }
-      task.taskId = taskId;
-      task.taskIds = [...(task.taskIds || []).filter((id) => String(id) !== taskId), taskId];
-      if (entry.intentId && !(task.submitIntents || []).includes(entry.intentId)) {
-        task.submitIntents = [...(task.submitIntents || []), entry.intentId].slice(-20);
+      // Every attempt joins the task's history in the order it was made.
+      for (const attempt of attempts) {
+        if (attempt.intentId && !(task.submitIntents || []).includes(attempt.intentId)) {
+          task.submitIntents = [...(task.submitIntents || []), attempt.intentId].slice(-20);
+        }
+        const acceptedId = String(attempt.accepted?.taskId || '');
+        if (acceptedId && !(task.taskIds || []).map(String).includes(acceptedId)) {
+          task.taskIds = [...(task.taskIds || []), acceptedId];
+        }
       }
-      task.accountId = accountId || task.accountId;
-      task.status = 'generating';
-      task.errorCode = '';
-      task.errorMessage = '';
-      // A snapshot is taken after the attempt was already counted.
-      if (!task.restoredFromJournal) task.attempts = Number(task.attempts || 0) + 1;
-      task.lastSubmittedAt = Number(entry.submittedAt || Date.now());
-      task.activity = `已按提交记录恢复 Task ID ${taskId}，继续追踪生成结果`;
-      task.activityLevel = 'info';
-      task.activityAt = Date.now();
-      task.logs = [{ time: Date.now(), level: 'info', message: task.activity }, ...(task.logs || [])].slice(0, 80);
+      this.applyAttemptOutcome(task, latest);
       delete task.restoredFromJournal;
     }
-    this.applyRecordedRefusals();
-    this.applyUnsettledIntents(unmatched);
-    this.moveUnmatchedSubmissions(unmatched);
+    const unmatched = this.journalRecovery.unmatched;
+    if (unmatched.length) {
+      this.data.logs.unshift({
+        time: Date.now(),
+        level: 'error',
+        message: `${unmatched.length} 条已提交的生成无法对应到本机任务，保存后会转存到 ${this.unmatchedJournalPath}：${unmatched.map((item) => item.taskId).join('、')}`,
+      });
+    }
   }
 
-  // Restores a definite refusal whose outcome the saved task list missed
-  // (it still shows the attempt, or an older state from before it).
-  applyRecordedRefusals() {
+  // True when the saved list already shows this attempt's outcome, or an
+  // attempt made after it.
+  savedListIsCurrent(task, attempt) {
+    if (!attempt.intentId) {
+      return (task.taskIds || []).map(String).includes(String(attempt.accepted?.taskId));
+    }
+    const intents = task.submitIntents || [];
+    const position = intents.indexOf(attempt.intentId);
+    if (position < 0) return false;
+    if (position < intents.length - 1) return true;
+    if (attempt.accepted) return (task.taskIds || []).map(String).includes(String(attempt.accepted.taskId));
+    if (attempt.resolved) return task.status !== 'submitting';
+    // Only the attempt itself was saved: "submitting" becomes unconfirmed below.
+    return true;
+  }
+
+  applyAttemptOutcome(task, attempt) {
     const labels = { rejected: '平台已明确拒绝', 'rate-limited': '平台限流，稍后自动重试', auth: '等待 TikTok 登录', quota: '模型额度不足' };
-    for (const entry of this.journalEntries) {
-      if (entry.type !== 'resolved' || this.isFlowcutTaskCleared(entry.flowcutTaskId)) continue;
-      let task = this.getTask(entry.localTaskId);
-      if (!task) {
-        const intent = this.journalEntries.find((item) => item.type === 'intent' && item.intentId === entry.intentId);
-        if (!intent?.snapshot?.id) continue;
-        task = { ...intent.snapshot, logs: [] };
-        this.data.tasks.push(task);
-        this.journalRecovery.restored.push({ localTaskId: task.id, taskId: '', flowcutTaskId: task.flowcutTaskId || '' });
+    let message;
+    let level = 'info';
+    if (attempt.accepted) {
+      const entry = attempt.accepted;
+      const taskId = String(entry.taskId);
+      const accountId = entry.accountId || task.accountId || '';
+      task.taskId = taskId;
+      if (accountId && !this.getAccount(accountId)) {
+        // Accepted but no longer trackable: never let this task be sent again.
+        message = `已提交（Task ID ${taskId}），但提交所用的 Seedance 账号已不在账号列表中，无法自动追踪和下载。为避免重复生成，不会重新提交；请在 TikTok Symphony 生成历史中按 Task ID 取回视频。`;
+        task.status = 'submit_unconfirmed';
+        task.errorCode = 'SUBMIT_UNCONFIRMED';
+        task.errorMessage = message;
+        level = 'error';
+      } else {
+        message = `已按提交记录恢复 Task ID ${taskId}，继续追踪生成结果`;
+        task.accountId = accountId || task.accountId;
+        task.status = 'generating';
+        task.errorCode = '';
+        task.errorMessage = '';
+        // A snapshot is taken after the attempt was already counted.
+        if (!task.restoredFromJournal) task.attempts = Number(task.attempts || 0) + 1;
+        task.lastSubmittedAt = Number(entry.submittedAt || Date.now());
       }
-      const intents = task.submitIntents || [];
-      const known = intents.includes(entry.intentId);
-      const stillSubmitting = known && task.status === 'submitting' && intents[intents.length - 1] === entry.intentId;
-      if (known && !stillSubmitting) continue;
+    } else if (attempt.resolved) {
+      const entry = attempt.resolved;
       const result = entry.result || (entry.outcome === 'rejected'
         ? { status: 'failed', submitOutcome: 'rejected', errorMessage: '提交失败：平台已明确拒绝（重启前未能保存详细原因）', completedAt: Date.now() }
         : { status: 'queued' });
@@ -279,91 +348,44 @@ class WorkbenchStore {
         if (value === null) delete task[field];
         else task[field] = value;
       }
-      if (!known) task.submitIntents = [...intents, entry.intentId].slice(-20);
-      const message = `软件重启后已按提交记录恢复上次提交结果：${labels[entry.outcome] || entry.outcome}`;
-      task.activity = message;
-      task.activityLevel = entry.outcome === 'rejected' ? 'error' : 'info';
-      task.activityAt = Date.now();
-      task.logs = [{ time: Date.now(), level: task.activityLevel, message }, ...(task.logs || [])].slice(0, 80);
-    }
-  }
-
-  // An attempt recorded before sending, with no answer recorded and unknown
-  // to the saved task list, may have reached TikTok: hold it for checking.
-  applyUnsettledIntents(unmatched) {
-    const settled = new Set(
-      this.journalEntries
-        .filter((entry) => entry.type === 'resolved' || entry.taskId)
-        .map((entry) => entry.intentId)
-        .filter(Boolean),
-    );
-    for (const entry of this.journalEntries) {
-      if (entry.type !== 'intent' || settled.has(entry.intentId)) continue;
-      if (this.isFlowcutTaskCleared(entry.flowcutTaskId)) continue;
-      let task = this.getTask(entry.localTaskId);
-      if (task && (task.submitIntents || []).includes(entry.intentId)) continue;
-      if (!task) {
-        if (!entry.snapshot?.id) {
-          unmatched.push({ entry, reason: '提交前的记录找不到对应任务，也没有任务快照' });
-          continue;
-        }
-        task = { ...entry.snapshot, logs: [] };
-        this.data.tasks.push(task);
-        this.journalRecovery.restored.push({ localTaskId: task.id, taskId: '', flowcutTaskId: task.flowcutTaskId || '' });
-      }
-      task.submitIntents = [...(task.submitIntents || []), entry.intentId].slice(-20);
-      // The generic restart rule below turns this into "submit_unconfirmed".
+      message = `软件重启后已按提交记录恢复上次提交结果：${labels[entry.outcome] || entry.outcome}`;
+      if (entry.outcome === 'rejected') level = 'error';
+    } else {
+      // Recorded before sending, answer unknown: the restart rule in load()
+      // turns this into "submit_unconfirmed".
       task.status = 'submitting';
+      return;
     }
-  }
-
-  holdAcceptedWithoutAccount(task, entry, taskId) {
-    const message = `已提交（Task ID ${taskId}），但提交所用的 Seedance 账号已不在账号列表中，无法自动追踪和下载。为避免重复生成，不会重新提交；请在 TikTok Symphony 生成历史中按 Task ID 取回视频。`;
-    task.taskId = taskId;
-    task.taskIds = [...(task.taskIds || []).filter((id) => String(id) !== taskId), taskId];
-    if (entry.intentId && !(task.submitIntents || []).includes(entry.intentId)) {
-      task.submitIntents = [...(task.submitIntents || []), entry.intentId].slice(-20);
-    }
-    task.status = 'submit_unconfirmed';
-    task.errorCode = 'SUBMIT_UNCONFIRMED';
-    task.errorMessage = message;
     task.activity = message;
-    task.activityLevel = 'error';
+    task.activityLevel = level;
     task.activityAt = Date.now();
-    task.logs = [{ time: Date.now(), level: 'error', message }, ...(task.logs || [])].slice(0, 80);
+    task.logs = [{ time: Date.now(), level, message }, ...(task.logs || [])].slice(0, 80);
   }
 
-  // Keeps records that cannot be applied in a separate file (never deleted)
-  // and reports them, instead of dropping them when the journal is pruned.
-  moveUnmatchedSubmissions(unmatched) {
-    const before = this.journalEntries.length;
-    for (const { entry, reason } of unmatched) {
-      this.journalRecovery.unmatched.push({ taskId: String(entry.taskId || '未返回'), reason, entry });
+  // Unmatched records are copied to their own file (never deleted) after a
+  // save succeeds, so they leave the journal only once any hold is on disk.
+  queueUnmatched(entry, reason) {
+    if (!entry || this.pendingUnmatched.has(entry)) return;
+    this.pendingUnmatched.set(entry, reason);
+    this.journalRecovery.unmatched.push({ taskId: String(entry.taskId || '未返回'), reason, entry });
+  }
+
+  flushPendingUnmatched() {
+    for (const [entry, reason] of this.pendingUnmatched) {
       try {
         appendJsonLine(this.unmatchedJournalPath, { ...entry, unmatchedReason: reason, movedAt: Date.now() });
-        this.journalEntries = this.journalEntries.filter((item) => item !== entry);
+        this.pendingUnmatched.delete(entry);
+        this.movedUnmatched.add(entry);
       } catch {
-        // Stays in the main journal and is reported again next start.
+        // Stays in the main journal and is handled again next start.
       }
-    }
-    if (this.journalEntries.length !== before) {
-      try {
-        this.writeSubmissionJournal(this.journalEntries);
-      } catch {
-        // The kept copy exists; a duplicate in the main journal is only re-reported.
-      }
-    }
-    if (unmatched.length) {
-      this.data.logs.unshift({
-        time: Date.now(),
-        level: 'error',
-        message: `${unmatched.length} 条已提交的生成无法对应到本机任务，记录已保存在 ${this.unmatchedJournalPath}：${unmatched.map(({ entry }) => entry.taskId).join('、')}`,
-      });
     }
   }
 
   // A record may only leave the journal once the saved task list holds it.
   isJournalEntryDurable(entry) {
+    if (this.movedUnmatched.has(entry)) return true;
+    if (this.pendingUnmatched.has(entry)) return false;
     if (this.isFlowcutTaskCleared(entry.flowcutTaskId)) return true;
     const task = this.getTask(entry.localTaskId);
     const intents = task?.submitIntents || [];
@@ -395,6 +417,7 @@ class WorkbenchStore {
     try {
       this.writeSubmissionJournal(remaining);
       this.journalEntries = remaining;
+      this.movedUnmatched.clear();
     } catch {
       // Harmless: kept records are checked again after the next save.
     }
@@ -431,6 +454,7 @@ class WorkbenchStore {
       if (firstFailure) this.onPersistError?.(this.persistError);
       return false;
     }
+    this.flushPendingUnmatched();
     this.pruneSubmissionJournal();
     if (this.persistError) {
       const previous = this.persistError;

@@ -10,7 +10,7 @@ test("new and first-migrated personal workspaces start paused", () => {
     path.join(projectRoot, "src", "seedance-runtime.js"),
     "utf8",
   );
-  assert.match(source, /const isFreshEmbeddedState = !fs\.existsSync/);
+  assert.match(source, /const isFreshEmbeddedState = this\.store\.loadResult\?\.status === "fresh"/);
   assert.match(
     source,
     /running:\s*this\.startPaused \|\| isFreshEmbeddedState\s*\?\s*false\s*:\s*this\.store\.settings\.running !== false/,

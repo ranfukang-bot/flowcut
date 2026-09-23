@@ -1,21 +1,55 @@
-const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const {
+  QUICK_RETRY_DELAYS_MS,
+  describeBlockedState,
+  loadJsonState,
+  writeTextDurable,
+} = require("../../vendor/seedance-engine/durable-json");
+
+// Keys and account list must never be regenerated from a damaged file:
+// the local site encrypts saved credentials with credentialsMasterKey.
+function validateState(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "不是有效的配置对象";
+  if (!value.settings || typeof value.settings !== "object") return "缺少 settings";
+  if (typeof value.settings.bridgeKey !== "string" || !value.settings.bridgeKey.trim()) {
+    return "缺少 bridgeKey";
+  }
+  if (value.accounts !== undefined && !Array.isArray(value.accounts)) return "accounts 格式错误";
+  if (value.pendingResults !== undefined && !Array.isArray(value.pendingResults)) {
+    return "pendingResults 格式错误";
+  }
+  return "";
+}
 
 class Store {
-  constructor(app) {
+  constructor(app, { priorDataPaths = [] } = {}) {
     this.filePath = path.join(app.getPath("userData"), "workbench-state.json");
-    this.state = this.load();
-    this.save();
-  }
-
-  load() {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8"));
-      return this.normalize(parsed);
-    } catch {
-      return this.normalize({});
+    this.persistError = null;
+    this.onPersistError = null;
+    this.onPersistRecovered = null;
+    const loaded = loadJsonState({
+      file: this.filePath,
+      validate: validateState,
+      priorDataPaths,
+    });
+    this.loadResult = loaded;
+    if (loaded.status === "blocked") {
+      // Nothing may be written: the damaged file stays as the user left it.
+      this.blocked = { ...loaded, message: describeBlockedState(loaded, "FlowCut 主配置文件") };
+      this.state = null;
+      return;
     }
+    this.blocked = null;
+    this.state = this.normalize(loaded.value || {});
+    if (loaded.status === "recovered") {
+      this.state.logs.push({
+        time: new Date().toISOString(),
+        level: "warn",
+        message: `主配置文件${loaded.damage === "missing" ? "缺失" : "已损坏"}，已从备份 ${path.basename(loaded.source)} 恢复账号和密钥${loaded.preserved ? `；损坏文件保留为 ${loaded.preserved}` : ""}`,
+      });
+    }
+    this.save();
   }
 
   normalize(value) {
@@ -55,9 +89,32 @@ class Store {
     };
   }
 
+  // Returns false instead of throwing: a failed write must not turn a finished
+  // task into a failure. The owner is notified so the problem is visible.
   save() {
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    fs.writeFileSync(this.filePath, JSON.stringify(this.state, null, 2), "utf8");
+    if (this.blocked) return false;
+    try {
+      writeTextDurable(this.filePath, JSON.stringify(this.state, null, 2), {
+        delays: this.persistError ? QUICK_RETRY_DELAYS_MS : undefined,
+        backup: "mirror",
+      });
+    } catch (error) {
+      const firstFailure = !this.persistError;
+      this.persistError = {
+        file: this.filePath,
+        code: String(error?.code || ""),
+        message: error instanceof Error ? error.message : String(error),
+        at: new Date().toISOString(),
+      };
+      if (firstFailure) this.onPersistError?.(this.persistError);
+      return false;
+    }
+    if (this.persistError) {
+      const previous = this.persistError;
+      this.persistError = null;
+      this.onPersistRecovered?.(previous);
+    }
+    return true;
   }
 
   addAccount(name) {

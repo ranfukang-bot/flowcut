@@ -15,6 +15,7 @@
       h1 { margin: 0 0 10px; font-size: 25px; }
       p { margin: 0; color: #777d84; line-height: 1.7; }
       #error { margin-top: 15px; color: #a84438; }
+      #error.blocked { text-align: left; white-space: pre-line; }
       form { display: grid; gap: 15px; margin-top: 28px; text-align: left; }
       label { display: grid; gap: 7px; color: #565e58; font-size: 13px; font-weight: 700; }
       input { min-height: 46px; box-sizing: border-box; border: 1px solid #cfd5ce; border-radius: 10px; outline: none; padding: 0 13px; color: #171c18; background: #fcfdfa; font: inherit; }
@@ -39,6 +40,14 @@
       const errorBox = document.getElementById("error");
       const error = params.get("error");
       if (error) errorBox.textContent = error;
+      if (error && params.get("blocked") === "1") {
+        // Data protection stop: nothing is loading, so do not say it is.
+        document.title = "FlowCut 已停止启动";
+        document.querySelector("#loading h1").textContent = "需要先处理本机数据文件";
+        document.querySelector("#loading p").textContent =
+          "为保护账号、密钥和任务数据，FlowCut 没有继续启动，也没有改动这些文件。";
+        errorBox.className = "blocked";
+      }
     </script>
   </body>
 </html>

@@ -209,6 +209,7 @@ function publicState() {
       lastError: "",
       activeJobs: [],
     },
+    persistence: [...persistenceProblems.values()],
     edition: "personal",
     update: { status: "local", currentVersion: appVersion, availableVersion: "", percent: 0, message: "个人本机版" },
     seedance: seedanceRuntime?.state() || {
@@ -228,6 +229,72 @@ function broadcast() {
 
 function tickBridgeSoon() {
   if (bridge) setTimeout(() => void bridge.tick(), 50);
+}
+
+let startupBlockedMessage = "";
+const persistenceProblems = new Map();
+const persistenceNotices = [];
+let persistenceNoticeOpen = false;
+
+// Shown instead of the workbench when local data could not be loaded safely.
+// Nothing else starts, so no executor can overwrite or re-key the data.
+async function showStartupBlocked(message) {
+  startupBlockedMessage = message;
+  if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+  await mainWindow
+    .loadFile(path.join(__dirname, "boot.html"), { query: { error: message, blocked: "1" } })
+    .catch(() => {});
+}
+
+function showNextPersistenceNotice() {
+  if (persistenceNoticeOpen || !persistenceNotices.length) return;
+  if (smokeProfile) {
+    persistenceNotices.length = 0;
+    return;
+  }
+  // Wait for the main window so the notice is attached to it.
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const notice = persistenceNotices.shift();
+  persistenceNoticeOpen = true;
+  dialog.showMessageBox(mainWindow, {
+    title: "FlowCut",
+    noLink: true,
+    buttons: ["知道了"],
+    ...notice,
+  }).catch(() => {}).finally(() => {
+    persistenceNoticeOpen = false;
+    showNextPersistenceNotice();
+  });
+}
+
+// Save failures must be visible, not only logged: until the write succeeds
+// again, the newest task state exists only in memory.
+function reportPersistenceProblem(problem) {
+  const source = problem.source || "本机状态文件";
+  if (problem.recovered) {
+    persistenceNotices.push({
+      type: "info",
+      message: `${source}已从备份恢复`,
+      detail: `原文件损坏或缺失，已使用 ${problem.backup} 恢复${problem.preserved ? `；损坏文件保留为 ${problem.preserved}` : ""}。请检查最近的任务状态是否正确。`,
+    });
+  } else if (problem.failing) {
+    persistenceProblems.set(source, problem);
+    persistenceNotices.push({
+      type: "warning",
+      message: `${source}无法保存`,
+      detail: `文件：${problem.file}\n原因：${problem.message}\n\nFlowCut 会继续运行并在下次保存时自动重试，但在恢复之前，最新的任务状态只保存在内存中，退出或断电会丢失。请检查磁盘空间，或把 FlowCut 数据文件夹加入杀毒软件白名单。恢复后会在运行日志中提示。`,
+    });
+  } else {
+    persistenceProblems.delete(source);
+  }
+  const message = problem.recovered
+    ? `${source}已从备份 ${problem.backup} 恢复`
+    : problem.failing
+      ? `${source}无法保存（${problem.message}），最新状态暂时只在内存中`
+      : `${source}已恢复正常保存`;
+  if (store?.state) store.log(message, problem.failing ? "error" : "warn");
+  showNextPersistenceNotice();
+  broadcast();
 }
 
 function flowcutWindowIcon() {
@@ -264,6 +331,7 @@ function createMainWindow() {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.focus();
   });
   mainWindow.loadFile(path.join(__dirname, "boot.html"));
+  mainWindow.once("ready-to-show", () => showNextPersistenceNotice());
   mainWindow.on("closed", () => {
     mainWindow = null;
     // Gemini and Seedance login sessions use hidden BrowserWindows. Without an
@@ -1084,6 +1152,7 @@ async function activateWorkbench() {
   try {
     const siteUrl = await ensureLocalFlowcut();
     void mainWindow.loadURL(siteUrl).catch(async (error) => {
+      if (startupBlockedMessage) return;
       store.log(
         error instanceof Error ? error.message : "FlowCut 页面加载失败",
         "error",
@@ -1129,8 +1198,20 @@ async function activateWorkbench() {
       getMaxConcurrent: () => store.state.settings.maxConcurrent,
       getDesktopToken: () => desktopRuntimeToken,
       onChange: broadcast,
+      onPersistenceProblem: reportPersistenceProblem,
     });
-    await seedanceRuntime.start();
+    try {
+      await seedanceRuntime.start();
+    } catch (error) {
+      if (error?.code !== "STATE_BLOCKED") throw error;
+      // Stop every executor: Gemini results would otherwise pile up for a
+      // Seedance queue whose task list could not be read safely.
+      seedanceRuntime = null;
+      bridge = null;
+      store.log(error.message, "error");
+      await showStartupBlocked(error.message);
+      return;
+    }
     store.state.settings.personalEditionInitialized = true;
     store.save();
     workbenchStarted = true;
@@ -1144,7 +1225,30 @@ async function activateWorkbench() {
 
 app.whenReady().then(async () => {
   verifyProtectedRuntime();
-  store = new Store(app);
+  store = new Store(app, {
+    // Existing local site data means this is not a first start: new keys
+    // would make its saved credentials unreadable.
+    priorDataPaths: [path.join(app.getPath("userData"), "site-runtime", "data")],
+  });
+  if (store.blocked) {
+    await showStartupBlocked(store.blocked.message);
+    return;
+  }
+  store.onPersistError = (problem) =>
+    reportPersistenceProblem({ source: "FlowCut 主配置", failing: true, ...problem });
+  store.onPersistRecovered = (problem) =>
+    reportPersistenceProblem({ source: "FlowCut 主配置", failing: false, ...problem });
+  if (store.persistError) {
+    reportPersistenceProblem({ source: "FlowCut 主配置", failing: true, ...store.persistError });
+  }
+  if (store.loadResult?.status === "recovered") {
+    reportPersistenceProblem({
+      source: "FlowCut 主配置",
+      recovered: true,
+      backup: store.loadResult.source,
+      preserved: store.loadResult.preserved,
+    });
+  }
   if (smokeProfile) store.state.settings.flowcutUrl = "http://127.0.0.1:4198";
   if (!store.state.settings.personalEditionInitialized) {
     store.state.settings.queueRunning = false;

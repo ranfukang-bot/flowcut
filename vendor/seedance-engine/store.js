@@ -1,6 +1,19 @@
-const fs = require('node:fs');
 const path = require('node:path');
 const { FAST_MODEL, STANDARD_MODEL, requireModel } = require('./models');
+const {
+  QUICK_RETRY_DELAYS_MS,
+  describeBlockedState,
+  loadJsonState,
+  writeTextDurable,
+} = require('./durable-json');
+
+function validateState(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '不是有效的任务库对象';
+  if (value.tasks !== undefined && !Array.isArray(value.tasks)) return 'tasks 格式错误';
+  if (value.accounts !== undefined && !Array.isArray(value.accounts)) return 'accounts 格式错误';
+  if (!value.settings && !Array.isArray(value.tasks)) return '缺少任务库内容';
+  return '';
+}
 
 const DEFAULT_SETTINGS = {
   running: false,
@@ -31,8 +44,12 @@ const DEFAULT_ACCOUNT = {
 };
 
 class WorkbenchStore {
-  constructor(userDataPath) {
+  constructor(userDataPath, { onPersistError = null, onPersistRecovered = null } = {}) {
     this.filePath = path.join(userDataPath, 'workbench-state.json');
+    this.persistError = null;
+    this.onPersistError = onPersistError;
+    this.onPersistRecovered = onPersistRecovered;
+    this.blocked = null;
     this.data = {
       version: 1,
       settings: { ...DEFAULT_SETTINGS },
@@ -45,8 +62,15 @@ class WorkbenchStore {
   }
 
   load() {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
+    const loaded = loadJsonState({ file: this.filePath, validate: validateState });
+    this.loadResult = loaded;
+    if (loaded.status === 'blocked') {
+      // Never replace unreadable or damaged tasks with an empty task list.
+      this.blocked = { ...loaded, message: describeBlockedState(loaded, 'Seedance 任务库') };
+      return;
+    }
+    if (loaded.value) {
+      const parsed = loaded.value;
       this.data = {
         version: 1,
         settings: { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) },
@@ -58,14 +82,13 @@ class WorkbenchStore {
         tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
         logs: Array.isArray(parsed.logs) ? parsed.logs.slice(0, 200) : [],
       };
-    } catch (error) {
-      if (error.code !== 'ENOENT') {
-        this.data.logs.unshift({
-          time: Date.now(),
-          level: 'error',
-          message: `任务库读取失败，已使用空任务库：${error.message}`,
-        });
-      }
+    }
+    if (loaded.status === 'recovered') {
+      this.data.logs.unshift({
+        time: Date.now(),
+        level: 'error',
+        message: `任务库${loaded.damage === 'missing' ? '缺失' : '已损坏'}，已从备份 ${path.basename(loaded.source)} 恢复${loaded.preserved ? `；损坏文件保留为 ${loaded.preserved}` : ''}`,
+      });
     }
 
     for (const account of this.data.accounts) {
@@ -107,11 +130,31 @@ class WorkbenchStore {
     this.save();
   }
 
+  // Returns false instead of throwing: a failed write must not turn an accepted
+  // generation or a finished download into a failure. The owner is notified.
   save() {
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    const tempPath = `${this.filePath}.tmp`;
-    fs.writeFileSync(tempPath, JSON.stringify(this.data, null, 2), 'utf8');
-    fs.renameSync(tempPath, this.filePath);
+    if (this.blocked) return false;
+    try {
+      writeTextDurable(this.filePath, JSON.stringify(this.data, null, 2), {
+        delays: this.persistError ? QUICK_RETRY_DELAYS_MS : undefined,
+      });
+    } catch (error) {
+      const firstFailure = !this.persistError;
+      this.persistError = {
+        file: this.filePath,
+        code: String(error?.code || ''),
+        message: error instanceof Error ? error.message : String(error),
+        at: new Date().toISOString(),
+      };
+      if (firstFailure) this.onPersistError?.(this.persistError);
+      return false;
+    }
+    if (this.persistError) {
+      const previous = this.persistError;
+      this.persistError = null;
+      this.onPersistRecovered?.(previous);
+    }
+    return true;
   }
 
   snapshot(extra = {}) {

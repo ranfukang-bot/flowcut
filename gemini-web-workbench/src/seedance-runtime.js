@@ -30,6 +30,7 @@ class SeedanceRuntime {
     getMaxConcurrent = () => 1,
     getDesktopToken = () => "",
     onChange = () => {},
+    onPersistenceProblem = () => {},
   }) {
     this.app = app;
     this.startPaused = startPaused;
@@ -39,6 +40,7 @@ class SeedanceRuntime {
     this.getMaxConcurrent = getMaxConcurrent;
     this.getDesktopToken = getDesktopToken;
     this.onChange = onChange;
+    this.onPersistenceProblem = onPersistenceProblem;
     this.authWindows = new Map();
     this.activeDownloads = new Map();
     this.downloadControllers = new Map();
@@ -360,12 +362,25 @@ class SeedanceRuntime {
   async start() {
     if (this.started) return this.state();
     this.migrateLegacyState();
-    const embeddedStatePath = path.join(
-      this.userDataRoot(),
-      "workbench-state.json",
-    );
-    const isFreshEmbeddedState = !fs.existsSync(embeddedStatePath);
-    this.store = new WorkbenchStore(this.userDataRoot());
+    this.store = new WorkbenchStore(this.userDataRoot(), {
+      onPersistError: (problem) =>
+        this.onPersistenceProblem({ source: "Seedance 任务库", failing: true, ...problem }),
+      onPersistRecovered: (problem) =>
+        this.onPersistenceProblem({ source: "Seedance 任务库", failing: false, ...problem }),
+    });
+    if (this.store.blocked) {
+      throw Object.assign(new Error(this.store.blocked.message), { code: "STATE_BLOCKED" });
+    }
+    const isFreshEmbeddedState = this.store.loadResult?.status === "fresh";
+    if (this.store.loadResult?.status === "recovered") {
+      this.onPersistenceProblem({
+        source: "Seedance 任务库",
+        recovered: true,
+        file: this.store.filePath,
+        backup: this.store.loadResult.source,
+        preserved: this.store.loadResult.preserved,
+      });
+    }
     this.store.updateSettings({
       apiKey: this.flowcutStore.state.settings.bridgeKey,
       flowcutBridgeEnabled: true,

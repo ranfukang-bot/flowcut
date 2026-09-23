@@ -1,6 +1,6 @@
 {
   "name": "flowcut-desktop-workbench",
-  "version": "1.4.11",
+  "version": "1.4.12",
   "description": "FlowCut 全自动 AI 视频桌面工作台",
   "main": "dist-protected/bootstrap.cjs",
   "author": "Codex",

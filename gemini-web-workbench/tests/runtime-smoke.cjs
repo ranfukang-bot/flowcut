@@ -77,6 +77,17 @@ async function main() {
   await api("/api/gems", { method: "PUT", body: JSON.stringify({ id: testGem.id, name: "clear-test", content: oldContent }) });
   const archivedTask = await api("/api/tasks", { method: "POST", body: JSON.stringify({ productId: created.id, gemId: testGem.id, tiktokAccountName: "archive-test" }) });
   await api("/api/tiktok-accounts", { method: "PUT", body: JSON.stringify({ id: archiveAccount.id, archiveDirectory: "E:\\Videos\\Changed" }) });
+  const duplicateRename = await fetch(base + "/api/tiktok-accounts", { method: "PUT", headers, body: JSON.stringify({ id: archiveAccount.id, name: "CLEAR-TEST" }) });
+  assert.equal(duplicateRename.status, 409);
+  const invalidRename = await fetch(base + "/api/tiktok-accounts", { method: "PUT", headers, body: JSON.stringify({ id: archiveAccount.id, name: "" }) });
+  assert.equal(invalidRename.status, 400);
+  const missingAccount = await fetch(base + "/api/tiktok-accounts", { method: "PUT", headers, body: JSON.stringify({ id: "missing", name: "valid" }) });
+  assert.equal(missingAccount.status, 404);
+  await api("/api/tiktok-accounts", { method: "PUT", body: JSON.stringify({ id: archiveAccount.id, name: "archive-renamed" }) });
+  assert.equal((await api("/api/tiktok-accounts")).accounts.find(a => a.id === archiveAccount.id).archive_directory, "E:\\Videos\\Changed");
+  await api("/api/tiktok-accounts", { method: "DELETE", body: JSON.stringify({ id: archiveAccount.id }) });
+  const deletedAccountTask = await fetch(base + "/api/tasks", { method: "POST", headers, body: JSON.stringify({ productId: created.id, gemId: testGem.id, tiktokAccountName: "archive-renamed" }) });
+  assert.equal(deletedAccountTask.status, 400, 'deleted accounts cannot receive new tasks');
   await api("/api/gems", { method: "PUT", body: JSON.stringify({ id: testGem.id, name: "clear-test", content: "NEW_TEMPLATE_MUST_NOT_REPLACE_OLD_TASK" }) });
   await api("/api/products", { method: "PUT", body: JSON.stringify({ id: created.id, name: "选品导入测试", externalId: "1735360337668113999" }) });
   const bridgeHeaders = { authorization: "Bearer smoke-bridge-only" };
@@ -198,6 +209,7 @@ async function main() {
   await page.getByText("任务已创建，将按所选模板生成并保存到归档文件夹", { exact: true }).waitFor();
   assert.deepEqual(await page.evaluate(() => window.queueStartCalls), [["gemini", true], ["seedance", true]]);
   assert.equal((await api("/api/workspace")).tasks[0].archive_directory, "D:\\Chosen Videos\\中文归档");
+  await require('./tiktok-accounts-ui.cjs')(page, api, evidence);
   await api("/api/tasks?all=1", { method: "DELETE" });
   let nativeDialogs = 0;
   page.on("dialog", async dialog => { nativeDialogs++; await dialog.dismiss(); });
@@ -259,7 +271,7 @@ async function main() {
   assert.equal((await page.evaluate(() => window.modelDecisions))[1].choice, "standard");
   assert.deepEqual(errors, []);
   fs.writeFileSync(path.join(evidence, "runtime-smoke.json"), JSON.stringify({ passed: true, version: packageVersion, checks: ["packaged runtime startup", "desktop HTTP authentication", "Gemini progress round trip", "paused authenticated accounts can create tasks", "connection test never starts queues", "queue resume cancellation", "compact navigation", "task filtering", "product ID search", "first-image filename product ID", "append/manual-edit/reset behavior", "product ID multipart save", "no renderer errors"] }, null, 2));
-  console.log("Packaged runtime and UI smoke: PASS");
+  console.log("Packaged runtime and UI smoke: PASS (including TK account add/rename/delete, cancellation, failure, task retention and reload)");
 }
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {
   await browser?.close(); await worker?.stop();

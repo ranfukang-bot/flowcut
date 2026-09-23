@@ -72,12 +72,21 @@ export async function DELETE(request: Request) {
 export async function PUT(request: Request) {
   try {
     await ensureWorkspace();
-    const body = await request.json() as { id?: string; archiveDirectory?: string };
-    const directory = validateArchiveDirectory(body.archiveDirectory);
-    if (!body.id || !directory) return Response.json({ error: "请选择账号和保存文件夹" }, { status: 400 });
-    const found = await getDb().prepare("SELECT id FROM tiktok_accounts WHERE id = ?").bind(body.id).first();
+    const body = await request.json() as { id?: string; name?: string; archiveDirectory?: string };
+    if (!body.id) return Response.json({ error: "请选择归档账号" }, { status: 400 });
+    const db = getDb();
+    const found = await db.prepare("SELECT * FROM tiktok_accounts WHERE id = ?").bind(body.id)
+      .first<{ id: string; name: string; archive_directory: string }>();
     if (!found) return Response.json({ error: "归档账号不存在" }, { status: 404 });
-    await getDb().prepare("UPDATE tiktok_accounts SET archive_directory = ? WHERE id = ?").bind(directory, body.id).run();
+    const name = body.name === undefined ? found.name : validateTikTokAccountName(body.name);
+    const directory = body.archiveDirectory === undefined ? found.archive_directory : validateArchiveDirectory(body.archiveDirectory);
+    const duplicate = await db.prepare("SELECT id FROM tiktok_accounts WHERE lower(name) = lower(?) AND id <> ?")
+      .bind(name, body.id).first();
+    if (duplicate) return Response.json({ error: "这个 TK 账号名已经存在" }, { status: 409 });
+    // Existing tasks own their name/path snapshots. Editing this directory entry
+    // must not move files or redirect any queued or completed task.
+    await db.prepare("UPDATE tiktok_accounts SET name = ?, archive_directory = ? WHERE id = ?")
+      .bind(name, directory, body.id).run();
     return Response.json({ ok: true });
   } catch (error) { return jsonError(error, 400); }
 }

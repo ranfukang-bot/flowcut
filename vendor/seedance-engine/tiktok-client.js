@@ -35,6 +35,15 @@ function normalizeDuration(value) {
   return duration;
 }
 
+// Marks how much a failed call tells us about what the server did:
+//   'rejected' the server answered and refused (status 4xx or an error code)
+//   'unknown'  the server may have processed it (5xx, unreadable or
+//              unexpected body); a generation request must not be resent
+function withOutcome(error, outcome) {
+  error.outcome = outcome;
+  return error;
+}
+
 class AuthRequiredError extends Error {
   constructor(message = 'TikTok 登录已失效，请重新登录') {
     super(message);
@@ -84,30 +93,44 @@ class TikTokClient {
       signal: AbortSignal.timeout(30_000),
     });
     const contentType = response.headers.get('content-type') || '';
+    const statusOutcome = response.status >= 500 ? 'unknown' : 'rejected';
     if ([401, 403].includes(response.status)) {
-      throw new AuthRequiredError();
+      throw withOutcome(new AuthRequiredError(), 'rejected');
     }
     if (!contentType.includes('json')) {
       if (response.status >= 400) {
-        throw new Error(`TikTok 接口暂时异常 HTTP ${response.status}`);
+        throw withOutcome(
+          Object.assign(new Error(`TikTok 接口暂时异常 HTTP ${response.status}`), { status: response.status }),
+          statusOutcome,
+        );
       }
-      throw new AuthRequiredError();
+      // Usually a login page, but a success status proves nothing either way.
+      throw withOutcome(new AuthRequiredError(), 'unknown');
     }
     let json;
     try {
       json = await response.json();
-    } catch {
-      throw new Error(`接口 HTTP ${response.status}`);
+    } catch (error) {
+      throw withOutcome(
+        Object.assign(
+          new Error(`TikTok 接口 HTTP ${response.status} 的响应内容无法解析（${error.message}）`),
+          { status: response.status },
+        ),
+        response.ok ? 'unknown' : statusOutcome,
+      );
     }
     if (!response.ok) {
-      throw Object.assign(new Error(`TikTok HTTP ${response.status}: ${json?.message || json?.msg || '接口请求失败'}`), { status: response.status, code: json?.code });
+      throw withOutcome(
+        Object.assign(new Error(`TikTok HTTP ${response.status}: ${json?.message || json?.msg || '接口请求失败'}`), { status: response.status, code: json?.code }),
+        statusOutcome,
+      );
     }
     if (json?.code !== 0) {
       const message = json?.message || json?.msg || `接口错误 ${json?.code}`;
       if (/login|登录|unauthorized|not authorized/i.test(message)) {
-        throw new AuthRequiredError(message);
+        throw withOutcome(new AuthRequiredError(message), 'rejected');
       }
-      throw Object.assign(new Error(message), { code: json?.code });
+      throw withOutcome(Object.assign(new Error(message), { code: json?.code }), 'rejected');
     }
     return json;
   }

@@ -14,8 +14,11 @@ function isTransientNetworkError(error) {
 }
 
 // No definitive answer from the platform: it may already have accepted the
-// generation, so resubmitting could create (and pay for) a duplicate.
+// generation, so resubmitting could create (and pay for) a duplicate. Only an
+// answer the client classified as a refusal counts as definite.
 function isUncertainSubmitError(error) {
+  if (error?.outcome === 'unknown') return true;
+  if (error?.outcome === 'rejected') return false;
   if (['TimeoutError', 'AbortError'].includes(error?.name)) return true;
   if (Number(error?.status || 0) >= 500) return true;
   return isTransientRequestError(error) || isTransientNetworkError(error);
@@ -27,9 +30,13 @@ const UNCONFIRMED_SUBMIT_HINT =
 // Tasks that failed before this version recorded an unanswered submit as
 // "提交失败：<network error>"; those are just as unconfirmed.
 function isUncertainLegacyFailure(task) {
+  if (task?.submitOutcome === 'rejected') return false;
   const message = String(task?.errorMessage || '');
   if (!message.startsWith('提交失败：')) return false;
   const reason = message.slice('提交失败：'.length);
+  // Older versions reported an unreadable success response as "接口 HTTP 200".
+  const unreadable = /^接口 HTTP (\d{3})$/.exec(reason);
+  if (unreadable) return !/^4/.test(unreadable[1]);
   return /生成接口未返回 Task ID/.test(reason) || isUncertainSubmitError(new Error(reason));
 }
 
@@ -878,13 +885,17 @@ class QueueEngine {
     task.status = 'submitting';
     task.errorCode = '';
     task.errorMessage = '';
+    task.submitOutcome = '';
     task.submitStartedAt = Date.now();
     this.recordTask(task, `正在使用账号“${account.name}” · ${modelLabel(task.model)} 提交生成任务`);
     let result;
     try {
       result = await this.accounts.client(account.id).submitTask(task);
     } catch (error) {
-      if (this.accounts.isQuotaError(error)) {
+      if (isUncertainSubmitError(error)) {
+        // Checked first: an unreadable answer may still hide an accepted job.
+        this.markSubmitUnconfirmed(task, error.message);
+      } else if (this.accounts.isQuotaError(error)) {
         this.switchAfterQuota(task, account.id, error.message);
       } else if (this.setAuthRequired(error, account.id)) {
         this.releaseTaskAccount(task);
@@ -896,10 +907,9 @@ class QueueEngine {
         task.status = 'retry_wait';
         task.nextRetryAt = Date.now() + 60_000;
         this.recordTask(task, '平台限流或并发已满，稍后继续使用同一模型');
-      } else if (isUncertainSubmitError(error)) {
-        this.markSubmitUnconfirmed(task, error.message);
       } else {
         task.status = 'failed';
+        task.submitOutcome = 'rejected';
         task.errorMessage = `提交失败：${error.message}`;
         task.completedAt = Date.now();
         this.recordTask(task, task.errorMessage, 'error');

@@ -112,21 +112,46 @@ test("a task that never reached the task list is rebuilt from its submission rec
   assert.equal(client.submits, 1, "no second generation");
 });
 
-test("a record whose account is gone is kept in a separate file and reported", (t) => {
+test("a record whose account is gone holds its task, is kept in a separate file and reported", async (t) => {
   const directory = tempDirectory(t);
   const store = new WorkbenchStore(directory);
-  store.upsertTask({ ...newTask(store), status: "queued" });
+  store.updateSettings({ running: true });
+  store.upsertTask({ ...newTask(store), status: "queued" }); // the saved list never saw the submission
   assert.ok(store.recordSubmission({ type: "accepted", localTaskId: "local-new", taskId: "7390000000000000666", accountId: "removed-account" }));
 
   const reopened = new WorkbenchStore(directory);
   assert.deepEqual(reopened.journalRecovery.unmatched.map((item) => item.taskId), ["7390000000000000666"]);
   const kept = fs.readFileSync(path.join(directory, "submitted-tasks-unmatched.jsonl"), "utf8");
   assert.match(kept, /7390000000000000666/);
-  assert.equal(reopened.getTask("local-new").status, "queued");
+  const held = reopened.getTask("local-new");
+  assert.equal(held.status, "submit_unconfirmed");
+  assert.match(held.errorMessage, /7390000000000000666/);
+  const client = countingClient();
+  const engine = new QueueEngine(reopened, accounts(reopened, client));
+  await engine.tick();
+  await engine.tick();
+  assert.equal(client.submits, 0, "the accepted task is never sent again");
   assert.equal(fs.existsSync(path.join(directory, "submitted-tasks.jsonl")), false);
-  // Reported once: the next start does not raise it again.
-  assert.equal(new WorkbenchStore(directory).journalRecovery.unmatched.length, 0);
+  // The hold is saved, and the record is reported only once.
+  const again = new WorkbenchStore(directory);
+  assert.equal(again.getTask("local-new").status, "submit_unconfirmed");
+  assert.equal(again.journalRecovery.unmatched.length, 0);
   assert.match(fs.readFileSync(path.join(directory, "submitted-tasks-unmatched.jsonl"), "utf8"), /7390000000000000666/);
+});
+
+test("a lost task whose account is gone is rebuilt on hold from its snapshot", (t) => {
+  const directory = tempDirectory(t);
+  const store = new WorkbenchStore(directory);
+  store.recordSubmission({
+    type: "accepted",
+    localTaskId: "local-new",
+    taskId: "7390000000000000667",
+    accountId: "removed-account",
+    snapshot: { ...newTask(store), accountId: "removed-account" },
+  });
+  const held = new WorkbenchStore(directory).getTask("local-new");
+  assert.equal(held.status, "submit_unconfirmed");
+  assert.equal(held.flowcutTaskId, "flowcut-7");
 });
 
 test("a record without a matching task or snapshot is kept, not deleted", (t) => {

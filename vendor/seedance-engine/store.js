@@ -190,6 +190,12 @@ class WorkbenchStore {
       const accountId = entry.accountId || task?.accountId || entry.snapshot?.accountId || '';
       if (accountId && !this.getAccount(accountId)) {
         unmatched.push({ entry, reason: '提交所用的 Seedance 账号已不在账号列表中' });
+        if (!task && entry.snapshot?.id) {
+          task = { ...entry.snapshot, logs: [] };
+          this.data.tasks.push(task);
+        }
+        // Accepted but no longer trackable: never let this task be sent again.
+        if (task) this.holdAcceptedWithoutAccount(task, entry, taskId);
         continue;
       }
       if (!task) {
@@ -250,6 +256,22 @@ class WorkbenchStore {
       // The generic restart rule below turns this into "submit_unconfirmed".
       task.status = 'submitting';
     }
+  }
+
+  holdAcceptedWithoutAccount(task, entry, taskId) {
+    const message = `已提交（Task ID ${taskId}），但提交所用的 Seedance 账号已不在账号列表中，无法自动追踪和下载。为避免重复生成，不会重新提交；请在 TikTok Symphony 生成历史中按 Task ID 取回视频。`;
+    task.taskId = taskId;
+    task.taskIds = [...(task.taskIds || []).filter((id) => String(id) !== taskId), taskId];
+    if (entry.intentId && !(task.submitIntents || []).includes(entry.intentId)) {
+      task.submitIntents = [...(task.submitIntents || []), entry.intentId].slice(-20);
+    }
+    task.status = 'submit_unconfirmed';
+    task.errorCode = 'SUBMIT_UNCONFIRMED';
+    task.errorMessage = message;
+    task.activity = message;
+    task.activityLevel = 'error';
+    task.activityAt = Date.now();
+    task.logs = [{ time: Date.now(), level: 'error', message }, ...(task.logs || [])].slice(0, 80);
   }
 
   // Keeps records that cannot be applied in a separate file (never deleted)

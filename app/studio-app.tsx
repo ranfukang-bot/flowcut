@@ -480,7 +480,6 @@ export function StudioApp() {
   const [previewTask, setPreviewTask] = useState<Task | null>(null);
   const [selectedProduct, setSelectedProduct] = useState("");
   const [selectedGem, setSelectedGem] = useState("");
-  const [selectedGeminiAccount, setSelectedGeminiAccount] = useState("");
   const [selectedTikTokAccount, setSelectedTikTokAccount] = useState("");
   const [selectedDuration, setSelectedDuration] = useState(DEFAULT_TASK_DURATION);
   const [selectedRegion, setSelectedRegion] = useState(DEFAULT_TASK_REGION);
@@ -531,15 +530,6 @@ export function StudioApp() {
           ? current
           : result.gems[0]?.id || ""
       );
-      setSelectedGeminiAccount((current) => {
-        if (current) return current;
-        return (
-          result.integrations.geminiRuntime?.defaultAccountId ||
-          result.integrations.geminiRuntime?.accounts?.find(
-            (account) => account.authenticated
-          )?.id || ""
-        );
-      });
       setSelectedTikTokAccount((current) =>
         result.tiktokAccounts.some((account) => account.name === current)
           ? current
@@ -720,10 +710,6 @@ export function StudioApp() {
           productId,
           gemId: selectedGem,
           autoQueue,
-          geminiAccountId:
-            data.integrations.geminiMode === "web"
-              ? selectedGeminiAccount || undefined
-              : undefined,
           tiktokAccountName: selectedTikTokAccount,
           duration: selectedDuration,
           region: selectedRegion,
@@ -964,7 +950,6 @@ export function StudioApp() {
             data={data}
             selectedProduct={selectedProduct}
             selectedGem={selectedGem}
-            selectedGeminiAccount={selectedGeminiAccount}
             selectedTikTokAccount={selectedTikTokAccount}
             selectedDuration={selectedDuration}
             selectedRegion={selectedRegion}
@@ -973,7 +958,6 @@ export function StudioApp() {
             busy={busy}
             onProduct={setSelectedProduct}
             onGem={setSelectedGem}
-            onGeminiAccount={setSelectedGeminiAccount}
             onTikTokAccount={setSelectedTikTokAccount}
             onDuration={setSelectedDuration}
             onRegion={setSelectedRegion}
@@ -1310,7 +1294,6 @@ function Dashboard({
   data,
   selectedProduct,
   selectedGem,
-  selectedGeminiAccount,
   selectedTikTokAccount,
   selectedDuration,
   selectedRegion,
@@ -1319,7 +1302,6 @@ function Dashboard({
   busy,
   onProduct,
   onGem,
-  onGeminiAccount,
   onTikTokAccount,
   onDuration,
   onRegion,
@@ -1338,7 +1320,6 @@ function Dashboard({
   data: Workspace;
   selectedProduct: string;
   selectedGem: string;
-  selectedGeminiAccount: string;
   selectedTikTokAccount: string;
   selectedDuration: number;
   selectedRegion: string;
@@ -1347,7 +1328,6 @@ function Dashboard({
   busy: boolean;
   onProduct: (value: string) => void;
   onGem: (value: string) => void;
-  onGeminiAccount: (value: string) => void;
   onTikTokAccount: (value: string) => void;
   onDuration: (value: number) => void;
   onRegion: (value: string) => void;
@@ -1659,19 +1639,7 @@ function Dashboard({
             {data.integrations.geminiMode === "web" && (
                 <label>
                   <span><b>04</b> Gemini 账号</span>
-                  <select
-                    value={selectedGeminiAccount}
-                    onChange={(event) => onGeminiAccount(event.target.value)}
-                  >
-                    <option value="">自动分配空闲账号</option>
-                    {(data.integrations.geminiRuntime?.accounts || [])
-                      .filter((account) => account.authenticated)
-                      .map((account) => (
-                        <option key={account.id} value={account.id}>
-                          {account.name}{account.busy ? " · 忙碌" : ""}
-                        </option>
-                      ))}
-                  </select>
+                  <input value="自动分配空闲账号" readOnly aria-label="Gemini 账号分配" />
                 </label>
             )}
             <label>
@@ -3964,6 +3932,37 @@ function PromptDrawer({
 }) {
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState("");
+  const [recreateError, setRecreateError] = useState("");
+  const recreateRequest = useRef<string | null>(null);
+  const recreateLock = useRef(false);
+  async function recreateTask() {
+    if (recreateLock.current) return;
+    recreateLock.current = true;
+    setBusy("recreate");
+    setRecreateError("");
+    try {
+      if (!await confirmAction("重新生成该任务？将复用已保存的商品图片、原 Gem 设定和视频参数，从 Gemini 提示词开始重新生成视频，会再次消耗生成额度。原任务和原成片不会删除，也不会自动送去发布。")) return;
+      recreateRequest.current ||= crypto.randomUUID();
+      const result = await api("/api/tasks/recreate", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: task.id, requestId: recreateRequest.current }),
+      }) as { id: string; created: boolean };
+      let message = result.created ? "已新建重做任务，将从 Gemini 提示词开始完整生成视频" : "已有重做任务，未重复创建";
+      try {
+        const desktop = desktopBridge();
+        await desktop?.setQueueRunning?.(true);
+        await desktop?.seedanceSetRunning?.(true);
+      } catch {
+        message += "；任务已保存，请在账号与设置中启动队列";
+      }
+      await onUpdated(message);
+    } catch (error) {
+      setRecreateError(error instanceof Error ? error.message : "重做任务创建失败，请重试");
+    } finally {
+      recreateLock.current = false;
+      setBusy("");
+    }
+  }
   async function copy() {
     await navigator.clipboard.writeText(task.prompt);
     setCopied(true);
@@ -4054,6 +4053,16 @@ function PromptDrawer({
           <div className="download-result">
             <b>成片已自动归档</b>
             <span>{task.download_path}</span>
+          </div>
+        )}
+        {["video_ready", "scheduled"].includes(task.status) && (
+          <div className="download-result">
+            <b>成片不满意？用这些素材重新制作</b>
+            <span>复用商品图片、原 Gem 设定和视频参数，从提示词到成片完整重做。原成片保留，不自动发布。</span>
+            <button className="secondary" disabled={Boolean(busy)} onClick={recreateTask}>
+              {busy === "recreate" ? "正在创建重做任务…" : "重新生成该任务"}
+            </button>
+            {recreateError && <span role="alert">{recreateError}</span>}
           </div>
         )}
         {task.download_path && ["video_ready", "scheduled"].includes(task.status) && <PublishReview task={task} />}

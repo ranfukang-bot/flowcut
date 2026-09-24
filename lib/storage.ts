@@ -154,6 +154,8 @@ async function initializeWorkspace() {
   await ensureColumn("tasks", "archive_directory", "TEXT NOT NULL DEFAULT ''");
   await ensureColumn("tasks", "gem_content_snapshot", "TEXT");
   await ensureColumn("tasks", "product_external_id_snapshot", "TEXT");
+  await ensureColumn("tasks", "regenerated_from_task_id", "TEXT");
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_tasks_regenerated_from ON tasks(regenerated_from_task_id)").run();
   await ensureColumn("reference_remix_tasks", "archive_directory", "TEXT NOT NULL DEFAULT ''");
   await ensureColumn("tasks", "bridge_claimed_at", "TEXT");
   await ensureColumn("tasks", "bridge_worker_id", "TEXT");

@@ -1,4 +1,5 @@
 import { buildGeminiPrompt } from "../../../lib/gemini";
+import { chooseGeminiAccount } from "../../../lib/gemini-account-routing";
 import { getProviderConfig } from "../../../lib/provider-config";
 import { submitSeedance } from "../../../lib/seedance";
 import {
@@ -250,12 +251,8 @@ export async function GET(request: Request) {
     for (const candidate of candidates) {
       const task = candidate.task;
       if (jobs.length >= capacity) break;
-      if (
-        task.gemini_account_id &&
-        !availableAccounts.has(task.gemini_account_id)
-      ) {
-        continue;
-      }
+      const accountId = chooseGeminiAccount(candidate.kind, task.gemini_account_id, availableAccounts);
+      if (!accountId) continue;
       const claimedAt = new Date().toISOString();
       const scriptHasGroups = candidate.kind === "script-pipeline" && (() => {
         try {
@@ -311,7 +308,7 @@ export async function GET(request: Request) {
         jobs.push({
           id: standardTask.id,
           kind: "standard",
-          accountId: standardTask.gemini_account_id || "",
+          accountId,
           prompt: buildGeminiPrompt(standardTask.content, standardTask),
           imageUrls: images.results.map((image: { object_key: string }) =>
             mediaUrl(request.url, image.object_key)
@@ -339,7 +336,7 @@ export async function GET(request: Request) {
         jobs.push({
           id: remixTask.id,
           kind: "reference-remix",
-          accountId: remixTask.gemini_account_id || "",
+          accountId,
           analysisPrompt: buildReferenceAnalysisPrompt(remixTask.duration, remixTask.region),
           adaptationPrompt: buildReferenceAdaptationPrompt(remixTask.duration, remixTask.region),
           referenceVideoUrl: mediaUrl(request.url, referenceVideo.object_key),
@@ -350,7 +347,7 @@ export async function GET(request: Request) {
         jobs.push({
           id: scriptTask.id,
           kind: "script-pipeline",
-          accountId: scriptTask.gemini_account_id || "",
+          accountId,
           prompt: buildRewritePrompt(scriptTask.source_script),
           projectContext: scriptTask.project_context || "",
           rewrittenScript: scriptTask.rewritten_script || "",
@@ -360,6 +357,8 @@ export async function GET(request: Request) {
           imageUrls: [],
         });
       }
+      // One claimed job per idle account in this batch, even with legacy pins.
+      availableAccounts.delete(accountId);
     }
     return Response.json({ jobs });
   } catch (error) {

@@ -94,7 +94,7 @@ async function main() {
   await api("/api/gems", { method: "PUT", body: JSON.stringify({ id: testGem.id, name: "clear-test", content: "NEW_TEMPLATE_MUST_NOT_REPLACE_OLD_TASK" }) });
   await api("/api/products", { method: "PUT", body: JSON.stringify({ id: created.id, name: "选品导入测试", externalId: "1735360337668113999" }) });
   const bridgeHeaders = { authorization: "Bearer smoke-bridge-only" };
-  const jobs = await api("/api/gemini-bridge?workerId=archive-smoke&capacity=1", { headers: bridgeHeaders });
+  const jobs = await api("/api/gemini-bridge?workerId=archive-smoke&capacity=1&accountIds=test-account", { headers: bridgeHeaders });
   assert.equal(jobs.jobs[0].id, archivedTask.id);
   assert.match(jobs.jobs[0].prompt, /CHOSEN_TEMPLATE_143/);
   assert.doesNotMatch(jobs.jobs[0].prompt, /NEW_TEMPLATE_MUST_NOT_REPLACE/);
@@ -108,7 +108,20 @@ async function main() {
   assert.equal(archiveRow.product_external_id, "1735360337668113923");
   assert.equal(archiveRow.product_image_key, workspace.products[0].images[0].object_key, 'task thumbnail uses the first product image');
   assert.equal(archiveRow.image_count, 2, 'multiple images still show only the first thumbnail');
+  await require('./recreate-task-smoke.cjs')({ api, base, headers, sourceId: archivedTask.id });
   await api("/api/tasks?all=1", { method: "DELETE" });
+  for (let i = 0; i < 3; i++) {
+    await api('/api/tasks', { method: 'POST', body: JSON.stringify({ productId: created.id, gemId: testGem.id, tiktokAccountName: 'clear-test', geminiAccountId: 'old-default' }) });
+  }
+  assert.ok((await api('/api/workspace')).tasks.every(row => !row.gemini_account_id), 'old clients cannot pin new product jobs');
+  const autoJobs = await api('/api/gemini-bridge?workerId=auto-smoke&capacity=8&accountIds=idle-a,idle-b', { headers: bridgeHeaders });
+  assert.equal(autoJobs.jobs.length, 2);
+  assert.deepEqual(autoJobs.jobs.map(job => job.accountId), ['idle-a', 'idle-b']);
+  assert.equal((await api('/api/gemini-bridge?workerId=auto-smoke&capacity=8&accountIds=', { headers: bridgeHeaders })).jobs.length, 0);
+  const nextJobs = await api('/api/gemini-bridge?workerId=auto-smoke&capacity=8&accountIds=idle-c', { headers: bridgeHeaders });
+  assert.equal(nextJobs.jobs.length, 1, 'claimed/in-flight jobs are not reassigned');
+  assert.equal(nextJobs.jobs[0].accountId, 'idle-c');
+  await api('/api/tasks?all=1', { method: 'DELETE' });
   const originalProduct = workspace.products[0];
   workspace.products = [
     { ...originalProduct, id: "old-day", created_at: "2026-09-15T04:00:00Z" },
@@ -127,6 +140,9 @@ async function main() {
   page.on("pageerror", error => errors.push(error.message));
   await page.route("**/api/workspace", route => route.fulfill({ json: workspace }));
   await page.goto(base, { waitUntil: "networkidle" });
+  await page.getByLabel('Gemini 账号分配', { exact: true }).waitFor();
+  assert.equal(await page.getByLabel('Gemini 账号分配', { exact: true }).inputValue(), '自动分配空闲账号');
+  assert.equal(await page.getByLabel('Gemini 账号分配', { exact: true }).getAttribute('readonly'), '');
   await page.getByRole("navigation").getByRole("button", { name: "任务队列" }).waitFor();
   assert.equal(await page.getByRole("navigation").getByRole("button", { name: "剧本提示词" }).count(), 0);
   assert.equal(await page.getByText("本月生成额度").count(), 0);
@@ -152,6 +168,37 @@ async function main() {
   await taskThumbnail.click();
   await page.getByText('AUTOMATION RESULT', { exact: true }).waitFor();
   await page.locator('.drawer-head > button').click();
+  // UI-only requests below are mocked: never submit an actual generation.
+  const recreateCalls = [];
+  await page.evaluate(() => {
+    window.remakeQueueStarts = [];
+    window.flowcutDesktop = {
+      setQueueRunning: async value => window.remakeQueueStarts.push(['gemini', value]),
+      seedanceSetRunning: async value => window.remakeQueueStarts.push(['seedance', value]),
+    };
+  });
+  await page.route('**/api/tasks/recreate', async route => {
+    recreateCalls.push(route.request().postDataJSON());
+    if (recreateCalls.length === 1) return route.fulfill({ status: 503, json: { error: '测试：服务暂时不可用，请重试' } });
+    return route.fulfill({ status: 201, json: { id: 'mock-remake', created: true } });
+  });
+  await page.getByRole('button', { name: /已完成商品.*测试TK账号/ }).click();
+  await page.screenshot({ path: path.join(evidence, '重新生成.png'), fullPage: true, animations: 'disabled' });
+  await page.getByRole('button', { name: '重新生成该任务', exact: true }).click();
+  await page.getByRole('dialog', { name: '确认操作' }).getByRole('button', { name: '取消', exact: true }).click();
+  assert.equal(recreateCalls.length, 0);
+  await page.getByRole('button', { name: '重新生成该任务', exact: true }).click();
+  await page.getByRole('dialog', { name: '确认操作' }).getByRole('button', { name: '确认', exact: true }).click();
+  await page.getByRole('alert').getByText('测试：服务暂时不可用，请重试').waitFor();
+  await page.getByRole('button', { name: '重新生成该任务', exact: true }).click();
+  await page.getByRole('dialog', { name: '确认操作' }).getByRole('button', { name: '确认', exact: true }).click();
+  await page.getByText('已新建重做任务，将从 Gemini 提示词开始完整生成视频', { exact: true }).waitFor();
+  assert.equal(recreateCalls.length, 2);
+  assert.equal(recreateCalls[0].requestId, recreateCalls[1].requestId, 'retry reuses the operation ID');
+  assert.equal(recreateCalls[0].id, 'test-ready');
+  assert.deepEqual(await page.evaluate(() => window.remakeQueueStarts), [['gemini', true], ['seedance', true]]);
+  await page.unroute('**/api/tasks/recreate');
+  await page.evaluate(() => { delete window.flowcutDesktop; });
   assert.equal(await page.locator(".nav-list button.active").innerText(), "↗\n任务队列\n3");
   await page.screenshot({ path: path.join(evidence, "任务进度.png"), fullPage: true, animations: "disabled" });
   await page.getByRole("button", { name: "需处理", exact: true }).click();

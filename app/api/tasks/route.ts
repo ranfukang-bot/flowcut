@@ -249,7 +249,7 @@ export async function POST(request: Request) {
         shootingStyle,
         token,
         body.autoQueue === false ? 0 : 1,
-        body.geminiAccountId?.trim() || null,
+        null, // Product tasks always use an idle account, including old UI clients.
         tiktokAccountName,
         account.archive_directory || "",
         gem.content,

@@ -51,6 +51,7 @@ type Task = {
   id: string;
   product_id: string;
   product_external_id?: string;
+  product_image_key?: string | null;
   gem_id: string;
   title: string;
   status: string;
@@ -504,7 +505,7 @@ export function StudioApp() {
           ? {
               status: "ready",
               label: "本机执行器在线",
-              detail: `内置执行器已连接，并发上限 ${runtime.maxConcurrent || "—"}`,
+              detail: "内置执行器已连接，API 提交不设本地生成并发上限",
             }
           : runtime?.online && !runtime.authenticated
             ? {
@@ -2568,6 +2569,19 @@ function GemsPage({
   );
 }
 
+function TaskProductThumbnail({ task }: { task: Task }) {
+  const imageKey = task.product_image_key || "";
+  const [failedKey, setFailedKey] = useState<string | null>(null);
+  return <span className="task-product-thumbnail">
+    {imageKey && failedKey !== imageKey ? <img
+      src={`/api/media?key=${encodeURIComponent(imageKey)}`}
+      alt={`${task.product_name || task.title} 商品图片`}
+      width={56} height={56} loading="lazy" decoding="async"
+      onError={() => setFailedKey(imageKey)}
+    /> : <span className="task-product-placeholder">{imageKey ? "图片失效" : "暂无图片"}</span>}
+  </span>;
+}
+
 function TasksPage({
   tasks,
   geminiRuntime,
@@ -2624,7 +2638,9 @@ function TasksPage({
         <div className="table-head"><span>商品与账号</span><span>制作进度</span><span>当前状态</span><span>操作</span></div>
         {visibleTasks.map((task) => (
           <div className="table-row" key={task.id}>
-            <button className="task-name" onClick={() => onPreview(task)}>
+            <button className="task-name task-product-summary" onClick={() => onPreview(task)}>
+              <TaskProductThumbnail task={task} />
+              <span className="task-product-copy">
               <b>{task.product_name || task.title}</b>
               <small>
                 {task.gem_name}
@@ -2636,6 +2652,7 @@ function TasksPage({
                   : ""}
               </small>
               <small>{task.product_external_id ? `ID ${task.product_external_id} · ` : ""}{formatTime(task.created_at)}</small>
+              </span>
             </button>
             <TaskChain task={task} compact />
             <div className="task-live-status"><span className={`status ${task.status}`}>{taskStatusLabel(task)}</span><small>{progressText(task)}</small></div>
@@ -3458,7 +3475,7 @@ function SettingsPage({
                         {account.authenticated
                           ? account.exhaustedToday
                             ? "已登录 · 今日额度已满"
-                            : `已登录 · 并发 ${account.generatingCount || 0}/${account.maxConcurrent || 5}`
+                            : `已登录 · 本机生成中 ${account.generatingCount || 0} 条 · API 不设本地并发上限`
                           : account.error || "等待登录"}
                       </small>
                     </div>

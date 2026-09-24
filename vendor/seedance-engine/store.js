@@ -153,7 +153,7 @@ class WorkbenchStore {
           draft: '等待完善任务',
           upload_wait: '等待上传图片',
           uploading: '正在上传图片',
-          queued: '图片已上传，等待生成并发空位',
+          queued: '图片已上传，等待 API 提交',
           submitting: '正在提交生成任务',
           generating: '已提交，正在生成视频',
           retry_wait: '生成失败，等待自动重试',

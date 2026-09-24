@@ -73,6 +73,9 @@ async function main() {
   assert.equal(retained.tasks.length, 0); assert.equal(retained.products.length, workspace.products.length);
   assert.equal(retained.products[0].images.length, 1); assert.equal(retained.gems.length, workspace.gems.length + 1);
   const archiveAccount = await api("/api/tiktok-accounts", { method: "POST", body: JSON.stringify({ name: "archive-test", archiveDirectory: "D:\\Videos\\Original" }) });
+  const secondImage = new FormData(); secondImage.set("id", created.id);
+  secondImage.append("images", new Blob([Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jWzUAAAAASUVORK5CYII=", "base64")], { type: "image/png" }), "second.png");
+  assert.equal((await fetch(base + "/api/products", { method: "PATCH", headers: { "x-flowcut-desktop-token": token }, body: secondImage })).status, 200);
   const oldContent = "CHOSEN_TEMPLATE_143: original instructions";
   await api("/api/gems", { method: "PUT", body: JSON.stringify({ id: testGem.id, name: "clear-test", content: oldContent }) });
   const archivedTask = await api("/api/tasks", { method: "POST", body: JSON.stringify({ productId: created.id, gemId: testGem.id, tiktokAccountName: "archive-test" }) });
@@ -103,6 +106,8 @@ async function main() {
   const archiveRow = (await api("/api/workspace")).tasks[0];
   assert.equal(archiveRow.archive_directory, "D:\\Videos\\Original");
   assert.equal(archiveRow.product_external_id, "1735360337668113923");
+  assert.equal(archiveRow.product_image_key, workspace.products[0].images[0].object_key, 'task thumbnail uses the first product image');
+  assert.equal(archiveRow.image_count, 2, 'multiple images still show only the first thumbnail');
   await api("/api/tasks?all=1", { method: "DELETE" });
   const originalProduct = workspace.products[0];
   workspace.products = [
@@ -111,9 +116,9 @@ async function main() {
   ];
   const task = { product_id: "product-test", product_external_id: "1735360337668113923", gem_id: "gem-test", title: "商品视频", product_name: "测试商品", provider: "gemini-web", prompt: "", duration: 15, region: "印度尼西亚", shooting_style: "", gem_name: "带货模板", tiktok_account_name: "测试TK账号", created_at: new Date().toISOString() };
   workspace.tasks = [
-    { ...task, id: "test-running", status: "prompt_generating", progress: 12 },
+    { ...task, id: "test-running", status: "prompt_generating", progress: 12, product_image_key: archiveRow.product_image_key },
     { ...task, id: "test-failed", title: "待恢复任务", product_name: "待恢复商品", status: "failed", progress: 12, error: "Gemini 连续 3 分钟没有新输出，任务将自动恢复" },
-    { ...task, id: "test-ready", product_name: "已完成商品", status: "video_ready", progress: 100 },
+    { ...task, id: "test-ready", product_name: "已完成商品", status: "video_ready", progress: 100, product_image_key: "missing-test-image" },
   ];
   browser = await chromium.launch({ executablePath: "C:/Program Files/Google/Chrome/Application/chrome.exe", headless: true });
   // Browser supplies the correct multipart boundary for image uploads.
@@ -135,6 +140,18 @@ async function main() {
   await page.getByRole("button", { name: "更多工具" }).click();
   await page.getByRole("navigation").getByRole("button", { name: "任务队列" }).click();
   await page.getByText("测试账号 · Gemini 正在生成 · 已接收 320 字 · 12 秒").waitFor();
+  const taskThumbnail = page.locator('.tasks-table .task-product-thumbnail img').first();
+  await taskThumbnail.waitFor();
+  await page.waitForFunction(() => {
+    const img = document.querySelector('.tasks-table .task-product-thumbnail img');
+    return img && img.complete && img.naturalWidth > 0;
+  });
+  await page.locator('.tasks-table').getByText('暂无图片', { exact: true }).waitFor();
+  await page.locator('.tasks-table').getByText('图片失效', { exact: true }).waitFor();
+  assert.equal(await taskThumbnail.getAttribute('src'), `/api/media?key=${encodeURIComponent(archiveRow.product_image_key)}`);
+  await taskThumbnail.click();
+  await page.getByText('AUTOMATION RESULT', { exact: true }).waitFor();
+  await page.locator('.drawer-head > button').click();
   assert.equal(await page.locator(".nav-list button.active").innerText(), "↗\n任务队列\n3");
   await page.screenshot({ path: path.join(evidence, "任务进度.png"), fullPage: true, animations: "disabled" });
   await page.getByRole("button", { name: "需处理", exact: true }).click();

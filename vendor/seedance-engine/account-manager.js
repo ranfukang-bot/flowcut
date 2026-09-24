@@ -329,12 +329,6 @@ class AccountManager {
             runtime.lastAuthenticatedAt = Date.now();
             account.lastAuthenticatedAt = runtime.lastAuthenticatedAt;
             this.store.upsertAccount(account);
-            try {
-              const max = await this.client(account.id).getMaxConcurrent();
-              if (Number.isFinite(max) && max > 0) runtime.maxConcurrent = max;
-            } catch {
-              // 沿用账号当前并发设置。
-            }
           } else if (account.lastAuthenticatedAt) {
             account.lastAuthenticatedAt = 0;
             this.store.upsertAccount(account);
@@ -439,8 +433,12 @@ class AccountManager {
           authCheckedAt: runtime.authCheckedAt,
           lastAuthenticatedAt: runtime.lastAuthenticatedAt,
           error: runtime.error,
-          maxConcurrent: runtime.maxConcurrent,
-          generatingCount: runtime.generatingCount,
+          // null means no local API generation-count limit, not a promise
+          // about the platform's own capacity or rate limits.
+          maxConcurrent: null,
+          generatingCount: this.store.tasks.filter((task) =>
+            task.accountId === account.id && ['submitting', 'generating'].includes(task.status),
+          ).length,
           exhaustedToday: this.isExhausted(account),
           exhaustedReason: this.isExhausted(account) ? account.exhaustedReason : '',
           active: account.id === activeAccountId,

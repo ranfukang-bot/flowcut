@@ -1453,6 +1453,12 @@ body {
 .tasks-table .row-actions button { white-space:nowrap; }
 .tasks-table .task-live-status small { font-size:12px; }
 .tasks-table .task-name > small { display:block; margin-top:6px; }
+.tasks-table .task-product-summary { flex-direction:row; align-items:center; gap:12px; width:100%; padding:0; }
+.task-product-thumbnail { display:flex; align-items:center; justify-content:center; flex:0 0 56px; width:56px; height:56px; border:1px solid #e4e7e8; border-radius:8px; overflow:hidden; background:#fff; }
+.task-product-thumbnail img { width:100%; height:100%; object-fit:contain; }
+.task-product-placeholder { color:#91979d; font-size:10px; white-space:nowrap; }
+.task-product-copy { display:flex; flex-direction:column; min-width:0; flex:1; gap:6px; }
+.tasks-table .task-product-copy b, .tasks-table .task-product-copy small { white-space:normal; overflow-wrap:anywhere; }
 @media (max-width: 800px) {
   .tasks-table .table-head { display:none; }
   .tasks-table .table-row { grid-template-columns:minmax(160px,1fr) minmax(160px,1fr) 108px; min-width:520px; }

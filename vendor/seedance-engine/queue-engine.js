@@ -85,6 +85,7 @@ class QueueEngine {
     this.tickBusy = false;
     this.activeUploads = new Set();
     this.remotePollState = new Map();
+    this.submitCooldowns = new Map();
     // Called when an accepted generation's Task ID could not be stored durably.
     this.onUnsavedSubmission = () => {};
     this.submitsPausedForPersistence = false;
@@ -330,7 +331,7 @@ class QueueEngine {
       task,
       task.status === 'upload_wait'
         ? '任务修改已保存，等待上传新增图片'
-        : '任务修改已保存，等待生成并发空位',
+        : '任务修改已保存，等待 API 提交',
     );
     this.log(`任务已修改：${task.imageItems.length} 张图片`);
     this.pumpUploads();
@@ -671,7 +672,7 @@ class QueueEngine {
         completed: task.imageItems.length,
         total: task.imageItems.length,
       };
-      this.recordTask(task, '全部图片上传完成，等待生成并发空位', 'success');
+      this.recordTask(task, '全部图片上传完成，等待 API 提交', 'success');
       this.log(`任务的 ${task.imageItems.length} 张图片已全部上传`);
       if (this.store.settings.running) this.tick();
     } catch (error) {
@@ -971,6 +972,7 @@ class QueueEngine {
         refusal = 'rate-limited';
         task.status = 'retry_wait';
         task.nextRetryAt = Date.now() + 60_000;
+        this.submitCooldowns.set(account.id, task.nextRetryAt);
         this.recordTask(task, '平台限流或并发已满，稍后继续使用同一模型');
       } else {
         refusal = 'rejected';
@@ -1071,7 +1073,6 @@ class QueueEngine {
             (task.status === 'retry_wait' && Number(task.nextRetryAt || 0) <= Date.now()),
         )
         .sort((a, b) => (a.order || 0) - (b.order || 0));
-      const slotCache = new Map();
       for (const task of due) {
         if (!this.store.settings.running) break;
         const account = await this.accounts.availableAccount(task.accountId);
@@ -1079,6 +1080,7 @@ class QueueEngine {
           this.recordTask(task, '没有已登录且可用的账号，继续排队', 'error');
           continue;
         }
+        if ((this.submitCooldowns.get(account.id) || 0) > Date.now()) continue;
         const changedAccount = this.assignTaskAccount(task, account);
         if (
           changedAccount ||
@@ -1092,39 +1094,12 @@ class QueueEngine {
           this.pumpUploads();
           continue;
         }
-        if (!slotCache.has(account.id)) {
-          try {
-            const client = this.accounts.client(account.id);
-            const runningCount = await client.getGeneratingCount();
-            const runtime = this.accounts.ensureRuntime(account.id);
-            runtime.generatingCount = runningCount;
-            slotCache.set(
-              account.id,
-              Math.max(0, Number(runtime.maxConcurrent || 5) - runningCount),
-            );
-          } catch (error) {
-            if (this.accounts.isQuotaError(error)) {
-              this.switchAfterQuota(task, account.id, error.message);
-            } else {
-              this.setAuthRequired(error, account.id);
-            }
-            continue;
-          }
-        }
-        const slots = slotCache.get(account.id);
-        if (slots <= 0) {
-          this.recordTask(
-            task,
-            `账号“${account.name}”当前生成并发已满，继续排队`,
-          );
-          continue;
-        }
+        // Submit via API without applying the web UI's generation-count cap.
+        // Requests remain sequential; actual API refusals and durable intent
+        // recording still control whether the next request may be sent.
         const submitted = await this.submitTask(task, account);
         // Nothing may be sent while attempts cannot be recorded; polling goes on.
         if (submitted === 'not-durable') break;
-        if (task.status === 'generating') {
-          slotCache.set(account.id, slots - 1);
-        }
       }
     } catch (error) {
       this.store.log(`调度异常：${error.message}`, 'error');

@@ -14,6 +14,7 @@ const { Store } = require("./store");
 const { SavedGems, createGemDriver, cleanGemUrl } = require("./saved-gems");
 const { BridgeEngine } = require("./bridge-engine");
 const { watchGeminiJob } = require("./gemini-job-watchdog");
+const { pageFiles } = require("./gemini-page-files");
 const {
   DETECT_GEMINI_AUTH_SCRIPT,
   OPEN_GEMINI_LOGIN_SCRIPT,
@@ -811,6 +812,8 @@ async function runGeminiJob(account, job) {
 
   bridge?.assertTaskActive(job.id);
   const requestId = randomUUID();
+  const productPageFiles = pageFiles(job.files);
+  const referencePageFiles = pageFiles(job.referenceFiles);
   const temporary = prepareTemporaryGeminiFiles(job.files || [], requestId, "product");
   const referenceTemporary = prepareTemporaryGeminiFiles(
     job.referenceFiles || [],
@@ -850,17 +853,9 @@ async function runGeminiJob(account, job) {
     extractionJson: job.extractionJson || "",
     storyboardJson: job.storyboardJson || "",
     rawGroupsJson: job.rawGroupsJson || "",
-    files: (job.files || []).map(({ name, mime }) => ({
-      name,
-      mime,
-      data: [],
-    })),
+    files: productPageFiles,
     filePaths: temporary.filePaths,
-    referenceFiles: (job.referenceFiles || []).map(({ name, mime }) => ({
-      name,
-      mime,
-      data: [],
-    })),
+    referenceFiles: referencePageFiles,
     referenceFilePaths: referenceTemporary.filePaths,
   };
   if (protectedGeminiPageRuntime) {
@@ -917,14 +912,29 @@ async function smokeProtectedGeminiRuntime() {
     },
   });
   try {
-    await window.loadURL("data:text/html,<main>FlowCut runtime smoke</main>");
+    const fixture = `<form><rich-textarea><div contenteditable="true" aria-label="Gemini"></div></rich-textarea></form>
+      <script>globalThis.received=[];document.querySelector('[contenteditable]').addEventListener('paste',async event=>{
+        for(const file of event.clipboardData.files){
+          received.push({name:file.name,type:file.type,bytes:Array.from(new Uint8Array(await file.arrayBuffer()))});
+          const chip=document.createElement('button');chip.type='button';chip.setAttribute('aria-label','Remove attachment');chip.textContent=file.name;document.querySelector('form').appendChild(chip);
+        }
+      });</script>`;
+    await window.loadURL('data:text/html;charset=utf-8,'+encodeURIComponent(fixture));
     await window.webContents.executeJavaScript(
-      protectedGeminiPageRuntime,
+      protectedGeminiPageRuntime.replace('globalThis.__flowcutRunGeminiJob =', 'globalThis.__flowcutUploadSmoke = uploadFiles; globalThis.__flowcutRunGeminiJob ='),
       true,
     );
+    // Exercise actual Electron File/DataTransfer/paste after production JSON
+    // serialization, on an isolated fixture, with no Google request or quota.
+    const smokeFiles = pageFiles([
+      {name:'one.webp',mime:'image/webp',data:new Uint8Array([82,73,70,70,255,0,128])},
+      {name:'two.png',mime:'image/png',data:new Uint8Array([137,80,78,71,0,255])},
+    ]);
+    await window.webContents.executeJavaScript(`globalThis.__flowcutUploadSmoke(${JSON.stringify(smokeFiles)}, [])`, true);
     return await window.webContents.executeJavaScript(
       'typeof globalThis.__flowcutRunGeminiJob === "function" && ' +
-        'typeof globalThis.flowcutGeminiNative?.sendKey === "function"',
+        'typeof globalThis.flowcutGeminiNative?.sendKey === "function" && ' +
+        'received.length === 2 && received[0].bytes.join() === "82,73,70,70,255,0,128" && received[1].bytes.join() === "137,80,78,71,0,255"',
       true,
     );
   } finally {

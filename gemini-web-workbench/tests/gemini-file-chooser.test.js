@@ -3,9 +3,37 @@ const { EventEmitter } = require("node:events");
 const test = require("node:test");
 
 const {
+  CLICK_UPLOAD_CONTROL_SCRIPT,
   DETECT_GEMINI_AUTH_SCRIPT,
   uploadFilesViaChooser,
 } = require("../src/gemini-file-chooser");
+
+test('hidden stale upload menu is ignored in favor of visible trigger',()=>{
+  const vm=require('node:vm');
+  const make=(text,hidden)=>({isConnected:true,innerText:text,hidden,getAttribute:()=>text,
+    getBoundingClientRect:()=>({x:10,y:10,width:hidden?0:30,height:hidden?0:30})});
+  const stale=make('上传文件',true),trigger=make('上传和工具',false);
+  const result=vm.runInNewContext(CLICK_UPLOAD_CONTROL_SCRIPT,{
+    getComputedStyle:()=>({display:'block',visibility:'visible',opacity:'1'}),
+    document:{body:{innerText:''},querySelector:s=>s.includes('local-images')?stale:null,
+      querySelectorAll:s=>s.includes('local-images')?[stale]:[trigger]},
+  });
+  assert.equal(result.status,'upload-trigger-ready');
+});
+
+test('timeout cancels pending target lookup; it cannot click after return',async()=>{
+  const {webContents}=fixture(null);
+  let release;
+  webContents.executeJavaScript=()=>new Promise(resolve=>{release=resolve;});
+  const keepAlive=setTimeout(()=>{},200);
+  try {
+    const result=await uploadFilesViaChooser(webContents,['one.webp'],20);
+    assert.equal(result.ok,false);
+    release({status:'upload-item-ready',rect:{x:1,y:1,width:10,height:10}});
+    await new Promise(resolve=>setTimeout(resolve,30));
+    assert.equal(webContents.inputEvents.length,0);
+  }finally{clearTimeout(keepAlive);}
+});
 
 function fixture(clickResult) {
   class MockDebugger extends EventEmitter {

@@ -15,7 +15,7 @@ const CLICK_UPLOAD_CONTROL_SCRIPT = `(() => {
     'button, [role="button"], [role="menuitem"]'
   )].filter(visible);
   const uploadItem = () =>
-    document.querySelector('[data-test-id="local-images-files-uploader-button"]') ||
+    [...document.querySelectorAll('[data-test-id="local-images-files-uploader-button"]')].find(visible) ||
     controls().find((element) =>
       /上传文件|上传图片|从设备上传|Upload files?|Upload images?/i.test(
         [element.innerText, element.getAttribute("aria-label")]
@@ -84,7 +84,7 @@ const CLICK_UPLOAD_ITEM_SCRIPT = `(() => {
     'button, [role="button"], [role="menuitem"]'
   )].filter(visible);
   const item =
-    document.querySelector('[data-test-id="local-images-files-uploader-button"]') ||
+    [...document.querySelectorAll('[data-test-id="local-images-files-uploader-button"]')].find(visible) ||
     controls.find((element) =>
       /上传文件|上传图片|从设备上传|Upload files?|Upload images?/i.test(
         [element.innerText, element.getAttribute("aria-label")]
@@ -138,14 +138,16 @@ async function dispatchTrustedClick(webContents, target) {
   return true;
 }
 
-async function clickGeminiUploadItem(webContents, timeoutMs = 12_000) {
+async function clickGeminiUploadItem(webContents, timeoutMs = 12_000, signal) {
   const controlStartedAt = Date.now();
   let lastResult = null;
   while (Date.now() - controlStartedAt < timeoutMs) {
+    if (signal?.aborted) return { status: 'cancelled' };
     lastResult = await webContents.executeJavaScript(
       CLICK_UPLOAD_CONTROL_SCRIPT,
       true
     );
+    if (signal?.aborted) return { status: 'cancelled' };
     if (lastResult?.status === "clicked") return lastResult;
     if (lastResult?.status === "upload-item-ready") {
       if (!(await dispatchTrustedClick(webContents, lastResult))) {
@@ -176,10 +178,12 @@ async function clickGeminiUploadItem(webContents, timeoutMs = 12_000) {
 
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
+    if (signal?.aborted) return { status: 'cancelled' };
     lastResult = await webContents.executeJavaScript(
       CLICK_UPLOAD_ITEM_SCRIPT,
       true
     );
+    if (signal?.aborted) return { status: 'cancelled' };
     if (lastResult?.status === "clicked") return lastResult;
     if (lastResult?.status === "upload-item-ready") {
       if (!(await dispatchTrustedClick(webContents, lastResult))) {
@@ -274,6 +278,7 @@ async function uploadFilesViaChooser(webContents, filePaths, timeoutMs = 15_000)
   let timeout = null;
   let chooserListener = null;
   let fileInputObjectId = "";
+  const clickController = new AbortController();
   try {
     if (attachedHere) debuggerApi.attach("1.3");
     await debuggerApi.sendCommand("Page.enable", {
@@ -295,7 +300,7 @@ async function uploadFilesViaChooser(webContents, filePaths, timeoutMs = 15_000)
       timeout.unref?.();
     });
 
-    const clickPromise = clickGeminiUploadItem(webContents);
+    const clickPromise = clickGeminiUploadItem(webContents, timeoutMs, clickController.signal);
     const firstSignal = await Promise.race([
       clickPromise.then((result) => ({ type: "click", result })),
       chooserOpened.then((chooser) => ({ type: "chooser", chooser })),
@@ -382,6 +387,8 @@ async function uploadFilesViaChooser(webContents, filePaths, timeoutMs = 15_000)
       detail: error instanceof Error ? error.message : String(error),
     };
   } finally {
+    // A timed-out lookup must not click into the next attempt/conversation.
+    clickController.abort();
     if (timeout) clearTimeout(timeout);
     if (chooserListener) debuggerApi.removeListener("message", chooserListener);
     if (debuggerApi.isAttached()) {

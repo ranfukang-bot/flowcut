@@ -1,6 +1,15 @@
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function runWithActivatedGeminiWorker({
+let uploadTurn = Promise.resolve();
+// Native upload uses focus/input events: two account windows must not steal
+// focus from one another. Only serialize this short step, not text generation.
+function runWithActivatedGeminiWorker(options) {
+  const result = uploadTurn.then(() => activateGeminiWorker(options));
+  uploadTurn = result.catch(() => {});
+  return result;
+}
+
+async function activateGeminiWorker({
   workerWindow,
   ownerWindow,
   debugVisible = false,
@@ -10,7 +19,7 @@ async function runWithActivatedGeminiWorker({
     throw new TypeError("action must be a function");
   }
   if (!workerWindow || workerWindow.isDestroyed?.()) {
-    return action();
+    throw new Error('Gemini 上传窗口已关闭，请重试');
   }
 
   const wasVisible = Boolean(workerWindow.isVisible?.());

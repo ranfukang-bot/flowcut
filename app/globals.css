@@ -922,6 +922,7 @@ select, input, textarea { border: 1px solid #d7d7d1; background: #fff; color: va
 .status.seedance_blocked { background: #fff0ed; color: #9f4336; }
 .status.video_queued, .status.video_generating { background: #f0ebff; color: #684cb6; }
 .status.video_ready { background: #e4f8ec; color: #267a4b; }
+.status.review_pending { background: #fff0bf; color: #8a4b00; border: 1px solid #edbd53; font-weight: 700; }
 .status.failed { background: #fff0ed; color: #9f4336; }
 .task-row time, .table-row time { font-size: 8px; color: #9b9da2; }
 .quick-panel > button { width: 100%; display: grid; grid-template-columns: 36px 1fr auto; align-items: center; gap: 10px; border: 0; border-top: 1px solid #efefeb; background: white; padding: 13px 0; text-align: left; cursor: pointer; }

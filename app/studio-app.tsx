@@ -378,6 +378,10 @@ type UpdateState = {
 };
 
 
+function taskStatusClass(task: Task) {
+  return taskStatusLabel(task) === '待检查' ? 'review_pending' : task.status;
+}
+
 function taskStatusLabel(task: Task) {
   if (task.provider === "demo-engine") return "需重新用 Gemini 识别";
   if (["video_ready", "scheduled"].includes(task.status)) {
@@ -1839,7 +1843,7 @@ function Dashboard({
                   <div className="task-thumb">▶</div>
                   <div className="task-copy"><b>{task.product_name || task.title}</b><span>{task.gem_name}</span></div>
                   <div className="task-progress"><span style={{ width: `${Math.max(task.progress, 8)}%` }} /></div>
-                  <span className={`status ${task.status}`}>{taskStatusLabel(task)}</span>
+                  <span className={`status ${taskStatusClass(task)}`}>{taskStatusLabel(task)}</span>
                   <time>{formatTime(task.created_at)}</time>
                 </button>
               ))}
@@ -2742,7 +2746,7 @@ function TasksPage({
               </span>
             </button>
             <TaskChain task={task} compact />
-            <div className="task-live-status"><span className={`status ${task.status}`}>{taskStatusLabel(task)}</span><small>{progressText(task)}</small></div>
+            <div className="task-live-status"><span className={`status ${taskStatusClass(task)}`}>{taskStatusLabel(task)}</span><small>{progressText(task)}</small></div>
             <div className="row-actions">{task.download_path && task.review_status !== 'replaced' && <button onClick={() => void openVideo(task)}>查看视频</button>}<button onClick={() => onPreview(task)}>{failed(task) ? "查看 / 继续" : pendingReview(task) ? "审核" : "查看"}</button><button onClick={() => onDelete(task.id)}>×</button></div>
           </div>
         ))}
@@ -4150,7 +4154,7 @@ function PromptDrawer({
           <button onClick={onClose}>×</button>
         </div>
         <div className="drawer-status">
-          <span className={`status ${task.status}`}>
+          <span className={`status ${taskStatusClass(task)}`}>
             {taskStatusLabel(task)}
           </span>
           <em>

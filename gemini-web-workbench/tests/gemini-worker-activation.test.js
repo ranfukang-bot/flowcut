@@ -131,3 +131,17 @@ test("debug-visible worker stays visible", async () => {
     false
   );
 });
+
+test('parallel accounts serialize native focus only; a failed upload releases the next account', async()=>{
+  let release, entered;
+  const began=new Promise(resolve=>{entered=resolve;});
+  const hold=new Promise(resolve=>{release=resolve;});
+  const events=[];
+  const one=runWithActivatedGeminiWorker({workerWindow:mockWindow(),action:async()=>{events.push('one');entered();await hold;throw Error('upload failed');}});
+  const rejected=assert.rejects(one,/upload failed/);
+  await began;
+  const two=runWithActivatedGeminiWorker({workerWindow:mockWindow(),action:async()=>{events.push('two');return true;}});
+  await new Promise(resolve=>setTimeout(resolve,550));
+  assert.deepEqual(events,['one']);release();await rejected;
+  assert.equal(await two,true);assert.deepEqual(events,['one','two']);
+});

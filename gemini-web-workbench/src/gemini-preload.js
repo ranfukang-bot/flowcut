@@ -119,7 +119,10 @@ function loginOrChallengeVisible() {
 function rebuildFiles(files) {
   return files.map((item) => {
     const bytes =
-      item.data instanceof Uint8Array ? item.data : new Uint8Array(item.data);
+      typeof item.base64 === 'string'
+        ? Uint8Array.from(atob(item.base64), character => character.charCodeAt(0))
+        : item.data instanceof Uint8Array ? item.data : new Uint8Array(item.data);
+    if (!bytes.length) throw codedError('商品附件为空，已停止上传，请重新添加商品图片', 'UPLOAD_NOT_CONFIRMED');
     return new File([bytes], item.name, { type: item.mime || "image/jpeg" });
   });
 }

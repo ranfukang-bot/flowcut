@@ -149,8 +149,15 @@ function composerMatches(selectors) {
   ));
 }
 
+function attachmentCloseButtons() {
+  const matches = composerMatches(SELECTORS.attachmentCloseButton).filter(visible);
+  // Gemini's gem-icon-button host and its inner button both match. They are
+  // one removal control, not two files; count/click only the innermost match.
+  return matches.filter(item => !matches.some(child => child !== item && item.contains(child)));
+}
+
 function attachmentCount() {
-  const closeButtons = composerMatches(SELECTORS.attachmentCloseButton).filter(visible);
+  const closeButtons = attachmentCloseButtons();
   if (closeButtons.length) return closeButtons.length;
   const items = composerMatches(SELECTORS.attachedFileItem).filter(visible);
   // 一个附件的外层容器、卡片、缩略图可能同时命中，只数最内层的附件。
@@ -178,11 +185,14 @@ function fileNamesVisible(files) {
 }
 
 function uploadConfirmed(files, expectedCount) {
-  return attachmentCount() >= expectedCount || fileNamesVisible(files);
+  return attachmentCount() === expectedCount;
 }
 
+let pendingUploadCount = 0;
+
 async function clearExistingAttachments() {
-  const existing = composerMatches(SELECTORS.attachmentCloseButton);
+  pendingUploadCount = 0;
+  const existing = attachmentCloseButtons();
   for (const closeButton of existing) {
     closeButton.click();
     await sleep(150);
@@ -373,8 +383,13 @@ async function waitForUploadSettlement(files, expectedCount) {
       );
     }
     const processing = uploadProcessingVisible();
+    const network = await ipcRenderer.invoke('gemini:upload-status', 'status');
+    if (!network?.available) throw codedError('无法确认图片上传网络状态，请重试', 'UPLOAD_NOT_CONFIRMED');
+    if (network.failed.length) throw codedError(`Gemini 图片上传失败：${network.failed.join('，')}`, 'UPLOAD_NOT_CONFIRMED');
+    if (attachmentCount() > expectedCount) throw codedError('Gemini 出现重复附件，已停止发送并等待重新上传', 'UPLOAD_NOT_CONFIRMED');
+    const transferred = network.completed > 0 && network.pending === 0 && network.quietMs >= 1500;
     const attached = uploadConfirmed(files, expectedCount);
-    if (processing || !attached) {
+    if (processing || !attached || !transferred) {
       stableSince = 0;
     } else if (!stableSince) {
       stableSince = Date.now();
@@ -388,7 +403,9 @@ async function waitForUploadSettlement(files, expectedCount) {
         fileCount: files.length,
         attachmentCount: attachmentCount(),
         waitedMs: Date.now() - startedAt,
+        uploadRequests: network.completed,
       });
+      pendingUploadCount = expectedCount;
       return;
     }
     await sleep(500);
@@ -412,6 +429,8 @@ async function uploadFiles(inputFiles, filePaths = []) {
   const files = rebuildFiles(inputFiles);
   const before = attachmentCount();
   const wanted = before + files.length;
+  const monitor = await ipcRenderer.invoke('gemini:upload-status', 'begin');
+  if (!monitor?.available) throw codedError('无法监测 Gemini 附件上传，请重新运行任务', 'UPLOAD_NOT_CONFIRMED');
   let input = firstConnected('input[type="file"]');
   let nativeChooserResult = null;
 
@@ -487,8 +506,8 @@ async function uploadFiles(inputFiles, filePaths = []) {
         const transfer = new DataTransfer();
         files.forEach((file) => transfer.items.add(file));
         input.files = transfer.files;
-        input.dispatchEvent(new Event("change", { bubbles: true }));
         input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
         return true;
       },
     },
@@ -518,6 +537,11 @@ async function uploadFiles(inputFiles, filePaths = []) {
 
   // Same primary path as the working browser plugin; native chooser is backup.
   for (const strategy of [strategies[1], strategies[0], ...strategies.slice(2)]) {
+    const previous = await ipcRenderer.invoke('gemini:upload-status', 'status');
+    if (previous?.observed || attachmentCount() > before) {
+      await waitForUploadSettlement(files, wanted);
+      return;
+    }
     let fired = false;
     try {
       fired = await strategy.run();
@@ -553,20 +577,13 @@ async function uploadFiles(inputFiles, filePaths = []) {
         uploadButtonCount: all(SELECTORS.uploadButton).filter(visible).length,
       });
     }
-    if (attachmentCount() > before) {
-      const completed = await waitUntil(
-        () => uploadConfirmed(files, wanted),
-        30_000,
-        `等待全部商品图上传完成（${strategy.name}）`
-      )
-        .then(() => true)
-        .catch(() => false);
-      if (completed) {
-        await ipcRenderer.invoke("gemini:send-key", "Escape");
-        await waitForUploadSettlement(files, wanted);
-        return;
-      }
-      break;
+    const network = await ipcRenderer.invoke('gemini:upload-status', 'status');
+    if (attachmentCount() > before || network?.observed > 0 ||
+        (strategy.name === 'native-chooser' && nativeChooserResult?.ok)) {
+      // An accepted/partial upload owns this attempt. Never append a second
+      // copy through another strategy just because previews arrive late.
+      await waitForUploadSettlement(files, wanted);
+      return;
     }
   }
   ipcRenderer.send("gemini:job-diagnostic", {
@@ -636,6 +653,9 @@ async function submitPrompt() {
   let button = await waitFor(SELECTORS.sendButton, 30_000, "发送按钮");
   const startedAt = Date.now();
   while (button.disabled || button.getAttribute("aria-disabled") === "true") {
+    if (loginOrChallengeVisible()) throw codedError('Gemini 登录已失效，请重新登录', 'NEEDS_LOGIN');
+    const pageError = visibleGeminiError();
+    if (pageError) throw codedError(`Gemini 页面返回错误：${pageError}`, 'GEMINI_PAGE_ERROR');
     if (Date.now() - startedAt > 5 * 60_000) {
       throw codedError(
         "发送按钮长时间未就绪，商品图可能仍在处理",
@@ -644,6 +664,13 @@ async function submitPrompt() {
     }
     await sleep(500);
     button = first(SELECTORS.sendButton) || button;
+  }
+  if (pendingUploadCount) {
+    const network = await ipcRenderer.invoke('gemini:upload-status', 'status');
+    if (attachmentCount() !== pendingUploadCount || uploadProcessingVisible() ||
+        !network?.available || network.pending || network.failed.length || !network.completed) {
+      throw codedError('发送前复核发现附件未完成或数量变化，已停止发送并等待重试', 'UPLOAD_NOT_CONFIRMED');
+    }
   }
   const userMessageCountBefore = userMessageCount();
   const messagesBefore = new Set(userMessages());
@@ -742,6 +769,7 @@ async function submitPrompt() {
     );
   }
   ipcRenderer.send('gemini:job-diagnostic', {phase:'submit_confirmed',characters:promptLengthBefore,attachmentsBefore,matchingMessage:true});
+  pendingUploadCount = 0;
   await sleep(800);
 }
 

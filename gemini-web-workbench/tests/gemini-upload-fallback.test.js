@@ -38,7 +38,7 @@ test('page paste carries real bytes without invoking the focus-dependent chooser
     uploadConfirmed:(_files,count)=>pasted.length===count,
     waitUntil:async predicate=>{assert.equal(predicate(),true);},
     waitForUploadSettlement:async files=>{assert.equal(files.length,2);settled=true;},
-    ipcRenderer:{send(){},async invoke(channel){if(channel==='gemini:upload-files-via-chooser'){nativeCalls++;return {ok:false,code:'FILE_CHOOSER_FAILED'};}}},
+    ipcRenderer:{send(){},async invoke(channel){if(channel==='gemini:upload-status')return {available:true,observed:0,pending:0,completed:0,failed:[],quietMs:0};if(channel==='gemini:upload-files-via-chooser'){nativeCalls++;return {ok:false,code:'FILE_CHOOSER_FAILED'};}}},
   });vm.runInContext(rebuild+'\n'+upload,context);
   await context.uploadFiles(JSON.parse(JSON.stringify(pageFiles(input))),['one.webp','two.png']);
   assert.equal(nativeCalls,0);assert.equal(settled,true);assert.equal(pasted.length,2);

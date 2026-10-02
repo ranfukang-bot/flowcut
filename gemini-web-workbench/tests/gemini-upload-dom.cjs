@@ -20,6 +20,9 @@ async function main() {
     assert.deepEqual(await check(), {count:0,busy:false,two:false}, '历史附件和无关进度条不能参与判断');
     await page.locator('#attachments').evaluate(el => {el.innerHTML = '<div class="attachment-chip"><img alt="uploaded image" src="blob:a"><button aria-label="Remove attachment">Remove</button></div><div class="attachment-chip"><img alt="uploaded image" src="blob:b"><button aria-label="Remove attachment">Remove</button></div>';});
     assert.deepEqual(await check(), {count:2,busy:false,two:true}, '识别编辑器外面的兄弟附件');
+    await page.locator('#attachments').evaluate(el => {el.innerHTML = '<gem-icon-button class="gem-attachment-close-button" style="display:inline-block"><button aria-label="关闭附件">Close 1</button></gem-icon-button><gem-icon-button class="gem-attachment-close-button" style="display:inline-block"><button aria-label="关闭附件">Close 2</button></gem-icon-button>';});
+    assert.deepEqual(await check(), {count:2,busy:false,two:true}, 'Gemini 实际自定义按钮的外壳和内部按钮不能重复计数');
+    await page.locator('#attachments').evaluate(el => {el.innerHTML = '<div class="attachment-chip"><button aria-label="Remove attachment">Remove 1</button></div><div class="attachment-chip"><button aria-label="Remove attachment">Remove 2</button></div>';});
     await page.locator('#attachments').evaluate(el => {el.firstElementChild.insertAdjacentHTML('beforeend','<span role="progressbar">Processing</span>');});
     assert.equal((await check()).busy,true, '真实附件处理动画必须等待');
     await page.locator('#attachments [role="progressbar"]').evaluate(el => {el.style.display='none';});
@@ -29,7 +32,7 @@ async function main() {
     await page.locator('#attachments').evaluate(el => {el.innerHTML = '<div class="attachment-container"><div class="attachment-chip"><img alt="uploaded image" src="blob:a"></div><div class="attachment-chip"><img alt="uploaded image" src="blob:b"></div></div>';});
     assert.deepEqual(await check(), {count:2,busy:false,two:true});
     // Exercise the real upload strategy with a native-chooser IPC stub.
-    await page.evaluate(() => { document.querySelector('#attachments').replaceChildren(); window.ipcRenderer={send(){},async invoke(channel){ if(channel==='gemini:upload-files-via-chooser')return {ok:true,selectedFileCount:1}; }}; });
+    await page.evaluate(() => { document.querySelector('#attachments').replaceChildren(); window.ipcRenderer={send(){},async invoke(channel){ if(channel==='gemini:upload-status')return {available:true,observed:0,pending:0,completed:0,failed:[],quietMs:0}; if(channel==='gemini:upload-files-via-chooser')return {ok:true,selectedFileCount:1}; }}; });
     const partial = await page.evaluate(async () => {try {await uploadTest.uploadFiles([{name:'a.png',mime:'image/png',data:[1]},{name:'b.png',mime:'image/png',data:[2]}],['a.png','b.png']);return 'unexpected-success';}catch(e){return e.code;}});
     assert.equal(partial,'UPLOAD_NOT_CONFIRMED','原生选择只收到一张，不能继续发送或重复追加');
     console.log('PASS: real Chromium attachment siblings, nested cards, history isolation, busy/hidden indicators and partial selection');

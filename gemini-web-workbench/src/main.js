@@ -15,6 +15,8 @@ const { SavedGems, createGemDriver, cleanGemUrl } = require("./saved-gems");
 const { BridgeEngine } = require("./bridge-engine");
 const { watchGeminiJob } = require("./gemini-job-watchdog");
 const { pageFiles } = require("./gemini-page-files");
+const { observeGeminiUploads } = require('./gemini-upload-network');
+const uploadMonitors = new Map();
 const {
   DETECT_GEMINI_AUTH_SCRIPT,
   OPEN_GEMINI_LOGIN_SCRIPT,
@@ -821,6 +823,9 @@ async function runGeminiJob(account, job) {
     `${requestId}-reference`,
     "reference"
   );
+  const contentsId = window.webContents.id;
+  const uploadMonitor = await observeGeminiUploads(window.webContents);
+  uploadMonitors.set(contentsId, uploadMonitor);
   const resultPromise = new Promise((resolve, reject) => {
     const watchdog = watchGeminiJob({
       contents: window.webContents,
@@ -890,6 +895,8 @@ async function runGeminiJob(account, job) {
   try {
     return await resultPromise;
   } finally {
+    uploadMonitors.delete(contentsId);
+    uploadMonitor.stop();
     // A locked temp file must not replace a finished Gemini result with an error.
     for (const files of [temporary, referenceTemporary]) {
       try {
@@ -911,6 +918,11 @@ async function smokeProtectedGeminiRuntime() {
       nodeIntegration: false,
       sandbox: false,
     },
+  });
+  const smokeContentsId = window.webContents.id;
+  uploadMonitors.set(smokeContentsId, {
+    begin() { return this.status(); },
+    status() { return {available:true, observed:0, pending:0, completed:1, failed:[], quietMs:5000}; },
   });
   try {
     const fixture = `<form><rich-textarea><div contenteditable="true" aria-label="Gemini"></div></rich-textarea><button type="button" aria-label="Send">Send</button></form>
@@ -945,6 +957,7 @@ async function smokeProtectedGeminiRuntime() {
       true,
     );
   } finally {
+    uploadMonitors.delete(smokeContentsId);
     if (!window.isDestroyed()) window.destroy();
   }
 }
@@ -1023,6 +1036,11 @@ ipcMain.on("gemini:job-diagnostic", (event, diagnostic) => {
 });
 
 function bindIpc() {
+  ipcMain.handle('gemini:upload-status', (event, action) => {
+    const monitor = uploadMonitors.get(event.sender.id);
+    if (!monitor) return { available:false, observed:0, pending:0, completed:0, failed:[], quietMs:0 };
+    return action === 'begin' ? monitor.begin() : monitor.status();
+  });
   videoReview = new VideoReview({ userData: app.getPath('userData'), shell,
     defaultDirectory: () => seedanceRuntime?.store?.settings.downloadDirectory || path.join(app.getPath('downloads'), 'FlowCut视频'),
     request: async (route, init = {}) => {

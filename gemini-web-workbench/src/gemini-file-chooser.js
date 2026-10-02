@@ -336,32 +336,33 @@ async function uploadFilesViaChooser(webContents, filePaths, timeoutMs = 15_000)
       })
       .catch(() => null);
     fileInputObjectId = String(resolvedNode?.object?.objectId || "");
+    // Some uploaders clear input.files in their change handler. Capture the
+    // trusted event before that handler, so a successful selection stays known.
+    if (fileInputObjectId) {
+      await debuggerApi.sendCommand('Runtime.callFunctionOn', {
+        objectId: fileInputObjectId,
+        functionDeclaration: `function () {
+          this.__flowcutSelection = null;
+          this.__flowcutCapture = () => {
+            this.__flowcutSelection = Array.from(this.files || []).map(file => ({name:file.name,size:file.size,type:file.type}));
+          };
+          this.addEventListener('input', this.__flowcutCapture, {capture:true,once:true});
+        }`,
+        returnByValue: true,
+      });
+    }
     await debuggerApi.sendCommand("DOM.setFileInputFiles", {
       files: paths,
       backendNodeId: chooser.backendNodeId,
     });
-    // New Gemini builds may not notify the Angular uploader after CDP assigns
-    // the files. Dispatch both events on the exact chooser input so the page
-    // starts creating and uploading its attachment cards.
-    if (fileInputObjectId) {
-      await debuggerApi
-        .sendCommand("Runtime.callFunctionOn", {
-          objectId: fileInputObjectId,
-          functionDeclaration: `function () {
-            this.dispatchEvent(new Event("input", { bubbles: true }));
-            this.dispatchEvent(new Event("change", { bubbles: true }));
-            return true;
-          }`,
-          returnByValue: true,
-        })
-        .catch(() => null);
-    }
+    // Chromium already emits input/change for DOM.setFileInputFiles. Emitting
+    // them again starts a second upload (three files become six attachments).
     const selectedFiles = fileInputObjectId
       ? await debuggerApi
           .sendCommand("Runtime.callFunctionOn", {
             objectId: fileInputObjectId,
             functionDeclaration: `function () {
-              return Array.from(this.files || []).map((file) => ({
+              return this.__flowcutSelection || Array.from(this.files || []).map((file) => ({
                 name: String(file.name || ""),
                 size: Number(file.size || 0),
                 type: String(file.type || "")
@@ -393,6 +394,13 @@ async function uploadFilesViaChooser(webContents, filePaths, timeoutMs = 15_000)
     if (chooserListener) debuggerApi.removeListener("message", chooserListener);
     if (debuggerApi.isAttached()) {
       if (fileInputObjectId) {
+        await debuggerApi.sendCommand('Runtime.callFunctionOn', {
+          objectId:fileInputObjectId,
+          functionDeclaration:`function () {
+            if (this.__flowcutCapture) this.removeEventListener('input', this.__flowcutCapture, true);
+            delete this.__flowcutCapture; delete this.__flowcutSelection;
+          }`,
+        }).catch(() => {});
         await debuggerApi
           .sendCommand("Runtime.releaseObject", {
             objectId: fileInputObjectId,

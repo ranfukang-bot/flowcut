@@ -69,7 +69,9 @@ function filesUnder(root) {
   return output;
 }
 
-const siteDistRoot = path.resolve(projectRoot, "..", "dist");
+const siteDistRoot = process.env.FLOWCUT_SITE_DIST_ROOT
+  ? path.resolve(process.env.FLOWCUT_SITE_DIST_ROOT)
+  : path.resolve(projectRoot, "..", "dist");
 const geminiPreloadSource = fs.readFileSync(
   path.join(sourceRoot, "gemini-preload.js"),
   "utf8",
@@ -89,6 +91,7 @@ const geminiPageRuntime = `(() => {
   if (!native) throw new Error("FlowCut Gemini native bridge is unavailable");
   const ipcRenderer = {
     invoke(channel, ...args) {
+      if (channel === "gemini:upload-status") return native.uploadStatus(...args);
       if (channel === "gemini:upload-files-via-chooser") return native.uploadFiles(...args);
       if (channel === "gemini:replace-editor-text") return native.replaceEditorText(...args);
       if (channel === "gemini:send-key") return native.sendKey(...args);

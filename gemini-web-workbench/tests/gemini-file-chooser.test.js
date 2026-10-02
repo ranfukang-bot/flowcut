@@ -105,9 +105,8 @@ test("native Gemini upload assigns files through the intercepted chooser", async
   assert.equal(result.selectedFileCount, 2);
   const selectedAt = debuggerApi.commands.findIndex(command => command.method === 'DOM.setFileInputFiles');
   const notifiedAt = debuggerApi.commands.findIndex(command => command.method === 'Runtime.callFunctionOn' && command.params.functionDeclaration.includes('dispatchEvent'));
-  assert.ok(notifiedAt > selectedAt, '参考版行为：设置文件之后必须通知页面 input/change');
-  assert.match(debuggerApi.commands[notifiedAt].params.functionDeclaration, /new Event\("input"/);
-  assert.match(debuggerApi.commands[notifiedAt].params.functionDeclaration, /new Event\("change"/);
+  assert.ok(selectedAt >= 0);
+  assert.equal(notifiedAt, -1, 'CDP 已触发文件事件，不得重复通知导致双份上传');
   assert.deepEqual(
     debuggerApi.commands.find(
       (command) => command.method === "DOM.setFileInputFiles"

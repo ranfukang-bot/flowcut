@@ -17,7 +17,7 @@ function fixture(mode='correct') {
   const context=vm.createContext({String,Number,Math,Set,JSON,compactPrompt,location,document:{title:'Gemini',createRange:()=>({selectNodeContents(){}}),execCommand:(_a,_b,value)=>{text=mode==='truncated'?value.slice(0,-1):value;return true;}},
     window:{getSelection:()=>({removeAllRanges(){},addRange(){}})},Date:{now:()=>now},
     SELECTORS:{promptInput:'editor',sendButton:'send'},first:selector=>selector==='send'?button:editor,waitFor:async selector=>selector==='send'?button:editor,
-    editorText:()=>text,sleep:async ms=>{now+=ms;},
+    editorText:()=>text,sleep:async ms=>{now+=ms;},pendingUploadCount:0,
     waitUntil:async(fn,timeout)=>{const end=now+timeout;while(now<end){if(await fn())return;now+=300;}throw Error('timeout');},
     userMessages:()=>messages,userMessageCount:()=>messages.length,attachmentCount:()=>text?2:0,responseSnapshot:()=>[],generationInProgress:()=>false,
     codedError:(message,code)=>Object.assign(Error(message),{code}),

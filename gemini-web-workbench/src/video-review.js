@@ -127,7 +127,12 @@ class VideoReview {
         const source = fs.realpathSync(task.download_path);
         if (within(fs.realpathSync(reviewDirectory(this.userData, id)), source)) fs.unlinkSync(source);
       }
-      await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id, path: record.file, confirmed: true }) });
+      if (!record.approvedAt) {
+        record.approvedAt = new Date().toISOString();
+        record.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        saveRecord(recordFile,record);
+      }
+      await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id, path: record.file, confirmed: true, approvedAt:record.approvedAt, timeZone:record.timeZone }) });
       return { file: record.file, legacy: record.legacy || false };
     } catch (error) {
       if (!fs.existsSync(path.join(reviewDirectory(this.userData, id), 'approval.json'))) {

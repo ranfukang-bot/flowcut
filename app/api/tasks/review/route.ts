@@ -1,4 +1,5 @@
 import { ensureWorkspace, getDb, jsonError } from "../../../../lib/storage";
+import { approvalDay, APPROVAL_COUNT_INSERT } from "../../../../lib/approval-stats";
 
 export async function GET(request: Request) {
   try {
@@ -14,7 +15,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     await ensureWorkspace();
-    const body = await request.json() as { id: string; path: string; confirmed: boolean; action?: string; replacementId?: string };
+    const body = await request.json() as { id: string; path: string; confirmed: boolean; action?: string; replacementId?: string; approvedAt?: string; timeZone?: string };
     if (body.confirmed !== true || !body.id) return Response.json({ error: "请确认审核通过" }, { status: 400 });
     if (body.action === 'discard') {
       const db = getDb();
@@ -35,8 +36,17 @@ export async function POST(request: Request) {
       return result.meta.changes ? Response.json({ok:true}) : Response.json({error:'任务已重做或审核状态已改变，请刷新'}, {status:409});
     }
     if (!body.path) return Response.json({error:'缺少放行路径'}, {status:400});
-    const result = await getDb().prepare(`UPDATE tasks SET review_status='approved', reviewed_at=?, approved_path=?
-      WHERE id=? AND review_status IN ('approving','approved') AND status IN ('video_ready','scheduled') AND download_path IS NOT NULL`).bind(new Date().toISOString(), body.path, body.id).run();
+    const db = getDb();
+    const previous = await db.prepare('SELECT reviewed_at FROM tasks WHERE id=?').bind(body.id).first<{reviewed_at:string|null}>();
+    const approvedAt = previous?.reviewed_at || body.approvedAt || new Date().toISOString();
+    let day: string;
+    try { day = approvalDay(approvedAt, body.timeZone || 'UTC'); }
+    catch { return Response.json({error:'审核时间或时区无效'}, {status:400}); }
+    const [result] = await db.batch([
+      db.prepare(`UPDATE tasks SET review_status='approved', reviewed_at=COALESCE(reviewed_at,?), approved_path=?
+        WHERE id=? AND review_status IN ('approving','approved') AND status IN ('video_ready','scheduled') AND download_path IS NOT NULL`).bind(approvedAt, body.path, body.id),
+      db.prepare(APPROVAL_COUNT_INSERT).bind(day,body.id),
+    ]);
     if (!result.meta.changes) return Response.json({ error: "任务尚未下载完成或已删除" }, { status: 409 });
     return Response.json({ ok: true });
   } catch (error) { return jsonError(error); }

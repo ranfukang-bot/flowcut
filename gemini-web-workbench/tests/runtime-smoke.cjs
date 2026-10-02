@@ -118,6 +118,7 @@ async function main() {
   assert.equal(archiveRow.product_image_key, workspace.products[0].images[0].object_key, 'task thumbnail uses the first product image');
   assert.equal(archiveRow.image_count, 2, 'multiple images still show only the first thumbnail');
   await require('./recreate-task-smoke.cjs')({ api, base, headers, sourceId: archivedTask.id });
+  await require('./approval-stats-smoke.cjs')({api,base,headers,productId:created.id,gemId:testGem.id});
   await api("/api/tasks?all=1", { method: "DELETE" });
   for (let i = 0; i < 3; i++) {
     await api('/api/tasks', { method: 'POST', body: JSON.stringify({ productId: created.id, gemId: testGem.id, tiktokAccountName: 'clear-test', geminiAccountId: 'old-default' }) });
@@ -164,6 +165,10 @@ async function main() {
   await page.getByRole("navigation").getByRole("button", { name: "剧本提示词" }).waitFor();
   await page.getByRole("button", { name: "更多工具" }).click();
   await page.getByRole("navigation").getByRole("button", { name: "任务队列" }).click();
+  await page.getByRole('region',{name:'每日通过统计'}).waitFor();
+  await page.getByLabel('统计日期').fill('2026-01-16');
+  await page.getByRole('region',{name:'每日通过统计'}).getByText('共 2 条',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'今天',exact:true}).click();
   await page.getByText("测试账号 · Gemini 正在生成 · 已接收 320 字 · 12 秒").waitFor();
   const taskThumbnail = page.locator('.tasks-table .task-product-thumbnail img').first();
   await taskThumbnail.waitFor();

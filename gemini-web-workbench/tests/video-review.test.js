@@ -40,9 +40,11 @@ test('approval needs explicit confirmation, publishes exact product filename and
 test('lost approval response and publisher deleting output never requeues a duplicate',async t=>{
   const f=fixture(t);f.failReport(true);await assert.rejects(f.runtime.approve('task-1',true));
   const record=JSON.parse(fs.readFileSync(path.join(path.dirname(f.source),'approval.json')));
+  assert.ok(record.approvedAt && record.timeZone,'approval time and local timezone persist before writeback');
   fs.unlinkSync(record.file);f.failReport(false);
   await f.runtime.approve('task-1',true);
   assert.equal(fs.existsSync(record.file),false);assert.equal(f.task.review_status,'approved');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(path.dirname(f.source),'approval.json'))).approvedAt,record.approvedAt,'retry keeps original approval time');
 });
 test('missing video and invalid product ID do not approve or expose a file',async t=>{
   const f=fixture(t);f.task.product_external_id='wrong';await assert.rejects(f.runtime.approve('task-1',true),/商品 ID/);

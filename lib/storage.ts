@@ -113,6 +113,10 @@ async function initializeWorkspace() {
     db.prepare(`CREATE TABLE IF NOT EXISTS tiktok_accounts (
       id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL
     )`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS approval_counts (
+      task_id TEXT PRIMARY KEY, account_name TEXT NOT NULL, day_key TEXT NOT NULL, approved_at TEXT NOT NULL
+    )`),
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_approval_counts_day ON approval_counts(day_key,account_name)"),
     db.prepare(`CREATE TABLE IF NOT EXISTS provider_configs (
       provider TEXT PRIMARY KEY, config_json TEXT NOT NULL DEFAULT '{}',
       encrypted_secret TEXT, secret_iv TEXT, updated_at TEXT NOT NULL

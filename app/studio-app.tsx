@@ -21,6 +21,7 @@ import {
 import { confirmAction } from "./confirm-action";
 import { useImageProductId } from "./use-image-product-id";
 import { DEFAULT_GEM_REQUEST, renderGemRequest, validateGemRequest } from "../lib/gem-request";
+import { ApprovalStats } from './approval-stats';
 
 type Gem = {
   id: string;
@@ -2702,6 +2703,7 @@ function TasksPage({
         onAction={onClearCompleted}
       />
       <button className="secondary danger-text clear-all-tasks" onClick={onClearAll}>清除全部任务</button>
+      <ApprovalStats refreshKey={tasks.map(task=>`${task.id}:${task.review_status}`).join('|')} />
       <button className="secondary" onClick={async () => {
         setVideoError('');
         try {

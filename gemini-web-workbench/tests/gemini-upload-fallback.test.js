@@ -25,7 +25,7 @@ test('empty attachments cannot reach native or fallback upload',()=>{
   const context=vm.createContext({File,Uint8Array,atob,codedError});vm.runInContext(rebuild,context);
   assert.throws(()=>context.rebuildFiles([{name:'bad.png',data:[]}]),{code:'UPLOAD_NOT_CONFIRMED'});
 });
-test('native chooser timeout falls back to paste with real bytes before settlement',async()=>{
+test('page paste carries real bytes without invoking the focus-dependent chooser',async()=>{
   let pasted=[],settled=false,nativeCalls=0;
   const editor={focus(){},dispatchEvent(event){pasted=event.clipboardData.files;}};
   class Transfer {constructor(){this.files=[];this.items={add:file=>this.files.push(file)};}}
@@ -41,7 +41,7 @@ test('native chooser timeout falls back to paste with real bytes before settleme
     ipcRenderer:{send(){},async invoke(channel){if(channel==='gemini:upload-files-via-chooser'){nativeCalls++;return {ok:false,code:'FILE_CHOOSER_FAILED'};}}},
   });vm.runInContext(rebuild+'\n'+upload,context);
   await context.uploadFiles(JSON.parse(JSON.stringify(pageFiles(input))),['one.webp','two.png']);
-  assert.equal(nativeCalls,1);assert.equal(settled,true);assert.equal(pasted.length,2);
+  assert.equal(nativeCalls,0);assert.equal(settled,true);assert.equal(pasted.length,2);
   for(let i=0;i<input.length;i++)assert.deepEqual(new Uint8Array(await pasted[i].arrayBuffer()),input[i].data);
 });
 test('production page job uses byte-preserving payload for product and reference files',()=>{

@@ -53,6 +53,7 @@ let bridge;
 let mainWindow;
 let seedanceRuntime;
 let publisherRuntime;
+let videoReview;
 let flowcutProjectRoot = "";
 let localSiteProcess = null;
 let localSiteStartPromise = null;
@@ -912,16 +913,20 @@ async function smokeProtectedGeminiRuntime() {
     },
   });
   try {
-    const fixture = `<form><rich-textarea><div contenteditable="true" aria-label="Gemini"></div></rich-textarea></form>
+    const fixture = `<form><rich-textarea><div contenteditable="true" aria-label="Gemini"></div></rich-textarea><button type="button" aria-label="Send">Send</button></form>
       <script>globalThis.received=[];document.querySelector('[contenteditable]').addEventListener('paste',async event=>{
         for(const file of event.clipboardData.files){
           received.push({name:file.name,type:file.type,bytes:Array.from(new Uint8Array(await file.arrayBuffer()))});
           const chip=document.createElement('button');chip.type='button';chip.setAttribute('aria-label','Remove attachment');chip.textContent=file.name;document.querySelector('form').appendChild(chip);
         }
-      });</script>`;
+      });document.querySelector('[aria-label="Send"]').onclick=()=>{
+        const editor=document.querySelector('[contenteditable]');const query=document.createElement('user-query');
+        query.style.display='block';query.textContent=editor.innerText;query.dataset.files=String(received.length);document.body.appendChild(query);
+        editor.innerText='';document.querySelectorAll('[aria-label="Remove attachment"]').forEach(chip=>chip.remove());
+      };</script>`;
     await window.loadURL('data:text/html;charset=utf-8,'+encodeURIComponent(fixture));
     await window.webContents.executeJavaScript(
-      protectedGeminiPageRuntime.replace('globalThis.__flowcutRunGeminiJob =', 'globalThis.__flowcutUploadSmoke = uploadFiles; globalThis.__flowcutRunGeminiJob ='),
+      protectedGeminiPageRuntime.replace('globalThis.__flowcutRunGeminiJob =', 'globalThis.__flowcutUploadSmoke = uploadFiles; globalThis.__flowcutTypeSmoke = typePrompt; globalThis.__flowcutSubmitSmoke = submitPrompt; globalThis.__flowcutRunGeminiJob ='),
       true,
     );
     // Exercise actual Electron File/DataTransfer/paste after production JSON
@@ -931,10 +936,12 @@ async function smokeProtectedGeminiRuntime() {
       {name:'two.png',mime:'image/png',data:new Uint8Array([137,80,78,71,0,255])},
     ]);
     await window.webContents.executeJavaScript(`globalThis.__flowcutUploadSmoke(${JSON.stringify(smokeFiles)}, [])`, true);
+    await window.webContents.executeJavaScript(`(async()=>{await __flowcutTypeSmoke('印尼，iPhone实拍质感。\\n仅输出文字提示词。');await __flowcutSubmitSmoke();})()`,true);
     return await window.webContents.executeJavaScript(
       'typeof globalThis.__flowcutRunGeminiJob === "function" && ' +
         'typeof globalThis.flowcutGeminiNative?.sendKey === "function" && ' +
-        'received.length === 2 && received[0].bytes.join() === "82,73,70,70,255,0,128" && received[1].bytes.join() === "137,80,78,71,0,255"',
+        'received.length === 2 && received[0].bytes.join() === "82,73,70,70,255,0,128" && received[1].bytes.join() === "137,80,78,71,0,255" && ' +
+        'document.querySelector("user-query").dataset.files === "2" && document.querySelector("user-query").textContent.includes("仅输出文字提示词。")',
       true,
     );
   } finally {
@@ -997,15 +1004,16 @@ ipcMain.on("gemini:job-stage", (event, result) => {
     .catch(() => {});
 });
 
-ipcMain.on("gemini:job-diagnostic", (_event, diagnostic) => {
-  const active = [...pendingJobs.values()][0];
+ipcMain.on("gemini:job-diagnostic", (event, diagnostic) => {
+  const active = [...pendingJobs.values()].find(job => job.contentsId === event.sender.id);
   const accountId = active?.accountId;
   const window = accountId ? workerWindows.get(accountId) : null;
   const informational =
+    ['upload_accepted', 'upload_settled', 'prompt_written', 'submit_confirmed'].includes(diagnostic?.phase) ||
     diagnostic?.phase === "upload_native_confirmed_dom_changed" ||
     diagnostic?.phase === "upload_native_chooser_failed";
   store.log(
-    `Gemini 页面诊断：${JSON.stringify(diagnostic)}`,
+    `Gemini 页面诊断：${JSON.stringify({...diagnostic, taskId:active?.taskId, accountId})}`,
     informational ? "info" : "warn"
   );
   if (!informational && window && !window.isDestroyed()) {
@@ -1015,7 +1023,7 @@ ipcMain.on("gemini:job-diagnostic", (_event, diagnostic) => {
 });
 
 function bindIpc() {
-  const videoReview = new VideoReview({ userData: app.getPath('userData'), shell,
+  videoReview = new VideoReview({ userData: app.getPath('userData'), shell,
     defaultDirectory: () => seedanceRuntime?.store?.settings.downloadDirectory || path.join(app.getPath('downloads'), 'FlowCut视频'),
     request: async (route, init = {}) => {
       const response = await fetch(store.state.settings.flowcutUrl.replace(/\/+$/, '') + route, {
@@ -1074,6 +1082,9 @@ function bindIpc() {
   });
   ipcMain.handle("gemini:replace-editor-text", async (event, text) => {
     const webContents = event.sender;
+    return runWithActivatedGeminiWorker({
+      workerWindow:BrowserWindow.fromWebContents(webContents),ownerWindow:mainWindow,
+      debugVisible:showGeminiWorkerForDebug,action:async()=>{
     webContents.sendInputEvent({
       type: "keyDown",
       keyCode: "A",
@@ -1086,14 +1097,21 @@ function bindIpc() {
     });
     webContents.sendInputEvent({ type: "keyDown", keyCode: "Backspace" });
     webContents.sendInputEvent({ type: "keyUp", keyCode: "Backspace" });
-    webContents.insertText(String(text || ""));
+    await webContents.insertText(String(text || ""));
     return true;
+      },
+    });
   });
   ipcMain.handle("gemini:send-key", async (event, requestedKey) => {
+    return runWithActivatedGeminiWorker({
+      workerWindow:BrowserWindow.fromWebContents(event.sender),ownerWindow:mainWindow,
+      debugVisible:showGeminiWorkerForDebug,action:async()=>{
     const keyCode = requestedKey === "Escape" ? "Escape" : "Enter";
     event.sender.sendInputEvent({ type: "keyDown", keyCode });
     event.sender.sendInputEvent({ type: "keyUp", keyCode });
     return true;
+      },
+    });
   });
   ipcMain.handle("workbench:get-state", () => publicState());
   ipcMain.handle("gem:list-bindings", (_event, gem) => store.state.accounts.map(account => ({
@@ -1260,6 +1278,15 @@ function bindIpc() {
 async function activateWorkbench() {
   try {
     const siteUrl = await ensureLocalFlowcut();
+    try {
+      // Do not rename files under the separately running desktop publisher.
+      // A later startup with it stopped can safely finish this migration.
+      const externalPublisher = !smokeProfile ? await fetch('http://127.0.0.1:8765/api/status', {signal:AbortSignal.timeout(1500)}).then(r=>r.ok?r.json():null).catch(()=>null) : null;
+      if (externalPublisher?.running || externalPublisher?.accounts?.some(account=>account.processing)) throw Error('请先停止独立自动发布，再重启 FlowCut 整理旧成片目录');
+      const migration = await videoReview.flattenApproved();
+      if (migration.moved) store.log(`已将 ${migration.moved} 条已审核成片移到账号发布文件夹根目录`);
+      for (const error of migration.errors) store.log(`旧成片目录整理未完成：${error}`, 'warn');
+    } catch (error) { store.log(`旧成片目录整理未完成：${error.message}`, 'warn'); }
     void mainWindow.loadURL(siteUrl).catch(async (error) => {
       if (startupBlockedMessage) return;
       store.log(

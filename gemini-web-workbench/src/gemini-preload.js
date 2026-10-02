@@ -240,6 +240,15 @@ function generationInProgress() {
   );
 }
 
+function userMessages() {
+  const messages = all('user-query, [data-test-id*="user-query" i], [data-message-author-role="user"]').filter(visible);
+  return messages.filter(message => !messages.some(other => other !== message && other.contains(message)));
+}
+
+function compactPrompt(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
 function elementText(element) {
   return [
     element?.innerText,
@@ -507,7 +516,8 @@ async function uploadFiles(inputFiles, filePaths = []) {
     },
   ];
 
-  for (const strategy of strategies) {
+  // Same primary path as the working browser plugin; native chooser is backup.
+  for (const strategy of [strategies[1], strategies[0], ...strategies.slice(2)]) {
     let fired = false;
     try {
       fired = await strategy.run();
@@ -525,6 +535,7 @@ async function uploadFiles(inputFiles, filePaths = []) {
       .then(() => true)
       .catch(() => false);
     if (attached) {
+      ipcRenderer.send('gemini:job-diagnostic', {phase:'upload_accepted',strategy:strategy.name,fileCount:files.length});
       await ipcRenderer.invoke("gemini:send-key", "Escape");
       await waitForUploadSettlement(files, wanted);
       return;
@@ -576,23 +587,42 @@ async function uploadFiles(inputFiles, filePaths = []) {
 async function typePrompt(text) {
   const value = String(text || "");
   const expectedLength = value.trim().length;
+  const wanted = compactPrompt(value);
+  if (!wanted) throw codedError('Gem 提示词为空，已阻止发送', 'PROMPT_INPUT_FAILED');
   let actualLength = 0;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const editor = await waitFor(SELECTORS.promptInput, 30_000, "Gemini 输入框");
     editor.click?.();
     editor.focus();
     await sleep(250 * attempt);
-    await ipcRenderer.invoke("gemini:replace-editor-text", value);
+    let edited = false;
+    try {
+      if ('value' in editor) {
+        const prototype = editor.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(prototype, 'value').set.call(editor, value);
+        editor.dispatchEvent(new Event('input', {bubbles:true}));
+        edited = true;
+      } else {
+        const range = document.createRange(); range.selectNodeContents(editor);
+        const selection = window.getSelection();
+        selection.removeAllRanges(); selection.addRange(range);
+        edited = document.execCommand('insertText', false, value);
+      }
+    } catch { /* Native fallback preserves the original text. */ }
+    if (!edited || attempt > 1) await ipcRenderer.invoke("gemini:replace-editor-text", value);
     const inserted = await waitUntil(() => {
       const currentEditor = first(SELECTORS.promptInput) || editor;
       actualLength = editorText(currentEditor).trim().length;
-      return actualLength >= Math.max(1, Math.floor(expectedLength * 0.9));
+      return compactPrompt(editorText(currentEditor)) === wanted;
     }, 6_000, `完整写入 Gem 提示词（${attempt}/3）`)
       .then(() => true)
       .catch(() => false);
     if (inserted) {
       await sleep(500);
-      return;
+      if (compactPrompt(editorText()) === wanted) {
+        ipcRenderer.send('gemini:job-diagnostic',{phase:'prompt_written',characters:expectedLength});
+        return;
+      }
     }
     await sleep(600 * attempt);
   }
@@ -616,11 +646,13 @@ async function submitPrompt() {
     button = first(SELECTORS.sendButton) || button;
   }
   const userMessageCountBefore = userMessageCount();
+  const messagesBefore = new Set(userMessages());
   const attachmentsBefore = attachmentCount();
   const locationBefore = location.href;
   const responsesBefore = responseSnapshot();
   const generatingBefore = generationInProgress();
   const promptLengthBefore = editorText().trim().length;
+  const expectedText = compactPrompt(editorText());
   if (!promptLengthBefore) {
     throw codedError("Gem 提示词为空，已阻止发送", "PROMPT_INPUT_FAILED");
   }
@@ -635,15 +667,13 @@ async function submitPrompt() {
       JSON.stringify(responseSnapshot()) !== JSON.stringify(responsesBefore);
     const generating = generationInProgress();
     const generationStarted = !generatingBefore && generating;
-    observedSubmission =
-      observedSubmission ||
-      userMessageAdded ||
-      conversationOpened ||
-      responseAdded ||
-      generationStarted ||
-      textCleared;
+    const matchingMessage = userMessages().some(message =>
+      !messagesBefore.has(message) && [message.innerText,message.textContent].some(text =>
+        compactPrompt(text).replace(/\s/g,'').includes(expectedText.replace(/\s/g,''))));
+    observedSubmission = observedSubmission || matchingMessage;
     return {
       confirmed: observedSubmission,
+      matchingMessage,
       textCleared,
       userMessageAdded,
       conversationOpened,
@@ -656,21 +686,22 @@ async function submitPrompt() {
   const submissionConfirmed = () => {
     return submissionState().confirmed;
   };
-  first(SELECTORS.promptInput)?.focus();
-  await ipcRenderer.invoke("gemini:send-key", "Enter");
+  button.click();
   let submitted = await waitUntil(
     submissionConfirmed,
-    30_000,
+    5_000,
     "确认 Gemini 已接收文字和商品图"
   )
     .then(() => true)
     .catch(() => false);
   if (
     !submitted &&
-    editorText().trim().length > 0 &&
-    !generationInProgress()
+    compactPrompt(editorText()) === expectedText &&
+    !generationInProgress() && userMessageCount() === userMessageCountBefore &&
+    location.href === locationBefore && JSON.stringify(responseSnapshot()) === JSON.stringify(responsesBefore)
   ) {
-    button.click();
+    first(SELECTORS.promptInput)?.focus();
+    await ipcRenderer.invoke("gemini:send-key", "Enter");
     submitted = await waitUntil(
       submissionConfirmed,
       30_000,
@@ -710,6 +741,7 @@ async function submitPrompt() {
       "SUBMIT_NOT_CONFIRMED"
     );
   }
+  ipcRenderer.send('gemini:job-diagnostic', {phase:'submit_confirmed',characters:promptLengthBefore,attachmentsBefore,matchingMessage:true});
   await sleep(800);
 }
 

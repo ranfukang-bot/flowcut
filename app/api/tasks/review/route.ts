@@ -4,6 +4,11 @@ import { approvalDay, APPROVAL_COUNT_INSERT } from "../../../../lib/approval-sta
 export async function GET(request: Request) {
   try {
     await ensureWorkspace();
+    if (new URL(request.url).searchParams.get('approved') === '1') {
+      const tasks = await getDb().prepare(`SELECT t.*, COALESCE(t.product_external_id_snapshot,p.external_id) AS product_external_id
+        FROM tasks t LEFT JOIN products p ON p.id=t.product_id WHERE review_status='approved'`).all();
+      return Response.json(tasks.results);
+    }
     const id = new URL(request.url).searchParams.get("id");
     const task = await getDb().prepare(`SELECT t.*, COALESCE(t.product_external_id_snapshot,p.external_id) AS product_external_id
       FROM tasks t LEFT JOIN products p ON p.id=t.product_id WHERE t.id=?`).bind(id).first();
@@ -15,8 +20,14 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     await ensureWorkspace();
-    const body = await request.json() as { id: string; path: string; confirmed: boolean; action?: string; replacementId?: string; approvedAt?: string; timeZone?: string };
+    const body = await request.json() as { id: string; path: string; oldPath?: string; confirmed: boolean; action?: string; replacementId?: string; approvedAt?: string; timeZone?: string };
     if (body.confirmed !== true || !body.id) return Response.json({ error: "请确认审核通过" }, { status: 400 });
+    if (body.action === 'relocate') {
+      if (!body.path || !body.oldPath) return Response.json({error:'缺少移动路径'}, {status:400});
+      const result = await getDb().prepare(`UPDATE tasks SET approved_path=? WHERE id=? AND review_status='approved' AND approved_path IN (?,?)`)
+        .bind(body.path,body.id,body.oldPath,body.path).run();
+      return result.meta.changes ? Response.json({ok:true}) : Response.json({error:'审核路径已变化，未修改'}, {status:409});
+    }
     if (body.action === 'discard') {
       const db = getDb();
       const replacement = await db.prepare('SELECT id FROM tasks WHERE id=? AND regenerated_from_task_id=?').bind(body.replacementId || '',body.id).first();

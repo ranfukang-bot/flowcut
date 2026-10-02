@@ -1147,6 +1147,7 @@ export function StudioApp() {
       {previewTask && (
         <PromptDrawer
           task={previewTask}
+          gems={data.gems}
           onClose={() => setPreviewTask(null)}
           onUpdated={async (message) => {
             setNotice(message);
@@ -4046,16 +4047,19 @@ function GemModal({ gem, onClose, onSaved }: { gem: Gem | null; onClose: () => v
 
 function PromptDrawer({
   task,
+  gems,
   onClose,
   onUpdated,
 }: {
   task: Task;
+  gems: Gem[];
   onClose: () => void;
   onUpdated: (message: string) => Promise<void>;
 }) {
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState("");
   const [recreateError, setRecreateError] = useState("");
+  const [recreateGemId, setRecreateGemId] = useState("");
   const recreateRequest = useRef<string | null>(null);
   const recreateLock = useRef(false);
   async function recreateTask() {
@@ -4064,11 +4068,12 @@ function PromptDrawer({
     setBusy("recreate");
     setRecreateError("");
     try {
-      if (!await confirmAction("确认删除旧成片并重新生成？旧视频将永久删除，旧任务也会从列表移除。沿用本任务的图片、Gem 设定、商品 ID 和视频参数，从提示词开始重新生成，会消耗生成额度。新成片仍为待检查，不会自动发布。")) return;
+      const gemLabel = recreateGemId ? gems.find(gem => gem.id === recreateGemId)?.name : '原任务 Gem 设定';
+      if (!await confirmAction(`确认删除旧成片并重新生成？本次使用：${gemLabel}。旧视频将永久删除，旧任务也会从列表移除。沿用本任务的图片、商品 ID 和视频参数，从提示词开始重新生成，会消耗生成额度。新成片仍为待检查，不会自动发布。`)) return;
       recreateRequest.current ||= crypto.randomUUID();
       const result = await api("/api/tasks/recreate", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: task.id, requestId: recreateRequest.current }),
+        body: JSON.stringify({ id: task.id, requestId: recreateRequest.current, gemId: recreateGemId || undefined }),
       }) as { id: string; created: boolean };
       let message = result.created ? "已新建重做任务，将从 Gemini 提示词开始完整生成视频" : "已有重做任务，未重复创建";
       const desktop = desktopBridge();
@@ -4207,7 +4212,13 @@ function PromptDrawer({
         {["video_ready", "scheduled"].includes(task.status) && !['approved','approving'].includes(task.review_status || '') && (
           <div className="download-result">
             <b>成片不满意？用这些素材重新制作</b>
-            <span>删除旧成片和旧任务，复用原图片、Gem 和商品 ID，从提示词开始重做。列表只保留新任务，新成片仍需检查。</span>
+            <span>删除旧成片和旧任务，复用原图片和商品 ID，从提示词开始重做。默认沿用原 Gem，也可切换。新成片仍需检查。</span>
+            <label>重做使用的 Gem
+              <select aria-label="重做使用的 Gem" value={recreateGemId} disabled={Boolean(busy) || Boolean(recreateRequest.current) || task.review_status === 'replaced'} onChange={event => setRecreateGemId(event.target.value)}>
+                <option value="">沿用原任务 Gem（{task.gem_name || '原设定'}）</option>
+                {gems.map(gem => <option key={gem.id} value={gem.id}>{gem.name}</option>)}
+              </select>
+            </label>
             <button className="secondary" disabled={Boolean(busy)} onClick={recreateTask}>
               {busy === "recreate" ? "正在处理…" : task.review_status === 'replaced' ? '完成旧成片清理（不重复生成）' : "重新生成该任务"}
             </button>

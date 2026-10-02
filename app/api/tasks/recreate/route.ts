@@ -5,7 +5,7 @@ import { ensureWorkspace, getDb, jsonError, runtimeEnv } from "../../../../lib/s
 export async function POST(request: Request) {
   try {
     await ensureWorkspace();
-    const { id, requestId } = await request.json() as { id?: string; requestId?: string };
+    const { id, requestId, gemId } = await request.json() as { id?: string; requestId?: string; gemId?: string };
     if (!id || !requestId || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(requestId)) {
       return Response.json({ error: "缺少原任务 ID 或重做请求标识" }, { status: 400 });
     }
@@ -41,7 +41,10 @@ export async function POST(request: Request) {
       const replacement = await db.prepare('SELECT id,status FROM tasks WHERE regenerated_from_task_id=? ORDER BY created_at DESC LIMIT 1').bind(id).first();
       return replacement ? Response.json({...replacement,created:false}) : Response.json({error:'此任务已重做，但新任务记录已删除'}, {status:409});
     }
-    if (!source.saved_content?.trim()) return Response.json({ error: "原任务的 Gem 设定已丢失，无法重做" }, { status: 409 });
+    const selectedGem = gemId ? await db.prepare('SELECT id,name,content FROM gems WHERE id=?').bind(gemId).first<{id:string;name:string;content:string}>() : null;
+    if (gemId && !selectedGem) return Response.json({error:'选择的 Gem 已删除，请重新选择'}, {status:409});
+    const gemContent = selectedGem ? selectedGem.content : source.saved_content;
+    if (!gemContent?.trim()) return Response.json({ error: "Gem 设定已丢失，请选择可用的 Gem 重做" }, { status: 409 });
     const product = await db.prepare("SELECT id FROM products WHERE id = ?").bind(source.product_id).first();
     if (!product) return Response.json({ error: "商品资料已删除，无法重做" }, { status: 409 });
     const account = await db.prepare("SELECT id FROM tiktok_accounts WHERE lower(name) = lower(?)")
@@ -71,10 +74,10 @@ export async function POST(request: Request) {
       WHERE EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status IN ('video_ready', 'scheduled') AND review_status='pending')
         AND NOT EXISTS (SELECT 1 FROM tasks WHERE regenerated_from_task_id = ?
           AND status NOT IN ('video_ready', 'scheduled', 'failed'))`)
-      .bind(requestId, source.product_id, source.gem_id, source.title,
+      .bind(requestId, source.product_id, selectedGem?.id || source.gem_id, selectedGem ? `图片识别商品 · ${selectedGem.name}` : source.title,
         gemini.config.mode === "web" ? "gemini-web" : "gemini-api",
         source.duration, source.region, source.shooting_style, crypto.randomUUID(),
-        source.tiktok_account_name, source.archive_directory || "", source.saved_content,
+        source.tiktok_account_name, source.archive_directory || "", gemContent,
         source.saved_product_id || "", source.gemini_request_text ?? null, JSON.stringify(images.results.map(image=>image.object_key)), id, now, now, id, id),
       db.prepare(`UPDATE tasks SET review_status='replaced' WHERE id=? AND review_status='pending'
         AND EXISTS (SELECT 1 FROM tasks WHERE id=? AND regenerated_from_task_id=?)`).bind(id,requestId,id)]);

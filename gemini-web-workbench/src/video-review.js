@@ -17,6 +17,14 @@ function saveRecord(file, record) {
   try { fs.writeFileSync(fd, JSON.stringify(record)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(temp, file);
 }
+function availableReleasePath(folder, productId) {
+  if (!/^\d{10,30}$/.test(productId || '')) throw Error('商品 ID 不完整，不能送入自动发布目录');
+  for (let n = 1; n <= 9999; n++) {
+    const file = path.join(folder, `${productId}${n === 1 ? '' : ` (${n})`}.mp4`);
+    if (!fs.existsSync(file) && !fs.existsSync(file + '.partial')) return file;
+  }
+  throw Error('发布目录同名成片过多');
+}
 // Keep the destination invisible to the publisher until the move is complete.
 // Windows cannot rename across volumes: there copy+flush+delete implements a move.
 function moveToStaging(source, temp, io = fs) {
@@ -64,6 +72,71 @@ class VideoReview {
     if (error) throw Error(error);
     return true;
   }
+  // Only flatten this application's known legacy approval layout, never arbitrary
+  // subdirectories. Persist the move target before touching files for restart safety.
+  async flattenApproved() {
+    const tasks = await this.request('/api/tasks/review?approved=1');
+    const result = { moved: 0, errors: [] };
+    // Clearing completed tasks must not strand already approved files. Their
+    // durable release receipts remain authoritative even when the UI row is gone.
+    const reviewRoot = path.join(this.userData, 'review-videos');
+    for (const entry of fs.existsSync(reviewRoot) ? fs.readdirSync(reviewRoot,{withFileTypes:true}) : []) {
+      if (!entry.isDirectory()) continue;
+      const receiptFile = path.join(reviewRoot, entry.name, 'approval.json');
+      if (!fs.existsSync(receiptFile)) continue;
+      try {
+        const receipt = JSON.parse(fs.readFileSync(receiptFile,'utf8'));
+        if (receipt.status !== 'released' || !receipt.file) continue;
+        const taskDir = path.dirname(receipt.file), parent = path.dirname(taskDir);
+        const id = path.basename(taskDir), productId = path.basename(receipt.file,'.mp4');
+        if (path.basename(parent) !== '已通过' || !/^[\w-]+$/.test(id) || !/^\d{10,30}$/.test(productId)) continue;
+        if (path.resolve(reviewDirectory(this.userData,id)) !== path.resolve(reviewRoot,entry.name) || tasks.some(t=>t.id===id)) continue;
+        const existing = await this.request('/api/tasks/review?id='+encodeURIComponent(id)+'&optional=1');
+        if (existing) continue;
+        tasks.push({id,product_external_id:productId,archive_directory:path.dirname(parent),approved_path:receipt.file,recordOnly:true});
+      } catch (error) { result.errors.push(`审核记录 ${entry.name}: ${error.message}`); }
+    }
+    for (const task of tasks) {
+      try {
+        const folder = task.archive_directory ? path.resolve(task.archive_directory)
+          : accountVideoDirectory(this.defaultDirectory(), task.tiktok_account_name);
+        const oldFile = path.join(folder, '已通过', task.id, task.product_external_id + '.mp4');
+        if (!task.approved_path || path.resolve(task.approved_path) !== oldFile) continue;
+        const recordFile = path.join(reviewDirectory(this.userData, task.id), 'flatten.json');
+        let record = fs.existsSync(recordFile) ? JSON.parse(fs.readFileSync(recordFile, 'utf8')) : null;
+        if (!record) {
+          if (!fs.existsSync(oldFile)) continue; // Already published/deleted: never recreate.
+          if (fs.realpathSync(oldFile) !== oldFile) throw Error('旧成片路径含链接，未自动移动');
+          const file = availableReleasePath(folder, task.product_external_id);
+          record = { source: oldFile, file, temp: file + '.partial', status: 'moving' };
+          saveRecord(recordFile, record);
+        }
+        if (record.status === 'moving') {
+          moveToStaging(record.source, record.temp);
+          record.status = 'committing'; saveRecord(recordFile, record);
+        }
+        if (record.status === 'committing') {
+          if (fs.existsSync(record.temp)) {
+            if (fs.existsSync(record.file)) throw Error('目标视频已存在，未覆盖');
+            fs.renameSync(record.temp, record.file);
+          }
+          record.status = 'released'; saveRecord(recordFile, record);
+        }
+        if (!task.recordOnly) await this.request('/api/tasks/review', {method:'POST', body:JSON.stringify({id:task.id,action:'relocate',oldPath:oldFile,path:record.file,confirmed:true})});
+        const approvalFile = path.join(reviewDirectory(this.userData, task.id), 'approval.json');
+        if (fs.existsSync(approvalFile)) {
+          const approval = JSON.parse(fs.readFileSync(approvalFile, 'utf8'));
+          saveRecord(approvalFile, {...approval, file:record.file});
+        }
+        // Nonrecursive: remove only the now-empty directories we created.
+        for (const dir of [path.dirname(oldFile), path.join(folder, '已通过')]) {
+          try { fs.rmdirSync(dir); } catch (error) { if (!['ENOENT','ENOTEMPTY','EEXIST'].includes(error.code)) throw error; }
+        }
+        result.moved++;
+      } catch (error) { result.errors.push(`${task.id}: ${error.message}`); }
+    }
+    return result;
+  }
   async discard(id, replacementId) {
     const replacement = await this.task(replacementId);
     if (!/^[\w-]+$/.test(id) || replacement.regenerated_from_task_id !== id) throw Error('重做任务不匹配');
@@ -96,14 +169,14 @@ class VideoReview {
         if (within(reviewRoot, folder) || path.resolve(folder) === path.resolve(reviewRoot)) throw Error('发布目录不能设置为待检查区');
         fs.mkdirSync(folder, { recursive: true });
         // Legacy files already in the publishing folder are not copied twice.
-        if (within(fs.realpathSync(folder), source)) {
+        if (path.dirname(source) === fs.realpathSync(folder)) {
           record = { status: 'released', file: source, legacy: true };
           saveRecord(recordFile, record);
         } else {
           const expectedRoot = reviewDirectory(this.userData, id);
           if (!within(fs.realpathSync(expectedRoot), source)) throw Error('成片不在该任务的待检查目录中');
           if (!/^\d{10,30}$/.test(task.product_external_id || '')) throw Error('商品 ID 不完整，不能送入自动发布目录');
-          const file = path.join(folder, '已通过', id, task.product_external_id + '.mp4');
+          const file = availableReleasePath(folder, task.product_external_id);
           fs.mkdirSync(path.dirname(file), { recursive: true });
           if (fs.existsSync(file)) throw Error('目标文件已存在但没有审核记录，已阻止覆盖');
           const temp = file + '.partial';

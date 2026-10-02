@@ -12,7 +12,7 @@ function fixture(t) {
   const task={id:'task-1',status:'video_ready',review_status:'pending',download_path:source,archive_directory:path.join(root,'publishing'),product_external_id:'1735360337668113923',tiktok_account_name:'A'};
   const tasks={'task-1':task}; let failReport=false; const opened=[],trashed=[];
   const runtime=new VideoReview({userData:root,defaultDirectory:()=>path.join(root,'default'),shell:{openPath:async p=>{opened.push(p);return '';},trashItem:async p=>{trashed.push(p);fs.renameSync(p,p+'.recycled');}},request:async (url,options)=>{
-    if(!options) { const query=new URL('http://local'+url).searchParams; const value=tasks[query.get('id')]; if(!value){if(query.get('optional')==='1')return null;throw Error('missing');}return {...value}; }
+    if(!options) { const query=new URL('http://local'+url).searchParams; if(query.get('approved')==='1')return Object.values(tasks).filter(t=>t.review_status==='approved').map(t=>({...t})); const value=tasks[query.get('id')]; if(!value){if(query.get('optional')==='1')return null;throw Error('missing');}return {...value}; }
     const body=JSON.parse(options.body);
     if(body.action==='reserve') { if(!['pending','approving'].includes(task.review_status))throw Error('not pending');task.review_status='approving'; }
     else if(body.action==='cancel') {if(task.review_status==='approving')task.review_status='pending';}
@@ -31,6 +31,7 @@ test('approval needs explicit confirmation, publishes exact product filename and
   assert.equal(fs.existsSync(f.task.archive_directory),false);
   const result=await f.runtime.approve('task-1',true);
   assert.equal(path.basename(result.file),f.task.product_external_id+'.mp4');
+  assert.equal(path.dirname(result.file),f.task.archive_directory,'video goes directly in account folder');
   assert.equal(fs.readFileSync(result.file,'utf8'),'test-mp4-bytes');
   assert.equal(fs.existsSync(f.source),false,'approval moves, never retains a review video copy');
   assert.equal(f.task.review_status,'approved');
@@ -118,4 +119,58 @@ test('1.4.19 interrupted copy approval removes leftover review video without dup
 test('review folder can be opened without exposing videos to publishing',async t=>{
   const f=fixture(t);await f.runtime.openFolder();assert.deepEqual(f.opened,[path.join(f.root,'review-videos')]);
   assert.equal(fs.existsSync(f.task.archive_directory),false);
+});
+
+test('same product approvals use publisher-compatible suffix without replacing existing video',async t=>{
+  const f=fixture(t);fs.mkdirSync(f.task.archive_directory,{recursive:true});
+  const original=path.join(f.task.archive_directory,f.task.product_external_id+'.mp4');fs.writeFileSync(original,'original');
+  const result=await f.runtime.approve('task-1',true);
+  assert.equal(result.file,path.join(f.task.archive_directory,f.task.product_external_id+' (2).mp4'));
+  assert.equal(fs.readFileSync(original,'utf8'),'original');
+  const {productIdFromFilename}=await import('../../vendor/publisher/src/folderScanner.js');
+  assert.equal(productIdFromFilename(path.basename(result.file)),f.task.product_external_id);
+});
+
+function legacyApproved(f) {
+  const file=path.join(f.task.archive_directory,'已通过',f.task.id,f.task.product_external_id+'.mp4');
+  fs.mkdirSync(path.dirname(file),{recursive:true});fs.renameSync(f.source,file);
+  f.task.approved_path=file;f.task.review_status='approved';return file;
+}
+test('legacy approval flattens via move, updates external-open path and removes only empty owned directories',async t=>{
+  const f=fixture(t),old=legacyApproved(f);
+  const result=await f.runtime.flattenApproved();assert.equal(result.moved,1);assert.deepEqual(result.errors,[]);
+  assert.equal(fs.existsSync(old),false);assert.equal(fs.existsSync(path.join(f.task.archive_directory,'已通过')),false);
+  assert.equal(path.dirname(f.task.approved_path),f.task.archive_directory);
+  assert.equal(fs.readFileSync(f.task.approved_path,'utf8'),'test-mp4-bytes');
+  await f.runtime.open(f.task.id);assert.equal(f.opened[0],f.task.approved_path);
+  assert.equal((await f.runtime.flattenApproved()).moved,0);
+});
+test('legacy flatten resumes after state write failure without a second video and skips already published files',async t=>{
+  const f=fixture(t),old=legacyApproved(f);f.failReport(true);
+  assert.equal((await f.runtime.flattenApproved()).errors.length,1);assert.equal(fs.existsSync(old),false);
+  f.failReport(false);assert.equal((await f.runtime.flattenApproved()).moved,1);
+  assert.equal(fs.readdirSync(f.task.archive_directory).length,1);
+  fs.unlinkSync(f.task.approved_path);f.task.approved_path=old;
+  assert.equal((await f.runtime.flattenApproved()).moved,1,'saved journal repairs link without recreating consumed file');
+  assert.equal(fs.existsSync(f.task.approved_path),false);
+});
+test('legacy flatten does not move unrelated files or overwrite same-product videos',async t=>{
+  const f=fixture(t);legacyApproved(f);
+  const existing=path.join(f.task.archive_directory,f.task.product_external_id+'.mp4');fs.writeFileSync(existing,'existing');
+  const keep=path.join(f.task.archive_directory,'已通过','notes.txt');fs.writeFileSync(keep,'keep');
+  const result=await f.runtime.flattenApproved();assert.deepEqual(result.errors,[]);
+  assert.equal(path.basename(f.task.approved_path),f.task.product_external_id+' (2).mp4');
+  assert.equal(fs.readFileSync(existing,'utf8'),'existing');assert.equal(fs.readFileSync(keep,'utf8'),'keep');
+});
+test('cleared completed task can still be flattened from its durable approval receipt',async t=>{
+  const f=fixture(t),old=legacyApproved(f);
+  const receipt=path.join(path.dirname(f.source),'approval.json');
+  fs.writeFileSync(receipt,JSON.stringify({status:'released',file:old,approvedAt:'2026-10-02T01:00:00Z'}));
+  delete f.tasks['task-1'];
+  const result=await f.runtime.flattenApproved();assert.equal(result.moved,1);assert.deepEqual(result.errors,[]);
+  assert.equal(fs.existsSync(old),false);
+  const saved=JSON.parse(fs.readFileSync(receipt,'utf8'));assert.equal(path.dirname(saved.file),f.task.archive_directory);
+  assert.equal(fs.readFileSync(saved.file,'utf8'),'test-mp4-bytes');
+  assert.equal(saved.approvedAt,'2026-10-02T01:00:00Z');assert.deepEqual(Object.keys(f.tasks),[]);
+  assert.equal((await f.runtime.flattenApproved()).moved,0);
 });

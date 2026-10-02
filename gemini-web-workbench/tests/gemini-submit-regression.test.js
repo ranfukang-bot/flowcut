@@ -5,15 +5,15 @@ const test = require("node:test");
 
 const sourceRoot = path.resolve(__dirname, "..", "src");
 
-test("Gemini submission accepts real page signals without attachment-count gating", () => {
+test("Gemini submission requires this task's new user message", () => {
   const preload = fs.readFileSync(
     path.join(sourceRoot, "gemini-preload.js"),
     "utf8"
   );
   assert.match(preload, /const responseAdded =/);
-  assert.match(preload, /observedSubmission =\s+observedSubmission \|\|/);
+  assert.match(preload, /observedSubmission = observedSubmission \|\| matchingMessage/);
   assert.match(preload, /const generationStarted = !generatingBefore && generating/);
-  assert.match(preload, /generationStarted \|\|\s+textCleared/);
+  assert.match(preload, /!messagesBefore.has\(message\)/);
   assert.match(preload, /发送后的最终状态复核/);
   assert.equal(preload.includes("attachmentsSent"), false);
 });

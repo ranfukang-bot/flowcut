@@ -2,8 +2,8 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 
 module.exports = async function ({ api, base, headers, sourceId }) {
-  const recreate = (id = sourceId, requestId = crypto.randomUUID()) => fetch(base + '/api/tasks/recreate', {
-    method: 'POST', headers, body: JSON.stringify({ id, requestId }),
+  const recreate = (id = sourceId, requestId = crypto.randomUUID(), gemId) => fetch(base + '/api/tasks/recreate', {
+    method: 'POST', headers, body: JSON.stringify({ id, requestId, gemId }),
   });
   assert.equal((await recreate()).status, 409, 'in-flight original must not be regenerated');
   await api('/api/tasks', { method: 'PATCH', body: JSON.stringify({ id: sourceId, action: 'local-status', providerStatus: 'success', outputUrl: 'https://example.com/original.mp4' }) });
@@ -61,5 +61,19 @@ module.exports = async function ({ api, base, headers, sourceId }) {
   assert.equal(noImage.status, 409);
   assert.match((await noImage.json()).error, /商品图片已删除/);
   assert.equal((await api('/api/workspace')).tasks.length, countBefore, 'missing images do not create an unusable task');
+  const alternate = await api('/api/gems', {method:'POST',body:JSON.stringify({name:'重做切换测试',content:'换一个 Gem 的新指令'})});
+  const invalid = await recreate(taskId,crypto.randomUUID(),'missing-gem');
+  assert.equal(invalid.status,409);
+  assert.equal((await api('/api/workspace')).tasks.find(t=>t.id===taskId).review_status,'pending','invalid selection leaves original untouched');
+  const switchedResponse = await recreate(taskId,crypto.randomUUID(),alternate.id);
+  assert.equal(switchedResponse.status,201);
+  const switchedId=(await switchedResponse.json()).id;
+  const switched=(await api('/api/workspace')).tasks.find(t=>t.id===switchedId);
+  assert.equal(switched.gem_id,alternate.id);
+  assert.equal(switched.gem_content_snapshot,'换一个 Gem 的新指令');
+  assert.match(switched.title,/重做切换测试/);
+  for(const field of ['product_id','product_external_id','gemini_request_text','duration','region','shooting_style','tiktok_account_name','archive_directory','product_image_key','image_count']) assert.equal(switched[field],copy[field],`switching Gem preserves ${field}`);
+  assert.equal(switched.status,'prompt_queued');assert.equal(switched.prompt,'');assert.equal(switched.review_status,'pending');
+  await api('/api/gems', {method:'DELETE',body:JSON.stringify({id:alternate.id})});
   console.log('Task remake API: saved inputs, fresh execution, concurrent deduplication, old-record deletion and pending-review retention PASS');
 };

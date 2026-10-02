@@ -7,6 +7,7 @@ const { SeedanceRuntime } = require('../src/seedance-runtime');
 const { FlowCutBridge } = require('../../vendor/seedance-engine/flowcut-bridge');
 const { originalVideoFilename } = require('../../vendor/seedance-engine/video-download');
 const { WorkbenchStore } = require('../../vendor/seedance-engine/store');
+const { reviewDirectory } = require('../src/video-review');
 function box(type, bytes) { const b = Buffer.alloc(8); b.writeUInt32BE(bytes.length + 8); b.write(type, 4); return Buffer.concat([b, bytes]); }
 const video = Buffer.concat([box('ftyp', Buffer.from('isom0000')), box('moov', Buffer.from('meta')), box('mdat', Buffer.from('frame'))]);
 function temp(t) { const root=fs.mkdtempSync(path.join(os.tmpdir(),'flowcut-archive-')); t.after(()=>fs.rmSync(root,{recursive:true,force:true})); return root; }
@@ -31,4 +32,18 @@ test('original filename fallback stays inside selected directory',()=>{
   assert.equal(originalVideoFilename(new Response('',{headers:{'content-disposition':'attachment; filename="../../safe.mp4"'}}),'https://example.test/v'),'safe.mp4');
   assert.equal(originalVideoFilename(new Response(''),'https://example.test/original.mp4?token=hidden'),'original.mp4');
   assert.equal(originalVideoFilename(new Response(''),'https://example.test/video'),'');
+});
+
+test('FlowCut standard downloads are quarantined outside the configured publishing folder',async t=>{
+  const root=temp(t), chosen=path.join(root,'publishing');
+  const task={id:'local',flowcutTaskId:'flowcut-task',flowcutTaskKind:'standard',status:'success',archiveDirectory:chosen,productExternalId:'1735360337668113923',videoUrl:'https://example.test/video'};
+  const runtime=new SeedanceRuntime({app:{getPath:()=>root},flowcutStore:{}});
+  runtime.emit=()=>{};runtime.store={settings:{},getTask:()=>task};runtime.engine={refreshTaskResult:async()=>task,recordTask:()=>{}};
+  runtime.accountManager={session:()=>({fetch:async()=>new Response(video,{headers:{'content-type':'video/mp4'}})})};
+  const result=await runtime.downloadTask(task);
+  assert.equal(path.dirname(result.destination),reviewDirectory(root,'flowcut-task'));
+  assert.equal(fs.existsSync(chosen),false);
+  assert.equal(task.reviewDownload,true);
+  let calls=0;const bridge=new FlowCutBridge({store:{settings:{},tasks:[task]},engine:{},downloadTask:async()=>calls++});
+  bridge.scheduleAutoDownload(task);assert.equal(calls,0);
 });

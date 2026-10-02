@@ -19,9 +19,10 @@ module.exports = async function ({ api, base, headers, sourceId }) {
   assert.notEqual(taskId, sourceId);
   const after = await api('/api/workspace');
   assert.equal(after.tasks.length, 2);
-  assert.deepEqual(after.tasks.find(row => row.id === sourceId), before, 'original record and video are unchanged');
+  assert.deepEqual(after.tasks.find(row => row.id === sourceId), {...before,review_status:'replaced'}, 'old task is replaced; other history stays unchanged');
   const copy = after.tasks.find(row => row.id === taskId);
-  for (const field of ['product_id', 'gem_id', 'gem_content_snapshot', 'product_external_id', 'duration', 'region', 'shooting_style', 'tiktok_account_name', 'archive_directory', 'product_image_key', 'image_count']) {
+  assert.ok(before.gemini_request_text, 'fixture must have a saved custom request');
+  for (const field of ['product_id', 'gem_id', 'gem_content_snapshot', 'gemini_request_text', 'product_external_id', 'duration', 'region', 'shooting_style', 'tiktok_account_name', 'archive_directory', 'product_image_key', 'image_count']) {
     assert.equal(copy[field], before[field], `preserves ${field}`);
   }
   assert.equal(copy.auto_queue, 1);
@@ -39,10 +40,15 @@ module.exports = async function ({ api, base, headers, sourceId }) {
   assert.equal((await repeated.json()).id, taskId);
   assert.equal((await api('/api/workspace')).tasks.length, 2);
   const another = await recreate();
-  assert.equal(another.status, 201, 'a later intentional redo is allowed after completion');
-  assert.notEqual((await another.json()).id, taskId);
+  assert.equal(another.status, 200, 'old replaced task points to its remake, even after refresh');
+  assert.equal((await another.json()).id, taskId);
   assert.equal((await recreate('missing-task')).status, 404);
   assert.equal((await recreate(sourceId, sourceId)).status, 409, 'never overwrite an existing unrelated task ID');
+  await api('/api/tasks/review', {method:'POST',body:JSON.stringify({id:sourceId,replacementId:taskId,action:'discard',confirmed:true})});
+  assert.equal((await api('/api/workspace')).tasks.length,1,'old rejected task is removed from the list');
+  assert.equal(await api('/api/tasks/review?id='+sourceId+'&optional=1'),null,'old task record is really deleted, not hidden');
+  assert.equal((await recreate(sourceId,taskId)).status,200,'lost reply retry still reuses replacement after original deletion');
+  assert.equal((await api('/api/tasks?completed=1',{method:'DELETE'})).deleted,0,'pending review must survive clear completed');
   const emptyProduct = new FormData();
   emptyProduct.set('name', 'Image-less product');
   const empty = await fetch(base + '/api/products', { method: 'POST', headers: { 'x-flowcut-desktop-token': headers['x-flowcut-desktop-token'] }, body: emptyProduct });
@@ -55,5 +61,5 @@ module.exports = async function ({ api, base, headers, sourceId }) {
   assert.equal(noImage.status, 409);
   assert.match((await noImage.json()).error, /商品图片已删除/);
   assert.equal((await api('/api/workspace')).tasks.length, countBefore, 'missing images do not create an unusable task');
-  console.log('Task remake API: saved inputs, fresh execution, concurrent deduplication, replay and original preservation PASS');
+  console.log('Task remake API: saved inputs, fresh execution, concurrent deduplication, old-record deletion and pending-review retention PASS');
 };

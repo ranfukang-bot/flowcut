@@ -1,5 +1,6 @@
 import { getProviderConfig } from "./provider-config";
 import { runtimeEnv } from "./storage";
+import { DEFAULT_GEM_REQUEST, renderGemRequest } from "./gem-request";
 
 type ProductInput = {
   duration: number;
@@ -7,6 +8,7 @@ type ProductInput = {
   shooting_style: string;
   name?: string;
   features?: string;
+  gemini_request_text?: string | null;
 };
 
 export function buildGeminiPrompt(gemContent: string, product: ProductInput) {
@@ -17,6 +19,12 @@ export function buildGeminiPrompt(gemContent: string, product: ProductInput) {
     "执行方式：这是无人值守批量任务；请直接完成本次成品。若图片信息不完整，请仅依据可见内容保守处理，不要停下来询问或等待补充。",
   ];
   return `${gemContent.trim()}\n\n${details.join("\n")}`;
+}
+
+// The web executor opens a saved Gem. Instructions belong in that Gem, not in
+// every user turn. API callers retain buildGeminiPrompt above.
+export function buildSavedGemPrompt(product: ProductInput) {
+  return product.gemini_request_text ?? renderGemRequest(DEFAULT_GEM_REQUEST, product);
 }
 
 export async function resolveGeminiApiModel(

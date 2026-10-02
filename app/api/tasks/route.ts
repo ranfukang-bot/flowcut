@@ -1,4 +1,5 @@
 import { generatePrompt } from "../../../lib/gemini";
+import { DEFAULT_GEM_REQUEST, renderGemRequest, validateGemRequest } from "../../../lib/gem-request";
 import { getProviderConfig } from "../../../lib/provider-config";
 import { checkSeedance, submitSeedance } from "../../../lib/seedance";
 import { ensureWorkspace, getDb, jsonError } from "../../../lib/storage";
@@ -162,9 +163,14 @@ export async function POST(request: Request) {
       duration?: number;
       region?: string;
       shootingStyle?: string;
+      geminiRequestText?: string;
     };
     if (!body.productId || !body.gemId) {
       return Response.json({ error: "请选择产品和 Gem" }, { status: 400 });
+    }
+    if (body.geminiRequestText !== undefined) {
+      try { validateGemRequest(body.geminiRequestText); }
+      catch (error) { return jsonError(error, 400); }
     }
     let tiktokAccountName = "";
     try {
@@ -229,14 +235,15 @@ export async function POST(request: Request) {
     const duration = normalizeTaskDuration(body.duration);
     const region = normalizeTaskRegion(body.region);
     const shootingStyle = normalizeShootingStyle(body.shootingStyle);
+    const geminiRequestText = body.geminiRequestText ?? renderGemRequest(DEFAULT_GEM_REQUEST, { duration, region, shooting_style: shootingStyle });
     await db
       .prepare(
         `INSERT INTO tasks
          (id, product_id, gem_id, title, status, prompt, provider, progress,
           duration, region, shooting_style, callback_token, auto_queue,
-          gemini_account_id, tiktok_account_name, archive_directory, gem_content_snapshot, product_external_id_snapshot, error, created_at, updated_at)
+          gemini_account_id, tiktok_account_name, archive_directory, gem_content_snapshot, product_external_id_snapshot, gemini_request_text, image_keys_snapshot, error, created_at, updated_at)
          VALUES (?, ?, ?, ?, 'prompt_queued', '', ?, 5, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                 NULL, ?, ?)`
+                 ?, ?, NULL, ?, ?)`
       )
       .bind(
         id,
@@ -254,6 +261,8 @@ export async function POST(request: Request) {
         account.archive_directory || "",
         gem.content,
         product.external_id || "",
+        geminiRequestText,
+        JSON.stringify(images.keys),
         now,
         now
       )
@@ -472,7 +481,7 @@ export async function DELETE(request: Request) {
       const completedStatuses = ["video_ready", "scheduled"];
       const completed = await getDb()
         .prepare(
-          "SELECT COUNT(*) AS count FROM tasks WHERE status IN (?, ?)"
+          "SELECT COUNT(*) AS count FROM tasks WHERE status IN (?, ?) AND review_status IN ('approved','replaced')"
         )
         .bind(...completedStatuses)
         .first<{ count: number }>();
@@ -480,11 +489,11 @@ export async function DELETE(request: Request) {
         getDb().prepare(
           `DELETE FROM schedules
            WHERE task_id IN (
-             SELECT id FROM tasks WHERE status IN (?, ?)
+             SELECT id FROM tasks WHERE status IN (?, ?) AND review_status IN ('approved','replaced')
            )`
         ).bind(...completedStatuses),
         getDb()
-          .prepare("DELETE FROM tasks WHERE status IN (?, ?)")
+          .prepare("DELETE FROM tasks WHERE status IN (?, ?) AND review_status IN ('approved','replaced')")
           .bind(...completedStatuses),
       ]);
       return Response.json({ ok: true, deleted: Number(completed?.count || 0) });

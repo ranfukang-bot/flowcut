@@ -43,7 +43,7 @@ export async function GET(request: Request) {
     const pending = await db
       .prepare(
         `SELECT tasks.id, tasks.product_id, tasks.prompt,
-                tasks.tiktok_account_name, tasks.archive_directory, tasks.duration,
+                tasks.tiktok_account_name, tasks.archive_directory, tasks.duration, tasks.image_keys_snapshot,
                 COALESCE(tasks.product_external_id_snapshot, products.external_id, '') AS product_external_id
          FROM tasks
          LEFT JOIN products ON products.id = tasks.product_id
@@ -57,6 +57,7 @@ export async function GET(request: Request) {
       .all<{
         id: string;
         product_id: string;
+        image_keys_snapshot: string | null;
         prompt: string;
         tiktok_account_name: string;
         archive_directory: string;
@@ -100,9 +101,8 @@ export async function GET(request: Request) {
         archiveDirectory: task.archive_directory || "",
         productExternalId: task.product_external_id || "",
         duration: task.duration,
-        imageUrls: images.results.map((item: { object_key: string }) =>
-          mediaUrl(request.url, item.object_key)
-        ),
+        imageUrls: (task.image_keys_snapshot ? JSON.parse(task.image_keys_snapshot) as string[] : images.results.map(item=>item.object_key))
+          .slice(0,9).map(key=>mediaUrl(request.url,key)),
       });
     }
     const remainingCapacity = Math.max(0, 4 - jobs.length);

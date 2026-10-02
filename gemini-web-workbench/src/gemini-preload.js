@@ -256,7 +256,17 @@ function conversationHasContent() {
   );
 }
 
-async function ensureFreshConversation() {
+async function ensureFreshConversation(gemUrl) {
+  if (gemUrl) {
+    // Main process has navigated to the Gem's home for this task. Generic
+    // “New chat” leaves the Gem, so fail closed instead of clicking it.
+    const expected = new URL(gemUrl);
+    if (location.origin !== expected.origin || location.pathname !== expected.pathname ||
+        conversationHasContent() || generationInProgress()) {
+      throw codedError("未进入指定 Gem 的空白对话，已停止本次任务；不会改用普通聊天", "GEM_SETUP_REQUIRED");
+    }
+    return;
+  }
   if (generationInProgress()) {
     const stopButton = first(SELECTORS.stopGenerating);
     if (stopButton) stopButton.click();
@@ -702,7 +712,7 @@ async function submitPrompt() {
 
 function visibleGeminiError() {
   const errorPattern =
-    /(?:Something went wrong|There was an error|An error occurred|Failed to generate(?: response)?|Unable to process(?: request)?|出了点问题|发生错误|服务器繁忙|请稍后重试|无法处理此请求|系统暂时无法响应|Try again later)/i;
+    /(?:too many requests|rate limit|quota (?:exceeded|exhausted)|(?:reached|exceeded).{0,40}(?:usage|daily|message) limit|请求过于频繁|请求太频繁|额度(?:不足|已用完)|已(?:达到|达).{0,12}(?:上限|限额)|Something went wrong|There was an error|An error occurred|Failed to generate(?: response)?|Unable to process(?: request)?|出了点问题|发生错误|服务器繁忙|请稍后重试|无法处理此请求|系统暂时无法响应|Try again later)/i;
   for (const element of all(SELECTORS.pageError).filter(visible)) {
     if (
       element.closest(
@@ -814,7 +824,8 @@ async function runJob(job) {
   );
   await waitFor(SELECTORS.promptInput, 45_000, "Gemini 输入框");
   await sleep(500);
-  await ensureFreshConversation();
+  if (!job.gemUrl) throw codedError("任务缺少已保存的 Gem 链接，请更新桌面端并检查模板", "GEM_SETUP_REQUIRED");
+  await ensureFreshConversation(job.gemUrl);
   await clearExistingAttachments();
   geminiProgress = "正在上传商品图片";
   await uploadFiles(job.files || [], job.filePaths || []);

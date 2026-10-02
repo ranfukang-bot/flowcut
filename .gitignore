@@ -69,6 +69,10 @@ gemini-web-workbench/runtime-deps/
 **/.scheduler-test-*/
 **/bridge-config.json
 **/workbench-state.json
+**/workbench-state.json.bak
+**/workbench-state.json.corrupt-*
+**/review-videos/
+**/submitted-tasks*.jsonl
 /vendor/publisher/config/accounts.json
 /vendor/publisher/config/settings.json
 /vendor/publisher/state/

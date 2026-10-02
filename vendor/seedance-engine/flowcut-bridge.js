@@ -215,6 +215,9 @@ class FlowCutBridge {
   }
 
   scheduleAutoDownload(task) {
+    // A review copy is intentionally outside archiveDirectory. Once delivered,
+    // do not download it again (including after the user discards it to remake).
+    if (task.reviewDownload && task.lastDownloadedPath) return;
     if (
       this.store.isFlowcutTaskCleared?.(task.flowcutTaskId) ||
       task.status !== 'success' ||

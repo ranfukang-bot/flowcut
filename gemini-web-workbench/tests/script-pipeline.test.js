@@ -121,7 +121,8 @@ test("script pipeline retries only the failing stage instead of restarting the j
   assert.match(preload, /if \(!rewrittenScript\)/);
   assert.match(preload, /if \(!extractionJson\)/);
   assert.match(preload, /for \(let attempt = 1; attempt <= 2; attempt \+= 1\)/);
-  assert.match(bridge, /job\.kind === "script-pipeline" \? 1 : 2/);
+  assert.equal((bridge.match(/await this\.runJob\(/g) || []).length, 1);
+  assert.doesNotMatch(bridge, /attempt <= maxAttempts|await delay\(RETRY_DELAY_MS\)/);
 });
 
 test("protected desktop runtime dispatches the script pipeline", () => {

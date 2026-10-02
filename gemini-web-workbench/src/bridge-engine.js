@@ -1,6 +1,7 @@
 const { randomUUID } = require("node:crypto");
 
 const RETRYABLE_JOB_CODES = new Set([
+  "GEM_SETUP_RETRYABLE",
   "CONVERSATION_RESET_FAILED",
   "GEMINI_PAGE_ERROR",
   "GEMINI_MEDIA_UNREADABLE",
@@ -17,43 +18,27 @@ const RETRYABLE_JOB_CODES = new Set([
   "SUBMIT_NOT_CONFIRMED",
   "UPLOAD_NOT_CONFIRMED",
   "UPLOAD_PROCESSING_TIMEOUT",
-]);
-const INLINE_RETRYABLE_JOB_CODES = new Set([
-  "CONVERSATION_RESET_FAILED",
-  "NO_RESPONSE_DETECTED",
-  "PROMPT_INPUT_FAILED",
-  "STALE_ATTACHMENTS",
-  "SUBMIT_NOT_CONFIRMED",
-  "UPLOAD_NOT_CONFIRMED",
-  "UPLOAD_PROCESSING_TIMEOUT",
-]);
-const REMOTE_FAILURE_CODES = new Set([
-  "GEMINI_PAGE_ERROR",
-  "GEMINI_MEDIA_UNREADABLE",
-  "GEMINI_REFUSED_RESPONSE",
-  "INCOMPLETE_RESPONSE",
-  "RESPONSE_TIMEOUT",
-  "RESPONSE_STALLED",
-  "GEMINI_PAGE_CRASHED",
-  "GEMINI_PAGE_UNRESPONSIVE",
-  "MATERIAL_DOWNLOAD_TIMEOUT",
 ]);
 const ACCOUNT_COOLDOWN_MS = 12_000;
 const ACCOUNT_FAILURE_BACKOFF_MS = [2 * 60_000, 5 * 60_000, 15 * 60_000];
-const RETRY_DELAY_MS = 12_000;
 const BRIDGE_REQUEST_TIMEOUT_MS = 10_000;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function isRetryableJobError(error) {
+  if (isAccountLimitedError(error)) return true;
   if (RETRYABLE_JOB_CODES.has(error?.code || "")) return true;
   if (error?.name === "TimeoutError" || error?.name === "AbortError") return true;
   const message = error instanceof Error ? error.message : String(error);
   return /Gemini 页面加载超时|Gemini 网页任务超过|输入框|发送按钮/.test(message);
 }
 
-function shouldRetryInline(error) {
-  return INLINE_RETRYABLE_JOB_CODES.has(error?.code || "");
+function isAccountLimitedError(error) {
+  if (Number(error?.status) === 429) return true;
+  if (["RATE_LIMITED", "RATE_LIMIT_EXCEEDED", "QUOTA_EXCEEDED", "RESOURCE_EXHAUSTED"].includes(error?.code)) return true;
+  // Only actual page errors, not generated text/refusals mentioning a limit.
+  return error?.code === "GEMINI_PAGE_ERROR" &&
+    /too many requests|rate limit|quota (?:exceeded|exhausted)|(?:reached|exceeded).{0,40}(?:usage|daily|message) limit|请求过于频繁|请求太频繁|额度(?:不足|已用完)|已(?:达到|达).{0,12}(?:上限|限额)/i.test(String(error?.message || ""));
 }
 
 function isTransientBridgeError(error) {
@@ -376,49 +361,15 @@ class BridgeEngine {
       const referenceFiles = job.kind === "reference-remix"
         ? await this.downloadFiles([job.referenceVideoUrl], "reference")
         : [];
-      let result = { prompt: "", analysis: "" };
-      const maxAttempts = job.kind === "script-pipeline" ? 1 : 2;
-      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-        try {
-          active.stage =
-            attempt === 1
-              ? "上传图片并生成"
-              : "Gemini 页面波动，正在自动重试（1/1）";
-          this.onChange();
-          this.assertTaskActive(job.id);
-          const runResult = await this.runJob(account, { ...job, files, referenceFiles });
-          result = typeof runResult === "string"
-            ? { prompt: runResult, analysis: "" }
-            : {
-                ...runResult,
-                prompt: String(runResult?.prompt || ""),
-                analysis: String(runResult?.analysis || ""),
-              };
-          break;
-        } catch (error) {
-          if (
-            attempt >= maxAttempts ||
-            error?.code === "NEEDS_LOGIN" ||
-            !isRetryableJobError(error) ||
-            !shouldRetryInline(error)
-          ) {
-            throw error;
-          }
-          const message =
-            error instanceof Error ? error.message : String(error);
-          active.stage = "Gemini 页面波动，正在自动重试（1/1）";
-          this.onChange();
-          await this.report(job.id, "retrying", {
-            kind: job.kind,
-            error: `首次执行未确认成功，正在自动重试：${message}`,
-          }).catch(() => {});
-          this.store.log(
-            `任务 ${job.id} 首次执行未确认成功，12 秒后自动重试：${message}`,
-            "warn"
-          );
-          await delay(RETRY_DELAY_MS);
-        }
-      }
+      // One attempt per claim. A failed job persists its retry time and yields
+      // the account instead of sleeping/retrying while holding a worker slot.
+      active.stage = "上传图片并生成";
+      this.onChange();
+      this.assertTaskActive(job.id);
+      const runResult = await this.runJob(account, { ...job, files, referenceFiles });
+      const result = typeof runResult === "string"
+        ? { prompt: runResult, analysis: "" }
+        : { ...runResult, prompt: String(runResult?.prompt || ""), analysis: String(runResult?.analysis || "") };
       this.assertTaskActive(job.id);
       active.stage = "回传提示词";
       this.onChange();
@@ -447,12 +398,15 @@ class BridgeEngine {
       if (this.cancelledTasks.has(job.id)) return;
       const code = error?.code || "";
       const message = error instanceof Error ? error.message : String(error);
-      if (REMOTE_FAILURE_CODES.has(code)) {
+      const accountLimited = isAccountLimitedError(error);
+      if (accountLimited) {
         const streak = Number(this.failureStreak.get(account.id) || 0) + 1;
         this.failureStreak.set(account.id, streak);
         cooldownMs = ACCOUNT_FAILURE_BACKOFF_MS[
           Math.min(streak - 1, ACCOUNT_FAILURE_BACKOFF_MS.length - 1)
         ];
+      } else {
+        this.failureStreak.delete(account.id);
       }
       if (code === "EXECUTION_PERMIT_REQUIRED" || code === "EXECUTION_PERMIT_INVALID") {
         await this.report(job.id, "release", {
@@ -471,13 +425,14 @@ class BridgeEngine {
         const recovery = await this.report(job.id, "defer", {
           kind: job.kind,
           error: message,
+          accountLimited,
         }).catch(() => null);
         if (!recovery) {
           await this.report(job.id, "error", { kind: job.kind, error: message }).catch(() => {});
           this.store.log(`任务 ${job.id} 失败：${message}`, "error");
         } else if (recovery.deferred) {
           this.store.log(
-            `任务 ${job.id} 遇到 Gemini 网页波动，已安排后台恢复（${recovery.failures}/${recovery.maxFailures || 3}）`,
+            `任务 ${job.id} 已延后重试（${recovery.failures}/${recovery.maxFailures || 3}）；${accountLimited ? "当前账号限流冷却，其他空闲账号继续工作" : "账号已让出，继续处理后续任务"}`,
             "warn"
           );
         } else {
@@ -511,5 +466,5 @@ module.exports = {
   BRIDGE_REQUEST_TIMEOUT_MS,
   isTransientBridgeError,
   isRetryableJobError,
-  shouldRetryInline,
+  isAccountLimitedError,
 };

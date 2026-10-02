@@ -1,5 +1,6 @@
-import { buildGeminiPrompt } from "../../../lib/gemini";
+import { buildSavedGemPrompt } from "../../../lib/gemini";
 import { chooseGeminiAccount } from "../../../lib/gemini-account-routing";
+import { geminiRetryPlan } from "../../../lib/gemini-retry";
 import { getProviderConfig } from "../../../lib/provider-config";
 import { submitSeedance } from "../../../lib/seedance";
 import {
@@ -156,8 +157,8 @@ export async function GET(request: Request) {
     const retryReadyAt = new Date().toISOString();
     const pending = await db
       .prepare(
-      `SELECT t.id, t.product_id, t.gemini_account_id, t.created_at,
-                t.duration, t.region, t.shooting_style,
+      `SELECT t.id, t.product_id, t.gemini_account_id, t.created_at, COALESCE(t.gemini_retry_at, t.created_at) AS queue_at,
+                t.duration, t.region, t.shooting_style, t.gemini_request_text, t.image_keys_snapshot, t.gem_id, g.name AS gem_name,
                 p.name, p.features, COALESCE(t.gem_content_snapshot, g.content) AS content
          FROM tasks t
          JOIN products p ON p.id = t.product_id
@@ -166,7 +167,7 @@ export async function GET(request: Request) {
            AND t.status IN ('prompt_queued', 'prompt_generating')
            AND (t.bridge_claimed_at IS NULL OR t.bridge_claimed_at < ?)
            AND (t.gemini_retry_at IS NULL OR t.gemini_retry_at <= ?)
-         ORDER BY t.created_at ASC LIMIT 32`
+         ORDER BY queue_at ASC LIMIT 32`
       )
       .bind(staleBefore, retryReadyAt)
       .all<{
@@ -176,21 +177,26 @@ export async function GET(request: Request) {
         name: string;
         features: string;
         content: string;
+        gem_id: string;
+        gem_name: string;
         duration: number;
         region: string;
         shooting_style: string;
+        gemini_request_text: string | null;
+        image_keys_snapshot: string | null;
         created_at: string;
+        queue_at: string;
       }>();
 
     const remixPending = await db
       .prepare(
-        `SELECT id, gemini_account_id, duration, region, created_at
+        `SELECT id, gemini_account_id, duration, region, created_at, COALESCE(gemini_retry_at, created_at) AS queue_at
          FROM reference_remix_tasks
          WHERE provider = 'gemini-web'
            AND status IN ('reference_queued', 'reference_analyzing', 'product_adapting')
            AND (bridge_claimed_at IS NULL OR bridge_claimed_at < ?)
            AND (gemini_retry_at IS NULL OR gemini_retry_at <= ?)
-         ORDER BY created_at ASC LIMIT 32`
+         ORDER BY queue_at ASC LIMIT 32`
       )
       .bind(staleBefore, retryReadyAt)
       .all<{
@@ -199,19 +205,20 @@ export async function GET(request: Request) {
         duration: number;
         region: string;
         created_at: string;
+        queue_at: string;
       }>();
 
     const scriptPending = await db
       .prepare(
         `SELECT id, title, source_script, project_context, rewritten_script,
                 extraction_json, storyboard_json, raw_groups_json,
-                gemini_account_id, status, created_at
+                gemini_account_id, status, created_at, COALESCE(gemini_retry_at, created_at) AS queue_at
          FROM script_pipeline_tasks
          WHERE provider = 'gemini-web'
            AND status IN ('rewrite_queued', 'rewriting', 'extracting', 'storyboarding', 'grouping', 'optimization_queued', 'optimizing')
            AND (bridge_claimed_at IS NULL OR bridge_claimed_at < ?)
            AND (gemini_retry_at IS NULL OR gemini_retry_at <= ?)
-         ORDER BY created_at ASC LIMIT 32`
+         ORDER BY queue_at ASC LIMIT 32`
       )
       .bind(staleBefore, retryReadyAt)
       .all<{
@@ -226,9 +233,11 @@ export async function GET(request: Request) {
         gemini_account_id?: string | null;
         status: string;
         created_at: string;
+        queue_at: string;
       }>();
 
     const jobs: Array<{
+      gem?: { id: string; name: string; content: string };
       id: string;
       kind: "standard" | "reference-remix" | "script-pipeline";
       accountId: string;
@@ -247,7 +256,7 @@ export async function GET(request: Request) {
       ...pending.results.map((task) => ({ kind: "standard" as const, task })),
       ...remixPending.results.map((task) => ({ kind: "reference-remix" as const, task })),
       ...scriptPending.results.map((task) => ({ kind: "script-pipeline" as const, task })),
-    ].sort((left, right) => left.task.created_at.localeCompare(right.task.created_at));
+    ].sort((left, right) => left.task.queue_at.localeCompare(right.task.queue_at));
     for (const candidate of candidates) {
       const task = candidate.task;
       if (jobs.length >= capacity) break;
@@ -309,10 +318,10 @@ export async function GET(request: Request) {
           id: standardTask.id,
           kind: "standard",
           accountId,
-          prompt: buildGeminiPrompt(standardTask.content, standardTask),
-          imageUrls: images.results.map((image: { object_key: string }) =>
-            mediaUrl(request.url, image.object_key)
-          ),
+          gem: { id: standardTask.gem_id || `snapshot-${standardTask.id}`, name: standardTask.gem_name || "历史任务 Gem", content: standardTask.content },
+          prompt: buildSavedGemPrompt(standardTask),
+          imageUrls: (standardTask.image_keys_snapshot ? JSON.parse(standardTask.image_keys_snapshot) as string[] : images.results.map(image => image.object_key))
+            .map(key => mediaUrl(request.url, key)),
         });
       } else if (candidate.kind === "reference-remix") {
         const remixTask = task as (typeof remixPending.results)[number];
@@ -385,6 +394,7 @@ export async function POST(request: Request) {
       rawGroupsJson?: string;
       optimizedGroupsJson?: string;
       error?: string;
+      accountLimited?: boolean;
       workerId?: string;
       version?: string;
       queueRunning?: boolean;
@@ -763,11 +773,9 @@ export async function POST(request: Request) {
         return Response.json({ error: "任务已不在 Gemini 阶段" }, { status: 409 });
       }
       const failures = Number(task.gemini_failures || 0) + 1;
-      const retryDelays = [2 * 60_000, 10 * 60_000, 30 * 60_000];
-      const waitLabels = ["2 分钟", "10 分钟", "30 分钟"];
-      if (failures <= retryDelays.length) {
-        const retryAt = new Date(Date.now() + retryDelays[failures - 1]).toISOString();
-        const waitLabel = waitLabels[failures - 1];
+      const retry = geminiRetryPlan(failures, body.accountLimited === true);
+      if (retry.delayMs !== null) {
+        const retryAt = new Date(Date.now() + retry.delayMs).toISOString();
         await db
           .prepare(
             `UPDATE ${table} SET status = ${queuedStatusSql}, progress = ${queuedProgressSql},
@@ -778,7 +786,7 @@ export async function POST(request: Request) {
           .bind(
             failures,
             retryAt,
-            `Gemini 网页临时波动，系统将在 ${waitLabel}后自动重试（${failures}/${retryDelays.length}）：${body.error || "页面未确认任务完成"}`,
+            `Gemini ${body.accountLimited ? "账号限流，稍后重试" : "任务暂时失败，先处理后续任务"}；${retry.label}后可重试（${failures}/${retry.maxFailures}）：${body.error || "页面未确认任务完成"}`,
             now,
             body.taskId
           )
@@ -787,7 +795,7 @@ export async function POST(request: Request) {
           ok: true,
           deferred: true,
           failures,
-          maxFailures: retryDelays.length,
+          maxFailures: retry.maxFailures,
           retryAt,
         });
       }
@@ -800,7 +808,7 @@ export async function POST(request: Request) {
         )
         .bind(
           failures,
-          `${body.error || "Gemini 网页生成失败"}（后台恢复已尝试 ${retryDelays.length} 轮）`,
+          `${body.error || "Gemini 网页生成失败"}（后台恢复已尝试 ${retry.maxFailures} 轮）`,
           now,
           body.taskId
         )
@@ -809,7 +817,7 @@ export async function POST(request: Request) {
         ok: true,
         deferred: false,
         failures,
-        maxFailures: retryDelays.length,
+        maxFailures: retry.maxFailures,
       });
     }
 

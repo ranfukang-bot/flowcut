@@ -3,11 +3,10 @@ const test = require("node:test");
 
 const {
   ACCOUNT_COOLDOWN_MS,
-  ACCOUNT_FAILURE_BACKOFF_MS,
   BridgeEngine,
   isTransientBridgeError,
   isRetryableJobError,
-  shouldRetryInline,
+  isAccountLimitedError,
 } = require("../src/bridge-engine");
 
 function fixture(runJob) {
@@ -50,7 +49,7 @@ function fixture(runJob) {
   return { engine, reports, logs, store };
 }
 
-test("retryable Gemini page failures are retried once before reporting success", async () => {
+test("upload failure yields the account; the next claim can complete", async () => {
   let attempts = 0;
   const { engine, reports } = fixture(async () => {
     attempts += 1;
@@ -72,10 +71,15 @@ test("retryable Gemini page failures are retried once before reporting success",
     { id: "task-1", imageUrls: [] }
   );
 
+  assert.equal(attempts, 1, "no inline sleep or duplicate run while holding the account");
+  assert.equal(engine.active.size, 0);
+  assert.deepEqual(reports.map(item => item.action), ["defer"]);
+  engine.active.set("account-1", { taskId: "task-next" });
+  await engine.execute({ id: "account-1", name: "Gemini 1" }, { id: "task-next", imageUrls: [] });
   assert.equal(attempts, 2);
   assert.deepEqual(
     reports.map((item) => item.action),
-    ["retrying", "result"]
+    ["defer", "result"]
   );
   assert.ok(engine.cooldownUntil.get("account-1") >= Date.now());
   assert.equal(ACCOUNT_COOLDOWN_MS, 12_000);
@@ -118,7 +122,7 @@ test("retry classification excludes login failures", () => {
     true
   );
   assert.equal(
-    shouldRetryInline(
+    isAccountLimitedError(
       Object.assign(new Error("Gemini refused"), {
         code: "GEMINI_REFUSED_RESPONSE",
       })
@@ -148,10 +152,8 @@ test("remote Gemini failures are deferred without a rapid duplicate submission",
 
   assert.equal(attempts, 1);
   assert.deepEqual(reports.map((item) => item.action), ["defer"]);
-  assert.ok(
-    engine.cooldownUntil.get("account-1") >=
-      Date.now() + ACCOUNT_FAILURE_BACKOFF_MS[0] - 1_000
-  );
+  assert.ok(engine.cooldownUntil.get("account-1") <= Date.now() + ACCOUNT_COOLDOWN_MS);
+  assert.equal(reports[0].accountLimited, false);
 });
 
 test("repeated transient Gemini failures are deferred instead of immediately failed", async () => {
@@ -173,7 +175,7 @@ test("repeated transient Gemini failures are deferred instead of immediately fai
 
   assert.deepEqual(
     reports.map((item) => item.action),
-    ["retrying", "defer"]
+    ["defer"]
   );
 });
 

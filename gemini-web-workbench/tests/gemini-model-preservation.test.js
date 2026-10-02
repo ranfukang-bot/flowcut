@@ -10,7 +10,7 @@ const source = fs.readFileSync(
   process.env.FLOWCUT_MODEL_TEST_SOURCE || path.join(__dirname, "../src/gemini-preload.js"),
   "utf8"
 );
-const start = source.indexOf("async function ensureFreshConversation()");
+const start = source.indexOf("async function ensureFreshConversation(");
 const end = source.indexOf("function uploadProcessingVisible()", start);
 assert.ok(start >= 0 && end > start);
 

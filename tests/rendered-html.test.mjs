@@ -62,7 +62,7 @@ test("Gemini web transient failures are persisted for delayed automatic recovery
   assert.match(bridge, /gemini_retry_at/);
   assert.match(
     bridge,
-    /retryDelays = \[2 \* 60_000, 10 \* 60_000, 30 \* 60_000\]/,
+    /geminiRetryPlan\(failures, body.accountLimited === true\)/,
   );
   assert.match(storage, /gemini_failures/);
   assert.match(storage, /gemini_retry_at/);

@@ -12,6 +12,7 @@ const { AccountManager } = require("../../vendor/seedance-engine/account-manager
 const { FlowCutBridge } = require("../../vendor/seedance-engine/flowcut-bridge.js");
 const { LOGIN_URL, configureLoginSession, createLoginNetworkReporter } = require('./seedance-login-network');
 const { protectLoginNavigation } = require('./web-login-navigation');
+const { reviewDirectory } = require('./video-review');
 const {
   accountVideoDirectory,
   availableVideoPath,
@@ -286,7 +287,9 @@ class SeedanceRuntime {
       this.store.settings.downloadDirectory ||
       path.join(this.app.getPath("downloads"), "FlowCut视频");
     const archiveAccount = String(task.tiktokAccountName || "").trim();
-    const downloadDirectory = task.archiveDirectory
+    const downloadDirectory = task.flowcutTaskId && (!task.flowcutTaskKind || task.flowcutTaskKind === 'standard')
+      ? reviewDirectory(this.app.getPath('userData'), task.flowcutTaskId)
+      : task.archiveDirectory
       ? path.resolve(task.archiveDirectory)
       : archiveAccount ? accountVideoDirectory(rootDirectory, archiveAccount) : rootDirectory;
     const destination = await availableVideoPath(
@@ -347,6 +350,7 @@ class SeedanceRuntime {
       }
       if (!result) throw lastError || new Error("视频下载地址暂时不可用");
       task.lastDownloadedPath = result.destination;
+      if (task.flowcutTaskId && (!task.flowcutTaskKind || task.flowcutTaskKind === 'standard')) task.reviewDownload = true;
       task.lastDownloadedAt = Date.now();
       task.autoDownloadError = "";
       task.nextAutoDownloadAt = 0;

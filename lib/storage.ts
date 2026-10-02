@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { LEGACY_GEMINI_RETRY_UPDATES } from "./gemini-retry";
 
 type RuntimeEnv = {
   DB?: D1Database;
@@ -153,6 +154,7 @@ async function initializeWorkspace() {
   await ensureColumn("tiktok_accounts", "archive_directory", "TEXT NOT NULL DEFAULT ''");
   await ensureColumn("tasks", "archive_directory", "TEXT NOT NULL DEFAULT ''");
   await ensureColumn("tasks", "gem_content_snapshot", "TEXT");
+  await ensureColumn("tasks", "gemini_request_text", "TEXT");
   await ensureColumn("tasks", "product_external_id_snapshot", "TEXT");
   await ensureColumn("tasks", "regenerated_from_task_id", "TEXT");
   await db.prepare("CREATE INDEX IF NOT EXISTS idx_tasks_regenerated_from ON tasks(regenerated_from_task_id)").run();
@@ -161,7 +163,12 @@ async function initializeWorkspace() {
   await ensureColumn("tasks", "bridge_worker_id", "TEXT");
   await ensureColumn("tasks", "gemini_failures", "INTEGER NOT NULL DEFAULT 0");
   await ensureColumn("tasks", "gemini_retry_at", "TEXT");
+  await db.batch(LEGACY_GEMINI_RETRY_UPDATES.map((sql) => db.prepare(sql)));
   await ensureColumn("tasks", "download_path", "TEXT");
+  await ensureColumn("tasks", "review_status", "TEXT NOT NULL DEFAULT 'pending'");
+  await ensureColumn("tasks", "reviewed_at", "TEXT");
+  await ensureColumn("tasks", "approved_path", "TEXT");
+  await ensureColumn("tasks", "image_keys_snapshot", "TEXT");
   await ensureColumn("tasks", "download_error", "TEXT");
   await ensureColumn("tasks", "duration", "INTEGER NOT NULL DEFAULT 15");
   await ensureColumn("tasks", "region", "TEXT NOT NULL DEFAULT '印尼'");

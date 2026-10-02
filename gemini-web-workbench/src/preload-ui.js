@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 const desktopApi = {
+  listGemBindings: (gem) => ipcRenderer.invoke("gem:list-bindings", gem),
+  configureGem: (options) => ipcRenderer.invoke("gem:configure", options),
   seedanceSetPreferredModel: (id, model) => ipcRenderer.invoke('seedance:preferred-model', { id, model }),
   seedanceDecideFastFallback: (id, choice, date) => ipcRenderer.invoke('seedance:fast-fallback', { id, choice, date }),
   seedanceReconnectLogin: id => ipcRenderer.invoke('seedance:reconnect-login', id),
@@ -8,6 +10,10 @@ const desktopApi = {
   clearAllTasks: () => ipcRenderer.invoke("tasks:clear-all"),
   getState: () => ipcRenderer.invoke("workbench:get-state"),
   publisherStart: () => ipcRenderer.invoke("publisher:start"),
+  openReviewVideo: (id) => ipcRenderer.invoke('video-review:open', id),
+  openReviewFolder: () => ipcRenderer.invoke('video-review:folder'),
+  approveReviewVideo: (id, confirmed) => ipcRenderer.invoke('video-review:approve', { id, confirmed }),
+  discardReviewVideo: (id, replacementId) => ipcRenderer.invoke('video-review:discard', { id, replacementId }),
   publisherImport: (rows) => ipcRenderer.invoke("publisher:import", rows),
   publisherOpenExtension: () => ipcRenderer.invoke("publisher:open-extension"),
   publisherRelease: (taskId, confirmed) => ipcRenderer.invoke("publisher:release", { taskId, confirmed }),

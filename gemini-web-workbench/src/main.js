@@ -4,12 +4,14 @@ const {
   dialog,
   ipcMain,
   session,
+  shell,
   utilityProcess,
 } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const { createHash, randomBytes, randomUUID } = require("node:crypto");
 const { Store } = require("./store");
+const { SavedGems, createGemDriver, cleanGemUrl } = require("./saved-gems");
 const { BridgeEngine } = require("./bridge-engine");
 const { watchGeminiJob } = require("./gemini-job-watchdog");
 const {
@@ -23,6 +25,7 @@ const {
 const { SeedanceRuntime } = require("./seedance-runtime");
 const { protectLoginNavigation } = require('./web-login-navigation');
 const { PublisherRuntime } = require("./publisher-runtime");
+const { VideoReview } = require("./video-review");
 const { startRuntimeLogMaintenance } = require("./runtime-log-maintenance");
 const { version: appVersion } = require("../package.json");
 
@@ -43,6 +46,8 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
 
 let store;
+let savedGems;
+const gemSetupAccounts = new Set();
 let bridge;
 let mainWindow;
 let seedanceRuntime;
@@ -146,12 +151,12 @@ async function refreshAccountNetwork(account) {
   return current;
 }
 
-async function loadGeminiPage(account, window, attempts = 3) {
+async function loadGeminiPage(account, window, attempts = 3, url = "https://gemini.google.com/app") {
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       await withTimeout(
-        window.loadURL("https://gemini.google.com/app"),
+        window.loadURL(url),
         60_000,
         "Gemini 页面加载超时"
       );
@@ -794,7 +799,14 @@ async function runGeminiJob(account, job) {
   }
   bridge?.assertTaskActive(job.id);
   const window = workerWindow(account);
-  await loadGeminiPage(account, window);
+  let gemUrl = "";
+  if (!job.kind || job.kind === "standard") {
+    const active = bridge?.active.get(account.id);
+    if (active) { active.stage = "准备已保存的 Gem（首次自动创建）"; broadcast(); }
+    if (gemSetupAccounts.has(account.id)) throw Object.assign(new Error("该账号正在设置网页 Gem，请稍后重试"), { code: "GEM_SETUP_REQUIRED" });
+    gemUrl = await savedGems.ensure(account.id, job.gem, createGemDriver(window));
+  }
+  await loadGeminiPage(account, window, 3, gemUrl || "https://gemini.google.com/app");
   await new Promise((resolve) => setTimeout(resolve, 2200));
 
   bridge?.assertTaskActive(job.id);
@@ -829,6 +841,7 @@ async function runGeminiJob(account, job) {
   const pageJob = {
     requestId,
     prompt: job.prompt,
+    gemUrl,
     kind: job.kind || "standard",
     analysisPrompt: job.analysisPrompt,
     adaptationPrompt: job.adaptationPrompt,
@@ -992,6 +1005,24 @@ ipcMain.on("gemini:job-diagnostic", (_event, diagnostic) => {
 });
 
 function bindIpc() {
+  const videoReview = new VideoReview({ userData: app.getPath('userData'), shell,
+    defaultDirectory: () => seedanceRuntime?.store?.settings.downloadDirectory || path.join(app.getPath('downloads'), 'FlowCut视频'),
+    request: async (route, init = {}) => {
+      const response = await fetch(store.state.settings.flowcutUrl.replace(/\/+$/, '') + route, {
+        ...init, headers: desktopRuntimeHeaders({ 'content-type': 'application/json' }), signal: AbortSignal.timeout(30000),
+      });
+      const data = await response.json(); if (!response.ok) throw Error(data.error || '审核状态读取失败'); return data;
+    },
+  });
+  ipcMain.handle('video-review:open', (_event, id) => videoReview.open(String(id || '')));
+  ipcMain.handle('video-review:folder', () => videoReview.openFolder());
+  ipcMain.handle('video-review:approve', (_event, input) => videoReview.approve(String(input?.id || ''), input?.confirmed === true));
+  ipcMain.handle('video-review:discard', async (_event, input) => {
+    const id = String(input?.id || '');
+    await videoReview.discard(id, String(input?.replacementId || ''));
+    seedanceRuntime?.clearTasks([id]);
+    return true;
+  });
   ipcMain.handle("gemini:upload-files-via-chooser", async (event, filePaths) => {
     const uploadRoot = path.resolve(
       app.getPath("temp"),
@@ -1055,6 +1086,32 @@ function bindIpc() {
     return true;
   });
   ipcMain.handle("workbench:get-state", () => publicState());
+  ipcMain.handle("gem:list-bindings", (_event, gem) => store.state.accounts.map(account => ({
+    id: account.id, name: account.name, authenticated: account.authenticated,
+    binding: savedGems.get(account.id, gem),
+  })));
+  ipcMain.handle("gem:configure", async (_event, { accountId, gem, url, action }) => {
+    // Explicit setup must not steal a worker from an in-flight job or claim.
+    if (store.state.settings.queueRunning || bridge?.active.size || bridge?.polling) {
+      throw new Error("请先暂停 Gemini 队列并等正在执行的任务收尾，再设置网页 Gem");
+    }
+    if (gemSetupAccounts.has(accountId)) throw new Error("该账号正在设置 Gem，请稍后");
+    const account = accountById(accountId);
+    if (!account) throw new Error("账号不存在");
+    gemSetupAccounts.add(accountId);
+    try {
+      if (action === "bind") return savedGems.bind(accountId, gem, cleanGemUrl(url));
+      if (action !== "create" && action !== "open") throw new Error("不支持的 Gem 操作");
+      if (action === "open") {
+        const setupWindow = createGeminiWindow(account, true);
+        await setupWindow.loadURL("https://gemini.google.com/gems/view");
+        return null;
+      }
+      if (!(await refreshAccount(account))) throw new Error("请先登录此 Gemini 账号");
+      const resultUrl = await savedGems.ensure(accountId, gem, createGemDriver(workerWindow(account)));
+      return { url: resultUrl };
+    } finally { gemSetupAccounts.delete(accountId); broadcast(); }
+  });
   ipcMain.handle("archive:choose-directory", async () => {
     try {
       const result = await dialog.showOpenDialog(mainWindow, { title: "选择视频保存文件夹", properties: ["openDirectory", "createDirectory"] });
@@ -1224,7 +1281,7 @@ async function activateWorkbench() {
     bridge = new BridgeEngine({
       store,
       getAuthenticatedAccounts: () =>
-        store.state.accounts.filter((account) => account.authenticated),
+        store.state.accounts.filter((account) => account.authenticated && !gemSetupAccounts.has(account.id)),
       getMaxConcurrent: () => store.state.settings.maxConcurrent,
       getDesktopToken: () => desktopRuntimeToken,
       version: appVersion,
@@ -1276,6 +1333,7 @@ app.whenReady().then(async () => {
     await showStartupBlocked(store.blocked.message);
     return;
   }
+  savedGems = new SavedGems(store);
   store.onPersistError = (problem) =>
     reportPersistenceProblem({ source: "FlowCut 主配置", failing: true, ...problem });
   store.onPersistRecovered = (problem) =>
@@ -1319,6 +1377,7 @@ app.whenReady().then(async () => {
       return blocked && standard.accountState.items[0].preferredModel === '2000004' && fast.accountState.items[0].preferredModel === '2000012';
     })()`): null;
     let nativeProtocolBlocked = null;
+    let savedGemEditorVerified = null;
     if (smokeProfile) {
       const probe = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, sandbox: true } });
       let blocked = 0;
@@ -1328,6 +1387,13 @@ app.whenReady().then(async () => {
         await probe.webContents.executeJavaScript("location.href='bytedance://flowcut-local-navigation-test'; true", true);
         await new Promise(resolve => setTimeout(resolve, 300));
         nativeProtocolBlocked = blocked > 0 && probe.webContents.getURL().startsWith('data:');
+        const editorFixture = '<input id="gem-name-input"><div data-test-id="instruction-rich-input-field"><div class="ql-editor" contenteditable="true"></div></div><button data-test-id="create-button">Save</button>';
+        const driver = createGemDriver({
+          isDestroyed: () => probe.isDestroyed(), webContents: probe.webContents,
+          loadURL: () => probe.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(editorFixture)}`),
+        }, { timeoutMs: 5_000 });
+        await driver.prepare({ name: "FlowCut 编译验证", content: "只生成文字提示词。\n第二行指令。" });
+        savedGemEditorVerified = await probe.webContents.executeJavaScript(`document.querySelector('#gem-name-input').value === 'FlowCut 编译验证' && document.querySelector('.ql-editor').innerText.includes('第二行指令')`, true);
       } finally { probe.destroy(); }
     }
     fs.writeFileSync(
@@ -1338,6 +1404,7 @@ app.whenReady().then(async () => {
           clearAllVerified: clearAllResult?.deleted === 0,
           modelPolicyVerified,
           nativeProtocolBlocked,
+          savedGemEditorVerified,
           workbenchStarted,
           seedance: seedanceRuntime?.state() || null,
           siteUrl: store.state.settings.flowcutUrl,

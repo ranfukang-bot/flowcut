@@ -65,6 +65,7 @@ async function main() {
   await api("/api/settings", { method: "PUT", body: JSON.stringify({ provider: "gemini", config: { mode: "web" } }) });
   await api("/api/tiktok-accounts", { method: "POST", body: JSON.stringify({ name: "clear-test" }) });
   const testGem = await api("/api/gems", { method: "POST", body: JSON.stringify({ name: "clear-test", content: "Test template" }) });
+  await require('./gemini-queue-smoke.cjs')({ api, productId: created.id, gemId: testGem.id });
   for (let i = 0; i < 65; i++) await api("/api/tasks", { method: "POST", body: JSON.stringify({ productId: created.id, gemId: testGem.id, tiktokAccountName: "clear-test" }) });
   assert.equal((await api("/api/workspace")).tasks.length, 60);
   const cleared = await api("/api/tasks?all=1", { method: "DELETE" });
@@ -78,7 +79,12 @@ async function main() {
   assert.equal((await fetch(base + "/api/products", { method: "PATCH", headers: { "x-flowcut-desktop-token": token }, body: secondImage })).status, 200);
   const oldContent = "CHOSEN_TEMPLATE_143: original instructions";
   await api("/api/gems", { method: "PUT", body: JSON.stringify({ id: testGem.id, name: "clear-test", content: oldContent }) });
-  const archivedTask = await api("/api/tasks", { method: "POST", body: JSON.stringify({ productId: created.id, gemId: testGem.id, tiktokAccountName: "archive-test" }) });
+  const customRequest = '只输出文字。\n按我的 Gem 生成提示词，除此之外不要添加要求。';
+  const taskInput = { productId: created.id, gemId: testGem.id, tiktokAccountName: "archive-test", geminiRequestText: customRequest };
+  for (const value of ['', '  ', 123, 'x'.repeat(12001)]) {
+    assert.equal((await fetch(base + '/api/tasks', { method: 'POST', headers, body: JSON.stringify({ ...taskInput, geminiRequestText: value }) })).status, 400);
+  }
+  const archivedTask = await api("/api/tasks", { method: "POST", body: JSON.stringify(taskInput) });
   await api("/api/tiktok-accounts", { method: "PUT", body: JSON.stringify({ id: archiveAccount.id, archiveDirectory: "E:\\Videos\\Changed" }) });
   const duplicateRename = await fetch(base + "/api/tiktok-accounts", { method: "PUT", headers, body: JSON.stringify({ id: archiveAccount.id, name: "CLEAR-TEST" }) });
   assert.equal(duplicateRename.status, 409);
@@ -96,8 +102,11 @@ async function main() {
   const bridgeHeaders = { authorization: "Bearer smoke-bridge-only" };
   const jobs = await api("/api/gemini-bridge?workerId=archive-smoke&capacity=1&accountIds=test-account", { headers: bridgeHeaders });
   assert.equal(jobs.jobs[0].id, archivedTask.id);
-  assert.match(jobs.jobs[0].prompt, /CHOSEN_TEMPLATE_143/);
-  assert.doesNotMatch(jobs.jobs[0].prompt, /NEW_TEMPLATE_MUST_NOT_REPLACE/);
+  assert.match(jobs.jobs[0].gem.content, /CHOSEN_TEMPLATE_143/);
+  assert.doesNotMatch(jobs.jobs[0].gem.content, /NEW_TEMPLATE_MUST_NOT_REPLACE/);
+  assert.equal(jobs.jobs[0].gem.id, testGem.id);
+  assert.doesNotMatch(jobs.jobs[0].prompt, /CHOSEN_TEMPLATE_143|NEW_TEMPLATE_MUST_NOT_REPLACE/);
+  assert.equal(jobs.jobs[0].prompt, customRequest, 'executor receives exactly the saved request, no hidden suffix');
   await api("/api/gemini-bridge", { method: "POST", headers: bridgeHeaders, body: JSON.stringify({ action: "result", taskId: archivedTask.id, workerId: "archive-smoke", prompt: "Video prompt ".repeat(40) }) });
   const videoJobs = await api("/api/seedance-bridge?workerId=archive-smoke", { headers: bridgeHeaders });
   assert.equal(videoJobs.jobs[0].id, archivedTask.id);
@@ -131,7 +140,7 @@ async function main() {
   workspace.tasks = [
     { ...task, id: "test-running", status: "prompt_generating", progress: 12, product_image_key: archiveRow.product_image_key },
     { ...task, id: "test-failed", title: "待恢复任务", product_name: "待恢复商品", status: "failed", progress: 12, error: "Gemini 连续 3 分钟没有新输出，任务将自动恢复" },
-    { ...task, id: "test-ready", product_name: "已完成商品", status: "video_ready", progress: 100, product_image_key: "missing-test-image" },
+    { ...task, id: "test-ready", product_name: "已完成商品", status: "video_ready", review_status:'pending', download_path:'C:/review-videos/test/product.mp4', output_url:'https://example.test/video.mp4', progress: 100, product_image_key: "missing-test-image" },
   ];
   browser = await chromium.launch({ executablePath: "C:/Program Files/Google/Chrome/Application/chrome.exe", headless: true });
   // Browser supplies the correct multipart boundary for image uploads.
@@ -172,7 +181,11 @@ async function main() {
   const recreateCalls = [];
   await page.evaluate(() => {
     window.remakeQueueStarts = [];
+    window.reviewActions = [];
     window.flowcutDesktop = {
+      openReviewVideo: async id => window.reviewActions.push(['open',id]),
+      approveReviewVideo: async (id,confirmed) => {window.reviewActions.push(['approve',id,confirmed]);return {file:'test.mp4'};},
+      discardReviewVideo: async (id,replacementId) => window.reviewActions.push(['discard',id,replacementId]),
       setQueueRunning: async value => window.remakeQueueStarts.push(['gemini', value]),
       seedanceSetRunning: async value => window.remakeQueueStarts.push(['seedance', value]),
     };
@@ -183,6 +196,12 @@ async function main() {
     return route.fulfill({ status: 201, json: { id: 'mock-remake', created: true } });
   });
   await page.getByRole('button', { name: /已完成商品.*测试TK账号/ }).click();
+  assert.equal(await page.locator('.drawer video').count(),0,'review never embeds a video player');
+  await page.getByRole('button',{name:'外部打开视频',exact:true}).click();
+  assert.deepEqual(await page.evaluate(()=>window.reviewActions),[['open','test-ready']]);
+  await page.getByRole('button',{name:'通过检查并送入发布目录',exact:true}).click();
+  await page.getByRole('dialog',{name:'确认操作'}).getByRole('button',{name:'取消',exact:true}).click();
+  assert.equal((await page.evaluate(()=>window.reviewActions)).length,1,'cancel does not approve');
   await page.screenshot({ path: path.join(evidence, '重新生成.png'), fullPage: true, animations: 'disabled' });
   await page.getByRole('button', { name: '重新生成该任务', exact: true }).click();
   await page.getByRole('dialog', { name: '确认操作' }).getByRole('button', { name: '取消', exact: true }).click();
@@ -197,6 +216,7 @@ async function main() {
   assert.equal(recreateCalls[0].requestId, recreateCalls[1].requestId, 'retry reuses the operation ID');
   assert.equal(recreateCalls[0].id, 'test-ready');
   assert.deepEqual(await page.evaluate(() => window.remakeQueueStarts), [['gemini', true], ['seedance', true]]);
+  assert.deepEqual((await page.evaluate(()=>window.reviewActions)).at(-1),['discard','test-ready','mock-remake']);
   await page.unroute('**/api/tasks/recreate');
   await page.evaluate(() => { delete window.flowcutDesktop; });
   assert.equal(await page.locator(".nav-list button.active").innerText(), "↗\n任务队列\n3");
@@ -269,10 +289,20 @@ async function main() {
   await page.getByRole("button", { name: "选择 / 更改保存文件夹", exact: true }).click();
   await page.screenshot({ path: path.join(evidence, "自选归档文件夹.png"), fullPage: true });
   await page.getByRole("radio", { name: /选择已有商品/ }).click();
+  const requestEditor = page.getByLabel('发送给 Gem 的文字', { exact: true });
+  assert.doesNotMatch(await requestEditor.inputValue(), /信息不足|保守处理/);
+  await requestEditor.fill('只写文字提示词。\n地区：{地区}，时长：{时长}秒。');
+  await page.getByText('查看实际发送内容', { exact: true }).click();
+  assert.equal(await page.getByTestId('gem-request-preview').innerText(), '只写文字提示词。\n地区：印尼，时长：15秒。');
+  await page.screenshot({ path: path.join(evidence, 'Gem发送文字编辑.png'), fullPage: true });
   await page.getByRole("button", { name: /加入并发任务/ }).click();
   await page.getByText("任务已创建，将按所选模板生成并保存到归档文件夹", { exact: true }).waitFor();
   assert.deepEqual(await page.evaluate(() => window.queueStartCalls), [["gemini", true], ["seedance", true]]);
   assert.equal((await api("/api/workspace")).tasks[0].archive_directory, "D:\\Chosen Videos\\中文归档");
+  assert.equal((await api('/api/workspace')).tasks[0].gemini_request_text, '只写文字提示词。\n地区：印尼，时长：15秒。');
+  await page.reload({ waitUntil: 'networkidle' });
+  assert.equal(await page.getByLabel('发送给 Gem 的文字', { exact: true }).inputValue(), '只写文字提示词。\n地区：{地区}，时长：{时长}秒。');
+  await page.getByRole('combobox', { name: 'TK 归档账号', exact: true }).selectOption('界面归档测试');
   await require('./tiktok-accounts-ui.cjs')(page, api, evidence);
   await api("/api/tasks?all=1", { method: "DELETE" });
   let nativeDialogs = 0;
@@ -307,6 +337,7 @@ async function main() {
   await page.getByText("Gem 已更新", { exact: true }).waitFor();
   const savedGem = (await api("/api/workspace")).gems.find(g => g.name === "Keyboard Gem");
   assert.equal(savedGem.content, "修改后的中文指令\n不会因刷新丢失");
+  await require('./saved-gems-ui.cjs')(page, evidence);
   await page.locator(".gem-card").filter({ hasText: "clear-test" }).getByRole("button", { name: "删除", exact: true }).click();
   await page.getByRole("dialog", { name: "确认操作" }).getByRole("button", { name: "确认", exact: true }).click();
   await page.getByText("已删除", { exact: true }).waitFor();

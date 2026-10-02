@@ -20,6 +20,7 @@ import {
 
 import { confirmAction } from "./confirm-action";
 import { useImageProductId } from "./use-image-product-id";
+import { DEFAULT_GEM_REQUEST, renderGemRequest, validateGemRequest } from "../lib/gem-request";
 
 type Gem = {
   id: string;
@@ -72,6 +73,8 @@ type Task = {
   tiktok_account_name: string;
   archive_directory?: string;
   download_path?: string | null;
+  review_status?: string;
+  approved_path?: string | null;
   download_error?: string | null;
   created_at: string;
 };
@@ -376,6 +379,12 @@ type UpdateState = {
 
 function taskStatusLabel(task: Task) {
   if (task.provider === "demo-engine") return "需重新用 Gemini 识别";
+  if (["video_ready", "scheduled"].includes(task.status)) {
+    if (task.review_status === 'replaced') return '已重做';
+    if (task.review_status === 'approved') return '已通过';
+    if (task.review_status === 'approving') return '放行待完成';
+    return task.download_path ? '待检查' : '成片下载中';
+  }
   return statusLabels[task.status] || task.status;
 }
 
@@ -387,6 +396,12 @@ async function api(path: string, init?: RequestInit) {
 }
 
 type FlowCutDesktopBridge = {
+  openReviewVideo?: (id: string) => Promise<boolean>;
+  openReviewFolder?: () => Promise<boolean>;
+  approveReviewVideo?: (id: string, confirmed: boolean) => Promise<{file:string;alreadyApproved?:boolean}>;
+  discardReviewVideo?: (id: string, replacementId: string) => Promise<boolean>;
+  listGemBindings?: (gem: Gem) => Promise<Array<{ id: string; name: string; authenticated: boolean; binding: { url?: string; status: string; name?: string } | null }>>;
+  configureGem?: (options: { accountId: string; gem: Gem; action: "create" | "bind" | "open"; url?: string }) => Promise<unknown>;
   seedanceSetPreferredModel?: (id: string, model: string) => Promise<SeedanceDesktopState>;
   seedanceDecideFastFallback?: (id: string, choice: string, date: string) => Promise<SeedanceDesktopState>;
   seedanceReconnectLogin?: (id: string) => Promise<SeedanceDesktopState>;
@@ -487,6 +502,18 @@ export function StudioApp() {
     DEFAULT_SHOOTING_STYLE
   );
   const [autoQueue, setAutoQueue] = useState(true);
+  const [gemRequestTemplate, setGemRequestTemplate] = useState(DEFAULT_GEM_REQUEST);
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("flowcut-gem-request-template-v1");
+      if (saved !== null) setGemRequestTemplate(saved);
+    } catch { /* The editor still works when local storage is unavailable. */ }
+  }, []);
+  function changeGemRequestTemplate(value: string) {
+    setGemRequestTemplate(value);
+    try { window.localStorage.setItem("flowcut-gem-request-template-v1", value); }
+    catch { setNotice("文字已修改，但本机无法记住此设置；重启后请检查"); }
+  }
   const [updateState, setUpdateState] = useState<UpdateState | null>(null);
   const [seedanceRuntime, setSeedanceRuntime] = useState<SeedanceRuntime>({
     status: "checking",
@@ -663,7 +690,7 @@ export function StudioApp() {
   }, [data?.tasks, reload]);
 
   const readyTasks = useMemo(
-    () => data?.tasks.filter((task) => task.status === "video_ready") || [],
+    () => data?.tasks.filter((task) => task.status === "video_ready" && ['approved','replaced'].includes(task.review_status || '')) || [],
     [data]
   );
 
@@ -694,6 +721,9 @@ export function StudioApp() {
     }
     setBusy(true);
     try {
+      const geminiRequestText = data.integrations.geminiMode === "web"
+        ? validateGemRequest(renderGemRequest(gemRequestTemplate, { duration: selectedDuration, region: selectedRegion, shooting_style: selectedShootingStyle }))
+        : undefined;
       const productId = input.mode === "new"
         ? await quickUploadProduct(
             input.files,
@@ -714,6 +744,7 @@ export function StudioApp() {
           duration: selectedDuration,
           region: selectedRegion,
           shootingStyle: selectedShootingStyle,
+          geminiRequestText,
         }),
       });
       let queueNotice = "任务已创建，将按所选模板生成并保存到归档文件夹";
@@ -954,6 +985,8 @@ export function StudioApp() {
             selectedDuration={selectedDuration}
             selectedRegion={selectedRegion}
             selectedShootingStyle={selectedShootingStyle}
+            gemRequestTemplate={gemRequestTemplate}
+            onGemRequestTemplate={changeGemRequestTemplate}
             autoQueue={autoQueue}
             busy={busy}
             onProduct={setSelectedProduct}
@@ -1298,6 +1331,8 @@ function Dashboard({
   selectedDuration,
   selectedRegion,
   selectedShootingStyle,
+  gemRequestTemplate,
+  onGemRequestTemplate,
   autoQueue,
   busy,
   onProduct,
@@ -1324,6 +1359,8 @@ function Dashboard({
   selectedDuration: number;
   selectedRegion: string;
   selectedShootingStyle: string;
+  gemRequestTemplate: string;
+  onGemRequestTemplate: (value: string) => void;
   autoQueue: boolean;
   busy: boolean;
   onProduct: (value: string) => void;
@@ -1690,6 +1727,19 @@ function Dashboard({
               </select>
             </label>
           </div>
+          {data.integrations.geminiMode === "web" && <div className="creative-config-block">
+            <label>
+              <span>发送给 Gem 的文字（可编辑）</span>
+              <textarea aria-label="发送给 Gem 的文字" rows={6} maxLength={12000}
+                value={gemRequestTemplate} onChange={event => onGemRequestTemplate(event.target.value)}
+                style={{ width: "100%", resize: "vertical", marginTop: 8 }} />
+            </label>
+            <p style={{ fontSize: 12, color: "#a6b5c6" }}>会记住你的修改，用于后续新任务。可使用 {"{时长}、{地区}、{拍摄风格}"} 自动带入上方参数，也可以全部改成自己的文字。不会额外追加要求，也不会修改 Gem 设定。</p>
+            <details>
+              <summary>查看实际发送内容</summary>
+              <pre data-testid="gem-request-preview" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{renderGemRequest(gemRequestTemplate, { duration: selectedDuration, region: selectedRegion, shooting_style: selectedShootingStyle })}</pre>
+            </details>
+          </div>}
           <div className="composer-foot">
             <div className="chips">
               <span>{selectedDuration} 秒</span>
@@ -2509,9 +2559,11 @@ function GemsPage({
   onEdit: (gem: Gem) => void;
   onDelete: (id: string) => void;
 }) {
+  const [webGem, setWebGem] = useState<Gem | null>(null);
   return (
     <div className="page-body">
-      <PageIntro title="Gem 模板中心" text="每个 Gem 都是一套独立的身份、规则与输出框架。运行任务前随时选择、更改或新建。" action="新建 Gem" onAction={onAdd} />
+      <PageIntro title="Gem 模板中心" text="商品图任务首次使用时，会在执行账号内自动创建并保存真正的 Gem；之后只发送图片和本次要求。也可手动绑定已有 Gem 链接。" action="新建 Gem" onAction={onAdd} />
+      {webGem && <WebGemModal gem={webGem} onClose={() => setWebGem(null)} />}
       <div className="gem-grid">
         {gems.map((gem, index) => (
           <article className="gem-card" key={gem.id}>
@@ -2527,6 +2579,7 @@ function GemsPage({
             </div>
             <div className="gem-actions">
               <button className="secondary" onClick={() => onEdit(gem)}>编辑指令</button>
+              <button className="secondary" onClick={() => setWebGem(gem)}>网页 Gem</button>
               <button className="danger-text" onClick={() => onDelete(gem.id)}>删除</button>
             </div>
           </article>
@@ -2550,6 +2603,51 @@ function TaskProductThumbnail({ task }: { task: Task }) {
   </span>;
 }
 
+function WebGemModal({ gem, onClose }: { gem: Gem; onClose: () => void }) {
+  const [accounts, setAccounts] = useState<Array<{ id: string; name: string; authenticated: boolean; binding: { url?: string; status: string; name?: string } | null }>>([]);
+  const [accountId, setAccountId] = useState("");
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const current = accounts.find(a => a.id === accountId);
+  async function refresh() {
+    const desktop = desktopBridge();
+    if (!desktop?.listGemBindings) throw new Error("请使用支持网页 Gem 的新版 FlowCut 桌面端");
+    const rows = await desktop.listGemBindings(gem);
+    setAccounts(rows);
+    setAccountId(id => id || rows[0]?.id || "");
+  }
+  useEffect(() => { void refresh().catch(e => setMessage(String(e.message || e))); }, [gem.id]);
+  useEffect(() => { setUrl(current?.binding?.url || ""); }, [accountId, current?.binding?.url]);
+  async function act(action: "create" | "bind" | "open") {
+    if (busy || !accountId) return;
+    setBusy(true); setMessage("");
+    try {
+      const desktop = desktopBridge();
+      if (!desktop?.configureGem) throw new Error("请更新 FlowCut 桌面端");
+      await desktop.configureGem({ accountId, gem, action, url });
+      await refresh();
+      setMessage(action === "open" ? "已打开这个账号的 Gem 管理页。手动保存后，将 /gem/ 开头的对话链接复制回来。" : action === "bind" ? "链接已保存。请确保此账号能访问该 Gem，且指令与当前模板一致。" : "Gem 已创建并保存，后续任务会直接进入此链接。");
+    } catch (e) { setMessage(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  }
+  return <div className="modal-backdrop"><div className="modal wide-modal" role="dialog" aria-modal="true" aria-label="网页 Gem">
+    <ModalHead title={`网页 Gem · ${gem.name}`} text="按 Gemini 账号分别绑定。修改本地指令后会建立新版本，不会覆盖原 Gem。" onClose={() => { if (!busy) onClose(); }} />
+    <div className="form-body">
+      <p>正常任务会自动完成首次创建，无需预先操作。手动设置前，请暂停 Gemini 队列并等待当前任务收尾。</p>
+      <label>Gemini 账号<select value={accountId} disabled={busy} onChange={e => { setAccountId(e.target.value); setUrl(accounts.find(a => a.id === e.target.value)?.binding?.url || ""); }}><option value="">请选择账号</option>{accounts.map(a => <option key={a.id} value={a.id}>{a.name}{a.authenticated ? "" : "（未登录）"}</option>)}</select></label>
+      <p>{current?.binding?.status === "ready" ? "此版本已绑定" : current?.binding?.status === "saving" ? `上次保存结果待核对：${current.binding.name}。请到该账号的 Gem 管理页找回链接，不会重复创建。` : "此版本尚未创建"}</p>
+      <button className="primary" disabled={busy || !accountId} onClick={() => void act("create")}>{busy ? "处理中…" : "自动创建并保存 / 检查已有绑定"}</button>
+      <button className="secondary" disabled={busy || !accountId} onClick={() => void act("open")}>打开该账号的 Gem 管理页</button>
+      <label>备用：已有 Gem 对话链接<input value={url} disabled={busy} onChange={e => setUrl(e.target.value)} placeholder="https://gemini.google.com/gem/…" /></label>
+      <button className="secondary" disabled={busy || !accountId || !url.trim()} onClick={() => void act("bind")}>保存此账号的链接</button>
+      <p>只保存链接，不修改远端指令、不调整模型或扩展思考，也不更改分享权限。</p>
+      {message && <div role="status" className="form-error">{message}</div>}
+    </div>
+    <div className="modal-foot"><button className="secondary" disabled={busy} onClick={onClose}>关闭</button></div>
+  </div></div>;
+}
+
 function TasksPage({
   tasks,
   geminiRuntime,
@@ -2567,10 +2665,20 @@ function TasksPage({
 }) {
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
-  const completed = (task: Task) => ["video_ready", "scheduled"].includes(task.status);
+  const [videoError, setVideoError] = useState("");
+  async function openVideo(task: Task) {
+    setVideoError("");
+    try {
+      const desktop = desktopBridge();
+      if (!desktop?.openReviewVideo) throw Error('请在新版 FlowCut 桌面程序中查看本地视频');
+      await desktop.openReviewVideo(task.id);
+    } catch (error) { setVideoError(error instanceof Error ? error.message : '视频打开失败'); }
+  }
+  const completed = (task: Task) => ["video_ready", "scheduled"].includes(task.status) && ['approved','replaced'].includes(task.review_status || '');
+  const pendingReview = (task: Task) => ["video_ready", "scheduled"].includes(task.status) && !completed(task);
   const failed = (task: Task) => ["failed", "seedance_blocked"].includes(task.status);
   const visibleTasks = tasks.filter((task) => (
-    filter === "all" || (filter === "completed" ? completed(task) : filter === "attention" ? failed(task) : !completed(task) && !failed(task))
+    filter === "all" || (filter === "review" ? pendingReview(task) : filter === "completed" ? completed(task) : filter === "attention" ? failed(task) : !completed(task) && !failed(task) && !pendingReview(task))
   ) && `${task.product_name || task.title} ${task.tiktok_account_name || ""} ${task.product_external_id || ""}`.toLowerCase().includes(query.toLowerCase()));
   const progressText = (task: Task) => {
     if (["prompt_queued", "prompt_generating"].includes(task.status)) {
@@ -2594,9 +2702,18 @@ function TasksPage({
         onAction={onClearCompleted}
       />
       <button className="secondary danger-text clear-all-tasks" onClick={onClearAll}>清除全部任务</button>
+      <button className="secondary" onClick={async () => {
+        setVideoError('');
+        try {
+          const desktop = desktopBridge();
+          if (!desktop?.openReviewFolder) throw Error('请在新版 FlowCut 桌面程序中打开待检查文件夹');
+          await desktop.openReviewFolder();
+        } catch (error) { setVideoError(error instanceof Error ? error.message : '文件夹打开失败'); }
+      }}>打开待检查文件夹</button>
+      {videoError && <div role="alert" className="form-error">{videoError}</div>}
       <div className="task-toolbar">
         <div role="group" aria-label="筛选任务">
-          {[["all", "全部"], ["active", "进行中"], ["attention", "需处理"], ["completed", "已完成"]].map(([value, label]) => (
+          {[["all", "全部"], ["active", "进行中"], ["review", "待检查"], ["attention", "需处理"], ["completed", "已完成"]].map(([value, label]) => (
             <button key={value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)} aria-pressed={filter === value}>{label}</button>
           ))}
         </div>
@@ -2624,7 +2741,7 @@ function TasksPage({
             </button>
             <TaskChain task={task} compact />
             <div className="task-live-status"><span className={`status ${task.status}`}>{taskStatusLabel(task)}</span><small>{progressText(task)}</small></div>
-            <div className="row-actions"><button onClick={() => onPreview(task)}>{failed(task) ? "查看 / 继续" : "查看"}</button><button onClick={() => onDelete(task.id)}>×</button></div>
+            <div className="row-actions">{task.download_path && task.review_status !== 'replaced' && <button onClick={() => void openVideo(task)}>查看视频</button>}<button onClick={() => onPreview(task)}>{failed(task) ? "查看 / 继续" : pendingReview(task) ? "审核" : "查看"}</button><button onClick={() => onDelete(task.id)}>×</button></div>
           </div>
         ))}
         {!!tasks.length && !visibleTasks.length && <EmptyState icon="↗" title="没有匹配的任务" text="换一个筛选条件或搜索词。" />}
@@ -3941,13 +4058,17 @@ function PromptDrawer({
     setBusy("recreate");
     setRecreateError("");
     try {
-      if (!await confirmAction("重新生成该任务？将复用已保存的商品图片、原 Gem 设定和视频参数，从 Gemini 提示词开始重新生成视频，会再次消耗生成额度。原任务和原成片不会删除，也不会自动送去发布。")) return;
+      if (!await confirmAction("确认删除旧成片并重新生成？旧视频将永久删除，旧任务也会从列表移除。沿用本任务的图片、Gem 设定、商品 ID 和视频参数，从提示词开始重新生成，会消耗生成额度。新成片仍为待检查，不会自动发布。")) return;
       recreateRequest.current ||= crypto.randomUUID();
       const result = await api("/api/tasks/recreate", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ id: task.id, requestId: recreateRequest.current }),
       }) as { id: string; created: boolean };
       let message = result.created ? "已新建重做任务，将从 Gemini 提示词开始完整生成视频" : "已有重做任务，未重复创建";
+      const desktop = desktopBridge();
+      if (!desktop?.discardReviewVideo) throw new Error('重做任务已保存，但旧视频尚未删除：请在最新版桌面程序中操作');
+      try { await desktop.discardReviewVideo(task.id, result.id); }
+      catch (error) { throw new Error(`重做任务已保存，但旧视频或旧任务删除失败，请重试：${error instanceof Error ? error.message : error}`); }
       try {
         const desktop = desktopBridge();
         await desktop?.setQueueRunning?.(true);
@@ -3956,6 +4077,7 @@ function PromptDrawer({
         message += "；任务已保存，请在账号与设置中启动队列";
       }
       await onUpdated(message);
+      onClose();
     } catch (error) {
       setRecreateError(error instanceof Error ? error.message : "重做任务创建失败，请重试");
     } finally {
@@ -3967,6 +4089,23 @@ function PromptDrawer({
     await navigator.clipboard.writeText(task.prompt);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
+  }
+  async function reviewAction(action: 'open' | 'approve') {
+    if (busy) return;
+    setBusy(action); setRecreateError('');
+    try {
+      const desktop = desktopBridge();
+      if (action === 'open') {
+        if (!desktop?.openReviewVideo) throw Error('请在新版 FlowCut 桌面程序中查看视频');
+        await desktop.openReviewVideo(task.id);
+      } else {
+        if (!await confirmAction(`确认通过此成片？商品 ID：${task.product_external_id || '未填写'}，账号：${task.tiktok_account_name}。通过后将送入本任务设置的发布文件夹；如果自动发布正在运行，可能很快开始上传。请确认内容和账号橱窗无误。`)) return;
+        if (!desktop?.approveReviewVideo) throw Error('请在新版 FlowCut 桌面程序中审核');
+        await desktop.approveReviewVideo(task.id, true);
+        await onUpdated('已审核通过，视频已送入原发布目录');
+      }
+    } catch(error) { setRecreateError(error instanceof Error ? error.message : '操作失败'); }
+    finally { setBusy(''); }
   }
   async function taskAction(action: "queue" | "check" | "retry" | "regenerate") {
     setBusy(action);
@@ -4051,33 +4190,28 @@ function PromptDrawer({
         )}
         {task.download_path && (
           <div className="download-result">
-            <b>成片已自动归档</b>
-            <span>{task.download_path}</span>
+            <b>{task.review_status === 'approved' ? '成片已审核通过' : '成片已下载 · 请检查'}</b>
+            <span>{task.approved_path || task.download_path}</span>
+            <button className="secondary" disabled={Boolean(busy) || task.review_status === 'replaced'} onClick={() => reviewAction('open')}>外部打开视频</button>
+            {!['approved','replaced'].includes(task.review_status || '') && <button className="primary" disabled={Boolean(busy)} onClick={() => reviewAction('approve')}>通过检查并送入发布目录</button>}
+            {task.approved_path && <span>已放行至：{task.approved_path}</span>}
+            {!task.download_path.includes('review-videos') && task.review_status !== 'approved' && <span>这是旧版已下载的文件，可能早已在发布目录中。此状态不会撤回已开始的发布。</span>}
           </div>
         )}
-        {["video_ready", "scheduled"].includes(task.status) && (
+        {["video_ready", "scheduled"].includes(task.status) && !['approved','approving'].includes(task.review_status || '') && (
           <div className="download-result">
             <b>成片不满意？用这些素材重新制作</b>
-            <span>复用商品图片、原 Gem 设定和视频参数，从提示词到成片完整重做。原成片保留，不自动发布。</span>
+            <span>删除旧成片和旧任务，复用原图片、Gem 和商品 ID，从提示词开始重做。列表只保留新任务，新成片仍需检查。</span>
             <button className="secondary" disabled={Boolean(busy)} onClick={recreateTask}>
-              {busy === "recreate" ? "正在创建重做任务…" : "重新生成该任务"}
+              {busy === "recreate" ? "正在处理…" : task.review_status === 'replaced' ? '完成旧成片清理（不重复生成）' : "重新生成该任务"}
             </button>
-            {recreateError && <span role="alert">{recreateError}</span>}
           </div>
         )}
-        {task.download_path && ["video_ready", "scheduled"].includes(task.status) && <PublishReview task={task} />}
+        {recreateError && <div role="alert" className="warning-box">{recreateError}</div>}
         {task.archive_directory && <p className="download-destination">本任务保存到：{task.archive_directory}</p>}
         {task.download_error && (
           <div className="warning-box">
             下载状态：{task.download_error}
-          </div>
-        )}
-        {task.output_url && (
-          <div className="video-result">
-            <video src={task.output_url} controls playsInline />
-            <a href={task.output_url} target="_blank" rel="noreferrer">
-              在新窗口打开成片 ↗
-            </a>
           </div>
         )}
         <div className="prompt-title">

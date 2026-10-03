@@ -2,6 +2,7 @@
 const { app, BrowserWindow } = require('electron');
 const assert = require('node:assert/strict');
 const { createGemDriver } = require('../src/saved-gems');
+const report = require('./helpers/electron-test-report.cjs');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.on('window-all-closed', () => {});
 app.whenReady().then(async () => {
@@ -27,10 +28,10 @@ app.whenReady().then(async () => {
       };
       try {
         await createGemDriver(driverWindow, { timeoutMs: 1200, verifyMs: 100 }).prepare({ name: '测试 Gem', content });
-        console.log(JSON.stringify({ prefilled, pass: true }));
+        report({ prefilled, pass: true });
       } catch (error) {
         const stats = await window.webContents.executeJavaScript(`(() => { const el=document.querySelector('.ql-editor'); return {name: document.querySelector('input').value, length: el.innerText.length, prefix: el.innerText.slice(0,50)}; })()`);
-        console.log(JSON.stringify({ prefilled, pass: false, error: error.message, expectedLength: content.length, stats }));
+        report({ prefilled, pass: false, error: error.message, expectedLength: content.length, stats });
         throw error;
       }
       const actual = await window.webContents.executeJavaScript(`document.querySelector('.ql-editor').innerText`);
@@ -38,5 +39,5 @@ app.whenReady().then(async () => {
       window.destroy();
     }
     app.exit(0);
-  } catch (error) { console.error(error); app.exit(1); }
+  } catch (error) { report({ pass: false, error: error.stack }); app.exit(1); }
 });

@@ -181,6 +181,112 @@ test('uncertain Save never becomes a pre-save automatic retry', async () => {
   assert.equal(saves, 1);
 });
 
+test('lost save confirmation recovers the persisted Gem without another Save', async () => {
+  const f = fixture(); let saves = 0, lookups = 0;
+  f.driver.save = async () => { saves++; throw Error('confirmation missing'); };
+  f.driver.findSaved = async input => {
+    lookups++;
+    assert.equal(input.name, `${gem.name} · FlowCut ${gemVersion(gem).slice(0, 8)}`);
+    assert.equal(input.content, gem.content);
+    return url;
+  };
+  assert.equal(await f.manager.ensure('a', gem, f.driver), url);
+  assert.equal(f.manager.get('a', gem).source, 'recovered');
+  f.store.state = structuredClone(f.disk());
+  assert.equal(await new SavedGems(f.store).ensure('a', gem, f.driver), url);
+  assert.equal(saves, 1); assert.equal(lookups, 1);
+});
+
+test('saving state after restart checks the original name even if the template was renamed', async () => {
+  const f = fixture();
+  f.driver.save = async () => { throw Error('response lost'); };
+  await assert.rejects(f.manager.ensure('a', gem, f.driver));
+  f.store.state = structuredClone(f.disk());
+  const originalName = f.manager.get('a', gem).name;
+  const reader = { async findSaved({ name, content }) {
+    assert.equal(name, originalName); assert.equal(content, gem.content); return url;
+  } };
+  assert.equal(await new SavedGems(f.store).ensure('a', { ...gem, name: 'renamed' }, reader), url);
+  assert.equal(f.manager.get('b', gem), null);
+  assert.equal(f.counts().prepared, 1);
+});
+
+test('failed recovery preserves saving intent and never prepares or submits again', async () => {
+  for (const lookup of [async () => null, async () => { throw Error('mismatch or unavailable'); }, async () => 'https://evil.test/gem/a']) {
+    const f = fixture();
+    f.driver.save = async () => { throw Error('lost'); };
+    await assert.rejects(f.manager.ensure('a', gem, f.driver));
+    const record = structuredClone(f.manager.get('a', gem));
+    f.driver.findSaved = lookup;
+    await assert.rejects(f.manager.ensure('a', gem, f.driver), { code: 'GEM_SETUP_REQUIRED' });
+    assert.deepEqual(f.manager.get('a', gem), record);
+    assert.equal(f.counts().prepared, 1);
+  }
+});
+
+test('recovered URL must be persisted before returning it to a task', async () => {
+  const f = fixture();
+  f.driver.save = async () => { throw Error('lost'); };
+  await assert.rejects(f.manager.ensure('a', gem, f.driver));
+  f.driver.findSaved = async () => url;
+  f.writable(false);
+  await assert.rejects(f.manager.ensure('a', gem, f.driver), /无法保存/);
+  f.writable(true);
+  assert.equal(await f.manager.ensure('a', gem, f.driver), url);
+  assert.equal(f.counts().prepared, 1);
+});
+
+function recoveryPage({ cards = [{ name: gem.name, href: '/gem/abc123' }], name = gem.name, content = gem.content, redirect } = {}) {
+  const location = { origin: 'https://gemini.google.com', pathname: '/gems/view' };
+  const fields = {
+    [GEM_FIELDS.name]: { value: name },
+    [GEM_FIELDS.instructions]: { innerText: content.replace(/\n/g, '\n\n') },
+  };
+  const context = editorContext(fields, location);
+  context.URL = URL;
+  context.document.querySelectorAll = selector => {
+    assert.equal(selector, '.bot-list-row-container');
+    return cards.map(card => ({ querySelector(s) {
+      if (s === 'a.bot-row[href]') return {
+        querySelector: s => { assert.equal(s, '.title'); return { textContent: card.name }; },
+        getAttribute: s => { assert.equal(s, 'href'); return card.href; },
+      };
+      if (s === '[data-test-id="edit-button-tooltip"] button') return card.editable === false ? null : {};
+      throw Error(`unexpected selector: ${s}`);
+    } }));
+  };
+  const loads = [];
+  return { loads, driver: createGemDriver({
+    isDestroyed: () => false,
+    async loadURL(value) { loads.push(value); const next = new URL(redirect || value); location.origin = next.origin; location.pathname = next.pathname; },
+    webContents: { executeJavaScript: async code => vm.runInContext(code, context),
+      insertText() { throw Error('recovery must not edit'); } },
+  }, { timeoutMs: 30, sleep: () => new Promise(r => setTimeout(r, 2)) }) };
+}
+
+test('read-only recovery reloads manager then verifies full persisted editor content', async () => {
+  const { driver, loads } = recoveryPage();
+  assert.equal(await driver.findSaved({name:gem.name, content:gem.content}), url);
+  assert.deepEqual(loads, ['https://gemini.google.com/gems/view', 'https://gemini.google.com/gems/edit/abc123']);
+});
+
+for (const [scenario, options] of Object.entries({
+  absent: { cards: [] },
+  'similar name': { cards: [{name:gem.name + ' extra', href:'/gem/abc123'}] },
+  'external URL': { cards: [{name:gem.name, href:'https://evil.test/gem/abc123'}] },
+  'ordinary chat': { cards: [{name:gem.name, href:'/app/abc123'}] },
+  'not editable': { cards: [{name:gem.name, href:'/gem/abc123', editable:false}] },
+  duplicates: { cards: [{name:gem.name, href:'/gem/abc123'},{name:gem.name, href:'/gem/other'}] },
+  'changed instructions': { content: gem.content.slice(0,-3) },
+  'changed name': { name: 'different' },
+  'wrong account/login redirect': { redirect: 'https://accounts.google.com/login' },
+})) {
+  test(`recovery refuses ${scenario} without editing or saving`, async () => {
+    const {driver} = recoveryPage(options);
+    await assert.rejects(driver.findSaved({name:gem.name, content:gem.content}), { code:'GEM_SETUP_REQUIRED' });
+  });
+}
+
 const source = fs.readFileSync(require.resolve('../src/gemini-preload.js'), 'utf8');
 const resetSource = source.slice(source.indexOf('async function ensureFreshConversation('), source.indexOf('function uploadProcessingVisible()'));
 for (const scenario of [

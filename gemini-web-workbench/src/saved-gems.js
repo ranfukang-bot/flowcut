@@ -40,6 +40,14 @@ class SavedGems {
     this.write(accountId, gemVersion(gem), record);
     return record;
   }
+  async recover(accountId, key, gem, record, driver) {
+    if (typeof driver.findSaved !== "function") return null;
+    const found = await driver.findSaved({ name: record.name, content: String(gem.content).trim() });
+    if (!found) return null;
+    const url = cleanGemUrl(found);
+    this.write(accountId, key, { status: "ready", source: "recovered", name: record.name, url, at: new Date().toISOString() });
+    return url;
+  }
   async ensure(accountId, gem, driver) {
     if (this.locks.has(accountId)) throw gemError("该账号正在创建 Gem，请稍后重试");
     this.locks.set(accountId, true);
@@ -52,7 +60,12 @@ class SavedGems {
         return cleanGemUrl(previous.url);
       }
       if (previous?.status === "saving") {
-        throw gemError(`上次保存 Gem 的结果待核对（${previous.name}）。请在“Gem 模板 → 网页 Gem”粘贴已保存的链接，不会重复创建或改用普通聊天。`);
+        let detail = "";
+        try {
+          const recovered = await this.recover(accountId, key, gem, previous, driver);
+          if (recovered) return recovered;
+        } catch (error) { detail = ` 自动核对未完成：${error.message || error}`; }
+        throw gemError(`上次保存 Gem 的结果待核对（${previous.name}）。请在“Gem 模板 → 网页 Gem”检查已有绑定或粘贴已保存的链接，不会重复创建或改用普通聊天。${detail}`);
       }
       const name = `${String(gem.name || "Gem").slice(0, 65)} · FlowCut ${key.slice(0, 8)}`;
       // Preparing the form has no remote write. Only persist intent immediately
@@ -66,8 +79,18 @@ class SavedGems {
           code: "GEM_SETUP_RETRYABLE", cause: error,
         });
       }
-      this.write(accountId, key, { status: "saving", name, at: new Date().toISOString() });
-      const url = cleanGemUrl(await driver.save());
+      const intent = { status: "saving", name, at: new Date().toISOString() };
+      this.write(accountId, key, intent);
+      let saved;
+      try { saved = await driver.save(); }
+      catch (error) {
+        // A missing confirmation dialog is not proof that Save failed. Reopen
+        // the manager and verify persisted content; never press Save again.
+        const recovered = await this.recover(accountId, key, gem, intent, driver);
+        if (recovered) return recovered;
+        throw error;
+      }
+      const url = cleanGemUrl(saved);
       this.write(accountId, key, { status: "ready", source: "auto", name, url, at: new Date().toISOString() });
       return url;
     } finally { this.locks.delete(accountId); }
@@ -124,10 +147,35 @@ const GEM_SCRIPTS = {
     if (!match || !document.querySelector('bot-creation-confirmation-dialog [data-test-id="new-conversation-button"]')) return null;
     return "https://gemini.google.com/gem/" + match[1];
   }`,
+  savedCandidates: `name => {
+    if (location.origin !== "https://gemini.google.com" || location.pathname !== "/gems/view") return [];
+    const urls = new Set();
+    for (const row of document.querySelectorAll(".bot-list-row-container")) {
+      const link = row.querySelector("a.bot-row[href]");
+      if (!link || link.querySelector(".title")?.textContent.trim() !== name ||
+          !row.querySelector('[data-test-id="edit-button-tooltip"] button')) continue;
+      const url = new URL(link.getAttribute("href"), location.origin);
+      if (url.origin === location.origin && /^\\/gem\\/[A-Za-z0-9_-]+\\/?$/.test(url.pathname)) {
+        urls.add(url.origin + url.pathname.replace(/\\/$/, ""));
+      }
+    }
+    return [...urls];
+  }`,
+  editorLocation: `url => location.origin === "https://gemini.google.com" &&
+    location.pathname === "/gems/edit/" + new URL(url).pathname.split("/").pop()`,
 };
 
 function createGemDriver(window, { timeoutMs = 45_000, verifyMs = 4_000, sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
   const run = (script, arg) => window.webContents.executeJavaScript(`(${script})(${JSON.stringify(arg)})`, true);
+  async function load(url) {
+    let timer;
+    try {
+      await Promise.race([
+        window.loadURL(url),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(gemError("Gem 页面加载超时，请检查网络或手动绑定链接")), timeoutMs); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  }
   async function wait(fn, description) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -157,13 +205,7 @@ function createGemDriver(window, { timeoutMs = 45_000, verifyMs = 4_000, sleep =
   }
   return {
     async prepare({ name, content }) {
-      let timer;
-      try {
-        await Promise.race([
-          window.loadURL("https://gemini.google.com/gems/create"),
-          new Promise((_, reject) => { timer = setTimeout(() => reject(gemError("Gem 创建页面加载超时，请检查网络或手动绑定链接")), timeoutMs); }),
-        ]);
-      } finally { clearTimeout(timer); }
+      await load("https://gemini.google.com/gems/create");
       await wait(() => run(GEM_SCRIPTS.formReady, GEM_FIELDS), "等待 Gem 创建表单");
       await fill(GEM_FIELDS.name, name, "名称");
       await fill(GEM_FIELDS.instructions, content, "指令");
@@ -178,6 +220,24 @@ function createGemDriver(window, { timeoutMs = 45_000, verifyMs = 4_000, sleep =
     async save() {
       await run(GEM_SCRIPTS.save, GEM_FIELDS.save);
       return wait(() => run(GEM_SCRIPTS.savedUrl), "确认 Gem 已保存");
+    },
+    async findSaved({ name, content }) {
+      // Fresh reads in this account's own session prove server persistence.
+      // An editor URL alone or a card's truncated preview cannot prove it.
+      await load("https://gemini.google.com/gems/view");
+      const url = await wait(async () => {
+        const candidates = await run(GEM_SCRIPTS.savedCandidates, name);
+        if (candidates.length > 1) throw gemError("发现多个同名 Gem，请手动核对并绑定链接");
+        return candidates[0];
+      }, "查找已保存 Gem");
+      const clean = cleanGemUrl(url);
+      await load(clean.replace("/gem/", "/gems/edit/"));
+      await wait(async () =>
+        await run(GEM_SCRIPTS.editorLocation, clean) &&
+        await run(GEM_SCRIPTS.valueMatches, { selector: GEM_FIELDS.name, value: name }) &&
+        await run(GEM_SCRIPTS.valueMatches, { selector: GEM_FIELDS.instructions, value: content }),
+      "核对已保存 Gem 的名称和完整指令");
+      return clean;
     },
   };
 }

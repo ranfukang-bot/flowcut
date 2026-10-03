@@ -2,7 +2,7 @@ import { generatePrompt } from "../../../lib/gemini";
 import { DEFAULT_GEM_REQUEST, renderGemRequest, validateGemRequest } from "../../../lib/gem-request";
 import { getProviderConfig } from "../../../lib/provider-config";
 import { checkSeedance, submitSeedance } from "../../../lib/seedance";
-import { ensureWorkspace, getDb, jsonError } from "../../../lib/storage";
+import { ensureWorkspace, getDb, jsonError, runtimeEnv } from "../../../lib/storage";
 import {
   normalizeShootingStyle,
   normalizeTaskDuration,
@@ -10,8 +10,8 @@ import {
 } from "../../../lib/task-config";
 import { validateTikTokAccountName } from "../../../lib/tiktok-accounts";
 
-async function taskImages(productId: string, requestUrl: string) {
-  const images = await getDb()
+async function taskImages(productId: string, requestUrl: string, snapshot?: string[]) {
+  const images = snapshot ? {results:snapshot.map(object_key=>({object_key}))} : await getDb()
     .prepare(
       "SELECT object_key FROM product_images WHERE product_id = ? ORDER BY sort_order ASC"
     )
@@ -56,7 +56,7 @@ async function processQueuedTask(taskId: string, requestUrl: string) {
 
   const task = await db
     .prepare(
-      `SELECT t.product_id, t.gem_id, t.callback_token, t.auto_queue,
+      `SELECT t.product_id, t.gem_id, t.callback_token, t.auto_queue, t.image_keys_snapshot,
               t.duration, t.region, t.shooting_style,
               p.name, p.features, COALESCE(t.gem_content_snapshot, g.content) AS content
        FROM tasks t
@@ -67,6 +67,7 @@ async function processQueuedTask(taskId: string, requestUrl: string) {
     .bind(taskId)
     .first<{
       product_id: string;
+      image_keys_snapshot?: string | null;
       gem_id: string;
       callback_token?: string | null;
       auto_queue: number;
@@ -80,7 +81,7 @@ async function processQueuedTask(taskId: string, requestUrl: string) {
   if (!task) throw new Error("任务、商品或 Gem 已不存在");
 
   try {
-    const images = await taskImages(task.product_id, requestUrl);
+    const images = await taskImages(task.product_id, requestUrl, task.image_keys_snapshot ? JSON.parse(task.image_keys_snapshot) : undefined);
     const result = await generatePrompt(task.content, task, images.keys);
     const now = new Date().toISOString();
     await db
@@ -164,6 +165,7 @@ export async function POST(request: Request) {
       region?: string;
       shootingStyle?: string;
       geminiRequestText?: string;
+      imageKeys?: string[];
     };
     if (!body.productId || !body.gemId) {
       return Response.json({ error: "请选择产品和 Gem" }, { status: 400 });
@@ -210,7 +212,14 @@ export async function POST(request: Request) {
       return Response.json({ error: "产品或 Gem 不存在" }, { status: 404 });
     }
 
-    const images = await taskImages(body.productId, request.url);
+    if (body.imageKeys !== undefined) {
+      if (!Array.isArray(body.imageKeys) || body.imageKeys.length < 1 || body.imageKeys.length > 12 ||
+        body.imageKeys.some(key=>typeof key !== 'string' || !key.startsWith(`products/${body.productId}/`) || key.includes('..')) ||
+        !runtimeEnv().MEDIA || (await Promise.all(body.imageKeys.map(key=>runtimeEnv().MEDIA!.head(key)))).some(item=>!item)) {
+        return Response.json({error:'本次上传的商品图片无效或已丢失，请重新上传'},{status:400});
+      }
+    }
+    const images = await taskImages(body.productId, request.url, body.imageKeys);
     if (!images.keys.length && !product.name && !product.features) {
       return Response.json(
         { error: "没有找到商品图片或商品资料，请重新上传商品图" },

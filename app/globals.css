@@ -958,6 +958,7 @@ select, input, textarea { border: 1px solid #d7d7d1; background: #fff; color: va
   .product-card-actions button { padding: 5px 7px; border-radius: 7px; background: #f2f3ef; color: #51545a; }
   .product-card-actions button:hover { background: #e8eadf; color: #111317; }
   .product-card-actions .danger-text { color: #aa4b43; }
+  .product-card-actions .product-create { background: #ceff3c; color: #172000; font-weight: 700; }
 
 .gem-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 15px; }
 .gem-card, .gem-add-card { min-height: 285px; background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 21px; position: relative; overflow: hidden; }

@@ -17,10 +17,10 @@ export async function GET() {
       db
         .prepare(
           `SELECT t.*, p.name AS product_name, COALESCE(t.product_external_id_snapshot, p.external_id) AS product_external_id, g.name AS gem_name,
-                  COALESCE((SELECT pi.object_key FROM product_images pi
+                  COALESCE(json_extract(t.image_keys_snapshot, '$[0]'), (SELECT pi.object_key FROM product_images pi
                     WHERE pi.product_id = t.product_id ORDER BY pi.sort_order ASC, pi.id ASC LIMIT 1), p.image_key) AS product_image_key,
-                  (SELECT COUNT(*) FROM product_images pi
-                   WHERE pi.product_id = t.product_id) AS image_count
+                  COALESCE(json_array_length(t.image_keys_snapshot), (SELECT COUNT(*) FROM product_images pi
+                   WHERE pi.product_id = t.product_id)) AS image_count
            FROM tasks t
            LEFT JOIN products p ON p.id = t.product_id
            LEFT JOIN gems g ON g.id = t.gem_id

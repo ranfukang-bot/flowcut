@@ -7,7 +7,7 @@ const desktop = path.resolve(__dirname, '..');
 const output = fs.mkdtempSync(path.join(os.tmpdir(), 'flowcut-gem-regression-'));
 
 (async () => {
-  const cases = process.argv.includes('--review-ui') ? [['review-delete-ui-electron', 1]] : process.argv.includes('--quota-ui') ? [['seedance-quota-ui-electron', 1]] : [['gem-editor-electron', 4], ['gem-recovery-electron', 3]];
+  const cases = process.argv.includes('--product-ui') ? [['product-library-ui-electron', 1]] : process.argv.includes('--review-ui') ? [['review-delete-ui-electron', 1]] : process.argv.includes('--quota-ui') ? [['seedance-quota-ui-electron', 1]] : [['gem-editor-electron', 4], ['gem-recovery-electron', 3]];
   for (const [name, expectedResults] of cases) {
     const result = path.join(output, `${name}.jsonl`);
     const child = spawn(require('electron'), [

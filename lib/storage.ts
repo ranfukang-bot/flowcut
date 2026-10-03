@@ -136,6 +136,7 @@ async function initializeWorkspace() {
     db.prepare("CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC)"),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_schedules_time ON schedules(scheduled_at)"),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_product_images_product ON product_images(product_id, sort_order)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_products_external_id ON products(trim(external_id))"),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_reference_remix_created ON reference_remix_tasks(created_at DESC)"),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_reference_remix_assets_task ON reference_remix_assets(task_id, kind, sort_order)"),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_script_pipeline_created ON script_pipeline_tasks(created_at DESC)"),

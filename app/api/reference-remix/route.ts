@@ -1,3 +1,4 @@
+import { saveLibraryProduct } from "../../../lib/product-library";
 import { getProviderConfig } from "../../../lib/provider-config";
 import {
   normalizeReferenceRemixDuration,
@@ -121,43 +122,8 @@ export async function POST(request: Request) {
       }
 
       if (saveToLibrary) {
-        productId = crypto.randomUUID();
-        const libraryImages: Array<{ id: string; key: string; file: File; order: number }> = [];
-        for (const item of imageRows) {
-          const id = crypto.randomUUID();
-          const key = `products/${productId}/${String(item.order + 1).padStart(2, "0")}-${id}-${safeName(item.file.name)}`;
-          await bucket.put(key, item.data, {
-            httpMetadata: { contentType: item.file.type },
-          });
-          uploadedKeys.push(key);
-          libraryImages.push({ id, key, file: item.file, order: item.order });
-        }
-        await db
-          .prepare(
-            `INSERT INTO products
-             (id, external_id, name, country, language, features, image_key, image_name, created_at)
-             VALUES (?, ?, ?, '', '', '', ?, ?, ?)`
-          )
-          .bind(
-            productId,
-            externalId,
-            productName,
-            libraryImages[0]?.key || null,
-            libraryImages[0]?.file.name || null,
-            now
-          )
-          .run();
-        await db.batch(
-          libraryImages.map((item) =>
-            db
-              .prepare(
-                `INSERT INTO product_images
-                 (id, product_id, object_key, file_name, content_type, sort_order, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)`
-              )
-              .bind(item.id, productId, item.key, item.file.name, item.file.type, item.order, now)
-          )
-        );
+        const saved = await saveLibraryProduct(db,bucket,{externalId,name:productName,files:images});
+        productId = saved.id;
       }
 
       await db
@@ -214,12 +180,8 @@ export async function POST(request: Request) {
       ]);
     } catch (error) {
       await Promise.all(uploadedKeys.map((key) => bucket.delete(key)));
-      if (productId) {
-        await db.batch([
-          db.prepare("DELETE FROM product_images WHERE product_id = ?").bind(productId),
-          db.prepare("DELETE FROM products WHERE id = ?").bind(productId),
-        ]);
-      }
+      // A saved library product may be reused by other tasks; a remix failure
+      // must not remove that product or its independent library images.
       throw error;
     }
     return Response.json({ id: taskId, status: "reference_queued" }, { status: 201 });

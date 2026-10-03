@@ -1,3 +1,4 @@
+import { saveLibraryProduct } from "../../../lib/product-library";
 import { ensureWorkspace, getDb, jsonError, runtimeEnv } from "../../../lib/storage";
 
 export async function POST(request: Request) {
@@ -8,7 +9,6 @@ export async function POST(request: Request) {
     const files = form
       .getAll("images")
       .filter((item): item is File => item instanceof File && item.size > 0);
-    const id = crypto.randomUUID();
     if (files.length > 12) {
       return Response.json({ error: "每个商品最多上传 12 张图片" }, { status: 400 });
     }
@@ -28,67 +28,11 @@ export async function POST(request: Request) {
     const bucket = runtimeEnv().MEDIA;
     if (files.length && !bucket) throw new Error("素材存储尚未连接");
 
-    const uploaded: Array<{
-      id: string;
-      key: string;
-      name: string;
-      type: string;
-      order: number;
-    }> = [];
-    try {
-      for (const [index, file] of files.entries()) {
-        const imageId = crypto.randomUUID();
-        const safeName = file.name.replace(/[^\w.\-]+/g, "-");
-        const key = `products/${id}/${String(index + 1).padStart(2, "0")}-${imageId}-${safeName}`;
-        await bucket!.put(key, await file.arrayBuffer(), {
-          httpMetadata: { contentType: file.type },
-        });
-        uploaded.push({
-          id: imageId,
-          key,
-          name: file.name,
-          type: file.type,
-          order: index,
-        });
-      }
-    } catch (error) {
-      await Promise.all(uploaded.map((item) => bucket!.delete(item.key)));
-      throw error;
-    }
-
-    await getDb()
-      .prepare(
-        `INSERT INTO products
-         (id, external_id, name, country, language, features, image_key, image_name, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .bind(
-        id,
-        String(form.get("externalId") || ""),
-        name,
-        String(form.get("country") || ""),
-        "",
-        String(form.get("features") || ""),
-        uploaded[0]?.key || null,
-        uploaded[0]?.name || null,
-        new Date().toISOString()
-      )
-      .run();
-    if (uploaded.length) {
-      const now = new Date().toISOString();
-      await getDb().batch(
-        uploaded.map((item) =>
-          getDb()
-            .prepare(
-              `INSERT INTO product_images
-               (id, product_id, object_key, file_name, content_type, sort_order, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)`
-            )
-            .bind(item.id, id, item.key, item.name, item.type, item.order, now)
-        )
-      );
-    }
-    return Response.json({ id }, { status: 201 });
+    const result = await saveLibraryProduct(getDb(), bucket, {
+      externalId: String(form.get("externalId") || "").trim(), name,
+      features: String(form.get("features") || ""), country: String(form.get("country") || ""), files,
+    });
+    return Response.json(result, { status: result.reused ? 200 : 201 });
   } catch (error) {
     return jsonError(error);
   }
@@ -113,19 +57,20 @@ export async function PUT(request: Request) {
     if (!existing) {
       return Response.json({ error: "商品不存在或已被删除" }, { status: 404 });
     }
-    await getDb()
+    const updated = await getDb()
       .prepare(
         `UPDATE products
          SET name = ?, external_id = ?, features = ?
-         WHERE id = ?`
+         WHERE id = ? AND (? = '' OR trim(external_id) = ? OR NOT EXISTS (SELECT 1 FROM products p WHERE trim(p.external_id) = ? AND p.id <> ?))`
       )
       .bind(
         String(body.name || "").trim(),
         String(body.externalId || "").trim(),
         String(body.features || "").trim(),
-        body.id
+        body.id, String(body.externalId || "").trim(), String(body.externalId || "").trim(), String(body.externalId || "").trim(), body.id
       )
       .run();
+    if (!updated.meta.changes) return Response.json({error:"该商品 ID 已在商品库中，请直接选择已有商品制作"},{status:409});
     return Response.json({ ok: true });
   } catch (error) {
     return jsonError(error);

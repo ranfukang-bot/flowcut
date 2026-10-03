@@ -503,6 +503,7 @@ export function StudioApp() {
   const [editingGem, setEditingGem] = useState<Gem | null>(null);
   const [previewTask, setPreviewTask] = useState<Task | null>(null);
   const [selectedProduct, setSelectedProduct] = useState("");
+  const [productMode, setProductMode] = useState<"new" | "library">("new");
   const [selectedGem, setSelectedGem] = useState("");
   const [selectedTikTokAccount, setSelectedTikTokAccount] = useState("");
   const [selectedDuration, setSelectedDuration] = useState(DEFAULT_TASK_DURATION);
@@ -735,13 +736,14 @@ export function StudioApp() {
       const geminiRequestText = data.integrations.geminiMode === "web"
         ? validateGemRequest(renderGemRequest(gemRequestTemplate, { duration: selectedDuration, region: selectedRegion, shooting_style: selectedShootingStyle }))
         : undefined;
-      const productId = input.mode === "new"
+      const savedProduct = input.mode === "new"
         ? await quickUploadProduct(
             input.files,
             input.productName,
             input.externalId
           )
-        : selectedProduct;
+        : null;
+      const productId = savedProduct?.id || selectedProduct;
       if (!productId) throw new Error("没有可用于创作的商品");
       setSelectedProduct(productId);
       await api("/api/tasks", {
@@ -749,6 +751,8 @@ export function StudioApp() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           productId,
+          imageKeys: savedProduct?.imageKeys || (data.products.find(product => product.id === productId)?.images.length
+            ? data.products.find(product => product.id === productId)?.images.map(image => image.object_key) : undefined),
           gemId: selectedGem,
           autoQueue,
           tiktokAccountName: selectedTikTokAccount,
@@ -758,7 +762,7 @@ export function StudioApp() {
           geminiRequestText,
         }),
       });
-      let queueNotice = "任务已创建，将按所选模板生成并保存到归档文件夹";
+      let queueNotice = `${savedProduct?.reused ? "已识别相同商品 ID，复用已有商品并使用本次上传图片。" : ""}任务已创建，将按所选模板生成并保存到归档文件夹`;
       const desktop = desktopBridge();
       try {
         if (data.integrations.geminiMode === "web") await desktop?.setQueueRunning?.(true);
@@ -834,8 +838,8 @@ export function StudioApp() {
       const result = (await api("/api/products", {
         method: "POST",
         body: form,
-      })) as { id: string };
-      return result.id;
+      })) as { id: string; reused: boolean; imageKeys: string[] };
+      return result;
     } catch (error) {
       throw new Error(
         error instanceof Error && error.message !== "Failed to fetch"
@@ -989,6 +993,8 @@ export function StudioApp() {
           <Dashboard
             data={data}
             selectedProduct={selectedProduct}
+            productMode={productMode}
+            onProductMode={setProductMode}
             selectedGem={selectedGem}
             selectedTikTokAccount={selectedTikTokAccount}
             selectedDuration={selectedDuration}
@@ -1049,6 +1055,7 @@ export function StudioApp() {
             onImported={reload}
             onAdd={() => setProductOpen(true)}
             onEdit={setEditingProduct}
+            onCreate={(product) => { setSelectedProduct(product.id); setProductMode("library"); setPage("dashboard"); setNotice(`已带入商品 ${product.external_id || product.name || ""} 的图片，可直接选择 Gem 制作`); }}
             onDelete={(id) => deleteRecord("/api/products", id, "删除该商品及关联任务？")}
           />
         )}
@@ -1360,6 +1367,8 @@ function TikTokAccountManager({ accounts, selected, onClose, onSelect, onAdd, on
 function Dashboard({
   data,
   selectedProduct,
+  productMode,
+  onProductMode: setProductMode,
   selectedGem,
   selectedTikTokAccount,
   selectedDuration,
@@ -1388,6 +1397,8 @@ function Dashboard({
 }: {
   data: Workspace;
   selectedProduct: string;
+  productMode: "new" | "library";
+  onProductMode: (mode: "new" | "library") => void;
   selectedGem: string;
   selectedTikTokAccount: string;
   selectedDuration: number;
@@ -1420,7 +1431,6 @@ function Dashboard({
   seedanceRuntime: SeedanceRuntime;
 }) {
   const [quickFiles, setQuickFiles] = useState<File[]>([]);
-  const [productMode, setProductMode] = useState<"new" | "library">("new");
   const [quickDragging, setQuickDragging] = useState(false);
   const [quickError, setQuickError] = useState("");
   const [quickProductName, setQuickProductName] = useState("");
@@ -1644,12 +1654,18 @@ function Dashboard({
                       const product = data.products.find(
                         (item) => item.id === selectedProduct
                       );
-                      return `已选择：${product?.name?.trim() || "未命名商品"} · ${
+                      return `已选择：${product?.name?.trim() || "未命名商品"} · 商品 ID：${product?.external_id || "未填写"} · ${
                         product?.images.length || 0
                       } 张商品图`;
                     })()}
                   </small>
                 )}
+                <div className="quick-preview-strip" aria-label="已带入的商品图片">
+                  {(data.products.find(product => product.id === selectedProduct)?.images || []).map((image,index) => <span key={image.id}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={`/api/media?key=${encodeURIComponent(image.object_key)}`} alt={`商品参考图 ${index + 1}`} />
+                  </span>)}
+                </div>
               </label>
             )}
             {quickError && <div className="quick-upload-error">{quickError}</div>}
@@ -2497,12 +2513,14 @@ function ProductsPage({
   onImported,
   onAdd,
   onEdit,
+  onCreate,
   onDelete,
 }: {
   products: Product[];
   onImported: () => Promise<void>;
   onAdd: () => void;
   onEdit: (product: Product) => void;
+  onCreate: (product: Product) => void;
   onDelete: (id: string) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -2526,7 +2544,7 @@ function ProductsPage({
       <div className="product-library-toolbar">
         <input aria-label="搜索商品库" placeholder="搜索商品名称或商品 ID" value={query} onChange={event => setQuery(event.target.value)} />
         <select aria-label="添加日期" value={selectedDay} onChange={event => setSelectedDay(event.target.value)}><option value="">全部添加日期</option>{days.map(day => <option key={day} value={day}>{day}</option>)}</select>
-        <span>共 {products.length} 件商品 · 按添加日期留存</span>
+        <span>共 {products.length} 件商品 · 相同商品 ID 自动复用，不按日期删除</span>
       </div>
       {products.length ? (
         <div className="product-date-groups">
@@ -2563,6 +2581,7 @@ function ProductsPage({
                 <div className="product-card-foot">
                   <span>{product.images?.length || 0} 张商品图</span>
                   <div className="product-card-actions">
+                    <button className="product-create" onClick={() => onCreate(product)}>去制作</button>
                     <button onClick={() => onEdit(product)}>编辑</button>
                     <button
                       className="danger-text"

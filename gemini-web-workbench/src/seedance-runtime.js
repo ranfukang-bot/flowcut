@@ -424,6 +424,7 @@ class SeedanceRuntime {
     });
     this.accountManager.initialize();
     this.engine = new QueueEngine(this.store, this.accountManager, () => this.emit());
+    require('./seedance-quota-recovery.cjs').patchEngine(this.engine);
     this.engine.onUnsavedSubmission = (submission) =>
       this.onPersistenceProblem({ source: "Seedance 任务库", unsavedSubmission: submission });
     this.flowcutBridge = new FlowCutBridge({

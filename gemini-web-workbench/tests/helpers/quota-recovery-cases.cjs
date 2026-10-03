@@ -70,4 +70,64 @@ module.exports = async (fixture, test) => {
     const f=setup();f.task.status='model_wait';f.task.taskId='already-submitted';f.accounts.markModelExhausted('a','2000012',QUOTA);
     f.engine.resumeModelWaiters();assert.equal(f.task.accountId,'a');assert.equal(f.task.taskId,'already-submitted');
   });
+  await test('prompt waits for all Fast accounts; approval actually submits standard and resets tomorrow',async()=>{
+    const f=setup();
+    await f.engine.submitTask(f.task,f.accounts.account('a'));
+    assert.equal(f.accounts.state().allFastExhausted,false);
+    assert.ok(f.accounts.state().items.every(a=>!a.needsModelDecision));
+    assert.throws(()=>f.accounts.decideFastFallback('a','standard',f.accounts.todayKey()),/还有 Fast/);
+    f.task.imageItems[0].uploadedUrl='url-b';f.task.imageItems[0].uploadedAccountId='b';
+    await f.engine.submitTask(f.task,f.accounts.account('b'));
+    assert.equal(f.task.status,'model_wait');
+    assert.equal(f.accounts.state().allFastExhausted,true);
+    assert.ok(f.accounts.state().items.every(a=>a.needsModelDecision));
+    f.accounts.decideFastFallback('b','wait',f.accounts.todayKey());
+    f.engine.resumeModelWaiters();assert.equal(f.task.status,'model_wait');
+    f.accounts.decideFastFallback('b','standard',f.accounts.todayKey());
+    f.engine.resumeModelWaiters();assert.equal(f.task.status,'queued');assert.equal(f.task.model,'2000004');
+    f.accounts.client=()=>({submitTask:async task=>{f.submissions.push({id:task.accountId,model:task.model});return {data:{task_id:'standard-video'}};}});
+    await f.engine.submitTask(f.task,f.accounts.account('b'));
+    assert.deepEqual(f.submissions,[{id:'a',model:'2000012'},{id:'b',model:'2000012'},{id:'b',model:'2000004'}]);
+    assert.equal(f.task.status,'generating');
+    assert.equal(f.accounts.account('b').preferredModel,'2000012');
+    f.accounts.todayKey=()=> '2099-01-01';
+    assert.equal(f.accounts.effectiveModel(f.accounts.account('b')),'2000012');
+    f.engine.resumeModelWaiters();assert.equal(f.task.taskId,'standard-video');
+  });
+  await test('standard rejection records standard quota and can use another explicitly approved account',()=>{
+    const f=setup();
+    for(const id of ['a','b']) f.accounts.markModelExhausted(id,'2000012',QUOTA);
+    for(const id of ['a','b']) f.accounts.decideFastFallback(id,'standard',f.accounts.todayKey());
+    f.task.quotaRequestedModel='2000012';f.task.model='2000004';
+    f.engine.switchAfterQuota(f.task,'a',QUOTA);
+    assert.equal(f.accounts.modelExhausted(f.accounts.account('a'),'2000004'),true);
+    assert.equal(f.task.accountId,'b');assert.equal(f.task.model,'2000004');
+    f.engine.switchAfterQuota(f.task,'b',QUOTA);
+    assert.equal(f.task.status,'model_wait');f.engine.resumeModelWaiters();assert.equal(f.task.status,'model_wait');
+    assert.ok(f.accounts.state().items.every(a=>a.standardExhaustedToday));
+  });
+  await test('a new available Fast account outranks an earlier standard approval',async()=>{
+    const f=setup();for(const id of ['a','b'])f.accounts.markModelExhausted(id,'2000012',QUOTA);
+    f.accounts.decideFastFallback('a','standard',f.accounts.todayKey());
+    delete f.accounts.account('b').modelQuota['2000012'];
+    assert.equal((await f.accounts.availableAccount('a')).id,'b');
+    assert.equal(f.accounts.effectiveModel(f.accounts.account('a')),'');
+  });
+  await test('offline unknown Fast quota is not presented as both accounts exhausted',()=>{
+    const f=setup();f.accounts.ensureRuntime('b').authenticated=false;
+    f.engine.switchAfterQuota(f.task,'a',QUOTA);
+    assert.equal(f.task.status,'model_wait');assert.equal(f.accounts.state().allFastExhausted,false);
+    assert.ok(f.accounts.state().items.every(a=>!a.needsModelDecision));
+    assert.match(f.task.errorMessage,/登录/);
+  });
+  await test('startup recovers only today\'s explicit unsent quota failures',()=>{
+    const f=fixture();
+    const make=(id,fields={})=>({id,status:'failed',accountId:'a',model:'2000012',errorMessage:'提交失败：'+QUOTA,completedAt:Date.now(),imageItems:[],...fields});
+    const recover=make('recover');
+    f.store.data.tasks.push(recover,make('remote',{taskId:'accepted'}),make('history',{taskIds:['accepted']}),make('old',{completedAt:1}),make('network',{errorMessage:'提交失败：network error'}));
+    patchEngine(f.engine);
+    assert.equal(recover.status,'model_wait');assert.equal(f.accounts.modelExhausted(f.accounts.account('a'),'2000012'),true);
+    assert.ok(f.store.data.tasks.slice(1).every(t=>t.status==='failed'));
+    f.engine.resumeModelWaiters();assert.equal(recover.accountId,'b');assert.equal(recover.status,'queued');
+  });
 };

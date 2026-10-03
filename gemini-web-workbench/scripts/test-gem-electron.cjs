@@ -7,7 +7,8 @@ const desktop = path.resolve(__dirname, '..');
 const output = fs.mkdtempSync(path.join(os.tmpdir(), 'flowcut-gem-regression-'));
 
 (async () => {
-  for (const name of ['gem-editor-electron', 'gem-recovery-electron']) {
+  const cases = process.argv.includes('--quota-ui') ? [['seedance-quota-ui-electron', 1]] : [['gem-editor-electron', 4], ['gem-recovery-electron', 3]];
+  for (const [name, expectedResults] of cases) {
     const result = path.join(output, `${name}.jsonl`);
     const child = spawn(require('electron'), [
       path.join(desktop, 'tests', name + '.cjs'), '--user-data-dir=' + path.join(output, name + '-profile'),
@@ -21,7 +22,7 @@ const output = fs.mkdtempSync(path.join(os.tmpdir(), 'flowcut-gem-regression-'))
     });
     assert.equal(code, 0, name + ' exit code');
     const rows = fs.readFileSync(result, 'utf8').trim().split('\n').map(JSON.parse);
-    assert.equal(rows.length, name === 'gem-editor-electron' ? 4 : 3);
+    assert.equal(rows.length, expectedResults);
     assert.ok(rows.every(row => row.pass), JSON.stringify(rows));
     console.log(JSON.stringify({ name, closedOutputPipes: true, results: rows }));
   }

@@ -1,6 +1,6 @@
 {
   "name": "flowcut-desktop-workbench",
-  "version": "1.4.24",
+  "version": "1.4.25",
   "description": "FlowCut 全自动 AI 视频桌面工作台",
   "main": "dist-protected/bootstrap.cjs",
   "author": "Codex",
@@ -10,6 +10,7 @@
     "check": "node --check src/main.js && node --check src/preload-ui.js && node --check src/gemini-preload.js && node --check src/gemini-preload-bridge.js && node --check src/gemini-file-chooser.js && node --check src/gemini-worker-activation.js && node --check src/store.js && node --check src/bridge-engine.js && node --check src/license-client.js && node --check src/update-manager.js && node --check src/seedance-runtime.js && node --check src/renderer.js",
     "test": "node --test tests/*.test.js",
     "test:gem-electron": "node scripts/test-gem-electron.cjs",
+    "test:quota-ui": "node scripts/test-gem-electron.cjs --quota-ui",
     "build:protected": "node scripts/build-protected.cjs",
     "build:win": "npm --prefix .. run build && node scripts/harden-site-build.cjs && node scripts/build-protected.cjs && node scripts/prepare-runtime.cjs && electron-builder --win nsis portable",
     "build:runtime": "node scripts/prepare-runtime.cjs"

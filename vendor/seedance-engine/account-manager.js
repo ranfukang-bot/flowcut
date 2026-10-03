@@ -104,11 +104,20 @@ class AccountManager {
 
   modelExhausted(account, model) { return account?.modelQuota?.[model]?.date === this.todayKey(); }
 
+  fastAccounts() {
+    return this.store.accounts.filter(account => account.enabled !== false && requireModel(account.preferredModel) === FAST_MODEL);
+  }
+
+  allFastExhausted() {
+    const accounts = this.fastAccounts();
+    return accounts.length > 0 && accounts.every(account => this.modelExhausted(account, FAST_MODEL));
+  }
+
   effectiveModel(account) {
     if (!account) return '';
     const preferred = requireModel(account.preferredModel);
     if (!this.modelExhausted(account, preferred)) return preferred;
-    if (preferred === FAST_MODEL && account.fallbackDecision?.date === this.todayKey() && account.fallbackDecision.choice === 'standard' && !this.modelExhausted(account, STANDARD_MODEL)) return STANDARD_MODEL;
+    if (preferred === FAST_MODEL && this.allFastExhausted() && account.fallbackDecision?.date === this.todayKey() && account.fallbackDecision.choice === 'standard' && !this.modelExhausted(account, STANDARD_MODEL)) return STANDARD_MODEL;
     return '';
   }
 
@@ -128,7 +137,7 @@ class AccountManager {
     account.modelQuota ||= {};
     account.modelQuota[model] = { date: this.todayKey(), reason: String(reason || '平台返回额度不足') };
     this.store.upsertAccount(account);
-    this.store.log(`账号“${account.name}” ${modelLabel(model)} 额度不足${model === FAST_MODEL ? '，等待确认是否改用 2.0' : '，已暂停该模型'}`, 'warn');
+    this.store.log(`账号“${account.name}” ${modelLabel(model)} 额度不足${model === FAST_MODEL ? '，优先检查其他账号的 Fast 额度' : '，已暂停该模型'}`, 'warn');
     this.onChange();
   }
 
@@ -137,6 +146,7 @@ class AccountManager {
     if (!account || expectedDate !== this.todayKey() || !this.modelExhausted(account, FAST_MODEL)) throw new Error('额度状态已变化，请刷新后再选择');
     if (!['standard', 'wait'].includes(choice)) throw new Error('无效的模型选择');
     if (choice === 'standard' && this.modelExhausted(account, STANDARD_MODEL)) throw new Error('该账号的 2.0 额度也已用完');
+    if (choice === 'standard' && !this.allFastExhausted()) throw new Error('还有 Fast 账号未确认上限，优先使用 Fast；未登录的账号请先登录');
     account.fallbackDecision = { date: this.todayKey(), choice };
     this.store.upsertAccount(account);
     this.store.log(`账号“${account.name}”：${choice === 'standard' ? '用户确认今天改用 Seedance 2.0' : '等待 Fast 额度恢复，不切换模型'}`);
@@ -394,6 +404,12 @@ class AccountManager {
 
   async availableAccount(preferredAccountId = '') {
     const preferred = this.store.getAccount(preferredAccountId);
+    if (preferred?.preferredModel === STANDARD_MODEL && this.isAvailable(preferred)) return preferred;
+    // A previous daily fallback must never outrank another usable Fast account.
+    const fast = this.store.accounts.filter(account => this.isAvailable(account) && this.effectiveModel(account) === FAST_MODEL);
+    if (fast.length) {
+      return fast.find(account => account.id === preferredAccountId) || fast.find(account => account.id === this.store.settings.activeAccountId) || fast[0];
+    }
     if (this.isAvailable(preferred)) return preferred;
     const active = this.activeAccount();
     if (this.isAvailable(active)) return active;
@@ -421,6 +437,7 @@ class AccountManager {
     const activeAccountId = this.store.settings.activeAccountId;
     return {
       activeAccountId,
+      allFastExhausted: this.allFastExhausted(),
       items: this.store.accounts.map((account) => {
         const runtime = this.ensureRuntime(account.id);
         return {
@@ -449,7 +466,7 @@ class AccountManager {
           quotaDate: this.todayKey(),
           quotaReason: account.modelQuota?.[FAST_MODEL]?.date === this.todayKey() ? account.modelQuota[FAST_MODEL].reason : '',
           fallbackDecision: account.fallbackDecision?.date === this.todayKey() ? account.fallbackDecision.choice : '',
-          needsModelDecision: requireModel(account.preferredModel) === FAST_MODEL && this.modelExhausted(account, FAST_MODEL) && account.fallbackDecision?.date !== this.todayKey(),
+          needsModelDecision: account.enabled !== false && this.allFastExhausted() && requireModel(account.preferredModel) === FAST_MODEL && this.modelExhausted(account, FAST_MODEL) && account.fallbackDecision?.date !== this.todayKey(),
           loginNetworkError: runtime.loginNetworkError || '',
         };
       }),

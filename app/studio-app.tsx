@@ -504,6 +504,22 @@ export function StudioApp() {
   const [previewTask, setPreviewTask] = useState<Task | null>(null);
   const [selectedProduct, setSelectedProduct] = useState("");
   const [productMode, setProductMode] = useState<"new" | "library">("new");
+  const [productChoiceLoaded, setProductChoiceLoaded] = useState(false);
+  useEffect(() => {
+    try {
+      const choice = JSON.parse(window.localStorage.getItem("flowcut-product-choice-v1") || "null");
+      if (choice && typeof choice.id === "string") {
+        setSelectedProduct(choice.id);
+        setProductMode(choice.mode === "library" ? "library" : "new");
+      }
+    } catch { /* Selection still works when local storage is unavailable. */ }
+    setProductChoiceLoaded(true);
+  }, []);
+  useEffect(() => {
+    if (!productChoiceLoaded) return;
+    try { window.localStorage.setItem("flowcut-product-choice-v1", JSON.stringify({id:selectedProduct, mode:productMode})); }
+    catch { /* Keep the selection for this session. */ }
+  }, [selectedProduct, productMode, productChoiceLoaded]);
   const [selectedGem, setSelectedGem] = useState("");
   const [selectedTikTokAccount, setSelectedTikTokAccount] = useState("");
   const [selectedDuration, setSelectedDuration] = useState(DEFAULT_TASK_DURATION);
@@ -561,7 +577,7 @@ export function StudioApp() {
                   detail: "内置 Seedance 正在启动，请稍后刷新。",
                 }
       );
-      setSelectedProduct((current) => current || result.products[0]?.id || "");
+      setSelectedProduct((current) => result.products.some(product => product.id === current) ? current : "");
       setSelectedGem((current) =>
         result.gems.some((gem) => gem.id === current)
           ? current
@@ -772,6 +788,7 @@ export function StudioApp() {
       }
       setNotice(queueNotice);
       await reload();
+      setProductMode("library");
       return true;
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "创建任务失败");
@@ -1364,6 +1381,36 @@ function TikTokAccountManager({ accounts, selected, onClose, onSelect, onAdd, on
   </div>;
 }
 
+function ProductImagePicker({products, selectedId, onChoose, onClose}: {
+  products: Product[]; selectedId: string; onChoose: (id:string) => void; onClose: () => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [query, setQuery] = useState("");
+  useEffect(() => { if (!dialog.current?.open) dialog.current?.showModal(); }, []);
+  const matches = products.filter(product => !query.trim() ||
+    `${product.name || ""} ${product.external_id || ""}`.toLowerCase().includes(query.trim().toLowerCase()));
+  return <dialog ref={dialog} className="product-image-dialog" aria-labelledby="product-image-picker-title"
+    onCancel={event => { event.preventDefault(); onClose(); }}>
+    <div className="product-image-dialog-head">
+      <div><h2 id="product-image-picker-title">看图选择商品</h2><p>点击图片即可使用。当前商品会保持选中，直到你主动更换。</p></div>
+      <button type="button" className="secondary" onClick={onClose}>取消</button>
+    </div>
+    <div className="product-image-search"><input autoFocus aria-label="搜索待选商品" placeholder="直接看图选择，也可搜索名称或商品 ID" value={query} onChange={event => setQuery(event.target.value)} /><span>{matches.length} 件商品</span></div>
+    <div className="product-image-grid">
+      {matches.map(product => <button type="button" className={`product-image-option ${product.id === selectedId ? "selected" : ""}`}
+        key={product.id} data-product-id={product.id} aria-pressed={product.id === selectedId} onClick={() => onChoose(product.id)}>
+        <span className="product-image-cover">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          {product.images[0] ? <img loading="lazy" src={`/api/media?key=${encodeURIComponent(product.images[0].object_key)}`} alt={product.name?.trim() || "商品图片"} /> : <span>暂无图片</span>}
+          <em>{product.images.length} 张图</em>{product.id === selectedId && <strong>✓ 当前商品</strong>}
+        </span>
+        <b>{product.name?.trim() || "未命名商品"}</b><small>ID：{product.external_id || "未填写"}</small>
+      </button>)}
+      {!matches.length && <p className="product-picker-empty">{products.length ? "没有匹配的商品，换个关键词试试。" : "商品库暂无商品，请先上传商品图片。"}</p>}
+    </div>
+  </dialog>;
+}
+
 function Dashboard({
   data,
   selectedProduct,
@@ -1430,6 +1477,8 @@ function Dashboard({
   onNavigate: (page: Page) => void;
   seedanceRuntime: SeedanceRuntime;
 }) {
+  const [productPickerOpen, setProductPickerOpen] = useState(false);
+  const chosenProduct = data.products.find(product => product.id === selectedProduct);
   const [quickFiles, setQuickFiles] = useState<File[]>([]);
   const [quickDragging, setQuickDragging] = useState(false);
   const [quickError, setQuickError] = useState("");
@@ -1488,6 +1537,9 @@ function Dashboard({
 
   return (
     <div className="page-body">
+      {productPickerOpen && <ProductImagePicker products={data.products} selectedId={selectedProduct}
+        onChoose={id => { onProduct(id); setProductMode("library"); setProductPickerOpen(false); }}
+        onClose={() => setProductPickerOpen(false)} />}
       <section className="hero-grid">
         <div className="composer">
           <div className="composer-head">
@@ -1522,6 +1574,7 @@ function Dashboard({
                 className={productMode === "new" ? "active" : ""}
                 role="radio"
                 aria-checked={productMode === "new"}
+                disabled={busy}
                 onClick={() => setProductMode("new")}
               >
                 <b>上传新商品</b>
@@ -1534,9 +1587,10 @@ function Dashboard({
                 aria-checked={productMode === "library"}
                 onClick={() => {
                   setProductMode("library");
+                  setProductPickerOpen(true);
                   setQuickError("");
                 }}
-                disabled={!data.products.length}
+                disabled={busy || !data.products.length}
               >
                 <b>选择已有商品</b>
                 <small>{data.products.length ? `商品库共 ${data.products.length} 个` : "商品库暂无商品"}</small>
@@ -1603,7 +1657,7 @@ function Dashboard({
                     </b>
                     <small>
                       {quickFiles.length
-                        ? "开始后会保存为一个新商品，并立即出现在商品库"
+                        ? "开始后保存到商品库；相同商品 ID 自动复用"
                         : "JPG / PNG / WebP · 最多 12 张 · 单张不超过 12MB"}
                     </small>
                   </div>
@@ -1635,38 +1689,22 @@ function Dashboard({
                 </div>
               </div>
             ) : (
-              <label className="library-product-picker">
-                <span>从商品库选择</span>
-                <select value={selectedProduct} onChange={(event) => onProduct(event.target.value)}>
-                  {data.products.map((product) => (
-                    <option key={product.id} value={product.id}>
-                      {product.name?.trim() || "未命名商品"}
-                      {product.external_id?.trim()
-                        ? ` · ID ${product.external_id.trim()}`
-                        : ""}
-                      {` · ${product.images.length} 张图`}
-                    </option>
-                  ))}
-                </select>
-                {selectedProduct && (
-                  <small>
-                    {(() => {
-                      const product = data.products.find(
-                        (item) => item.id === selectedProduct
-                      );
-                      return `已选择：${product?.name?.trim() || "未命名商品"} · 商品 ID：${product?.external_id || "未填写"} · ${
-                        product?.images.length || 0
-                      } 张商品图`;
-                    })()}
-                  </small>
-                )}
-                <div className="quick-preview-strip" aria-label="已带入的商品图片">
-                  {(data.products.find(product => product.id === selectedProduct)?.images || []).map((image,index) => <span key={image.id}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={`/api/media?key=${encodeURIComponent(image.object_key)}`} alt={`商品参考图 ${index + 1}`} />
-                  </span>)}
+              <div className="library-product-picker" data-product-id={chosenProduct?.id || ""}>
+                <div className="chosen-product-heading">
+                  <div><b>{chosenProduct ? "当前制作商品" : "还未选择商品"}</b><small>选定后持续使用，换模板、换账号或创建任务都不会清空。</small></div>
+                  <button type="button" className="choose-product-button" disabled={busy} onClick={() => setProductPickerOpen(true)}>{chosenProduct ? "看图更换商品" : "看图选择商品"}</button>
                 </div>
-              </label>
+                {chosenProduct && <>
+                  <div className="quick-preview-strip" aria-label="已带入的商品图片">
+                    {chosenProduct.images.map((image,index) => <span key={image.id}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={`/api/media?key=${encodeURIComponent(image.object_key)}`} alt={`商品参考图 ${index + 1}`} />
+                    </span>)}
+                  </div>
+                  <b>{chosenProduct.name?.trim() || "未命名商品"}</b>
+                  <small className="chosen-product-detail">商品 ID：{chosenProduct.external_id || "未填写"} · {chosenProduct.images.length} 张商品图</small>
+                </>}
+              </div>
             )}
             {quickError && <div className="quick-upload-error">{quickError}</div>}
           </div>

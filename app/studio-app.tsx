@@ -1055,7 +1055,7 @@ export function StudioApp() {
             onImported={reload}
             onAdd={() => setProductOpen(true)}
             onEdit={setEditingProduct}
-            onCreate={(product) => { setSelectedProduct(product.id); setProductMode("library"); setPage("dashboard"); setNotice(`已带入商品 ${product.external_id || product.name || ""} 的图片，可直接选择 Gem 制作`); }}
+            onCreate={(product) => { setSelectedProduct(product.id); setProductMode("library"); setPage("dashboard"); window.scrollTo(0, 0); setNotice(`已带入商品 ${product.external_id || product.name || ""} 的图片，可直接选择 Gem 制作`); }}
             onDelete={(id) => deleteRecord("/api/products", id, "删除该商品及关联任务？")}
           />
         )}

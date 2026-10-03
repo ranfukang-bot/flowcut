@@ -22,6 +22,20 @@ export async function POST(request: Request) {
     await ensureWorkspace();
     const body = await request.json() as { id: string; path: string; oldPath?: string; confirmed: boolean; action?: string; replacementId?: string; approvedAt?: string; timeZone?: string };
     if (body.confirmed !== true || !body.id) return Response.json({ error: "请确认审核通过" }, { status: 400 });
+    if (body.action === 'reserve-delete') {
+      const result = await getDb().prepare(`UPDATE tasks SET review_status='deleting' WHERE id=?
+        AND review_status IN ('pending','deleting') AND status IN ('video_ready','scheduled') AND download_path IS NOT NULL`).bind(body.id).run();
+      return result.meta.changes ? Response.json({ok:true}) : Response.json({error:'任务已放行、重做或状态已改变，未删除'}, {status:409});
+    }
+    if (body.action === 'delete-pending') {
+      const db = getDb();
+      await db.batch([
+        db.prepare("DELETE FROM schedules WHERE task_id IN (SELECT id FROM tasks WHERE id=? AND review_status='deleting')").bind(body.id),
+        db.prepare("DELETE FROM tasks WHERE id=? AND review_status='deleting'").bind(body.id),
+      ]);
+      const remaining = await db.prepare('SELECT id FROM tasks WHERE id=?').bind(body.id).first();
+      return remaining ? Response.json({error:'任务状态已改变，未删除'}, {status:409}) : Response.json({ok:true});
+    }
     if (body.action === 'relocate') {
       if (!body.path || !body.oldPath) return Response.json({error:'缺少移动路径'}, {status:400});
       const result = await getDb().prepare(`UPDATE tasks SET approved_path=? WHERE id=? AND review_status='approved' AND approved_path IN (?,?)`)

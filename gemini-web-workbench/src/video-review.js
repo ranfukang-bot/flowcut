@@ -43,8 +43,8 @@ function moveToStaging(source, temp, io = fs) {
   }
 }
 class VideoReview {
-  constructor({ userData, request, defaultDirectory, shell }) {
-    Object.assign(this, { userData, request, defaultDirectory, shell });
+  constructor({ userData, request, defaultDirectory, shell, beforeDelete = async () => {} }) {
+    Object.assign(this, { userData, request, defaultDirectory, shell, beforeDelete });
     this.locks = new Set();
   }
   async task(id) {
@@ -65,12 +65,37 @@ class VideoReview {
     if (error) throw Error(error);
     return true;
   }
-  async openFolder() {
-    const folder = path.join(this.userData, 'review-videos');
+  async openFolder(id = '') {
+    const folder = id ? reviewDirectory(this.userData, (await this.task(id)).id) : path.join(this.userData, 'review-videos');
     fs.mkdirSync(folder, {recursive:true});
     const error = await this.shell.openPath(folder);
     if (error) throw Error(error);
     return true;
+  }
+  async deletePending(id, confirmed) {
+    if (confirmed !== true) throw Error('请确认删除该任务及视频');
+    if (!/^[\w-]+$/.test(id)) throw Error('任务 ID 无效');
+    if (this.locks.has(id)) throw Error('正在处理，请勿重复点击');
+    this.locks.add(id);
+    try {
+      const task = await this.request('/api/tasks/review?id=' + encodeURIComponent(id) + '&optional=1');
+      if (!task) { await this.beforeDelete(id); return true; }
+      if (!['pending','deleting'].includes(task.review_status) || !['video_ready','scheduled'].includes(task.status)) throw Error('只能删除待检查的任务及视频，已放行或重做的任务不能这样删除');
+      const folder = path.resolve(reviewDirectory(this.userData, id));
+      const file = path.resolve(task.download_path || '');
+      if (!task.download_path || !within(folder, file) || path.extname(file).toLowerCase() !== '.mp4') throw Error('视频不在该任务的临时存放目录中，未删除');
+      if (fs.existsSync(folder) && fs.realpathSync(folder) !== folder) throw Error('临时目录含链接，未删除');
+      if (fs.existsSync(file) && (!within(folder, fs.realpathSync(file)) || !fs.statSync(file).isFile())) throw Error('视频路径异常，未删除');
+      // Reserve before touching the file so approval/remake cannot race deletion.
+      await this.request('/api/tasks/review', {method:'POST',body:JSON.stringify({id,action:'reserve-delete',confirmed:true})});
+      // Persist a worker tombstone first: a late callback must not re-download it.
+      await this.beforeDelete(id);
+      try { fs.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      await this.request('/api/tasks/review', {method:'POST',body:JSON.stringify({id,action:'delete-pending',confirmed:true})});
+      // Only the now-empty directory belonging to this task is removed.
+      try { fs.rmdirSync(folder); } catch (error) { if (!['ENOENT','ENOTEMPTY','EEXIST'].includes(error.code)) throw error; }
+      return true;
+    } finally { this.locks.delete(id); }
   }
   // Only flatten this application's known legacy approval layout, never arbitrary
   // subdirectories. Persist the move target before touching files for restart safety.

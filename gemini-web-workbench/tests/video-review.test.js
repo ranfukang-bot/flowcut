@@ -15,6 +15,8 @@ function fixture(t) {
     if(!options) { const query=new URL('http://local'+url).searchParams; if(query.get('approved')==='1')return Object.values(tasks).filter(t=>t.review_status==='approved').map(t=>({...t})); const value=tasks[query.get('id')]; if(!value){if(query.get('optional')==='1')return null;throw Error('missing');}return {...value}; }
     const body=JSON.parse(options.body);
     if(body.action==='reserve') { if(!['pending','approving'].includes(task.review_status))throw Error('not pending');task.review_status='approving'; }
+    else if(body.action==='reserve-delete') { if(!['pending','deleting'].includes(task.review_status))throw Error('not pending');task.review_status='deleting'; }
+    else if(body.action==='delete-pending') {if(failReport)throw Error('local server unavailable');assert.equal(task.review_status,'deleting');delete tasks[body.id];}
     else if(body.action==='cancel') {if(task.review_status==='approving')task.review_status='pending';}
     else if(body.action==='discard') {if(failReport)throw Error('local server unavailable');delete tasks[body.id];}
     else {if(failReport)throw Error('local server unavailable');task.review_status='approved';task.approved_path=body.path;}
@@ -119,6 +121,57 @@ test('1.4.19 interrupted copy approval removes leftover review video without dup
 test('review folder can be opened without exposing videos to publishing',async t=>{
   const f=fixture(t);await f.runtime.openFolder();assert.deepEqual(f.opened,[path.join(f.root,'review-videos')]);
   assert.equal(fs.existsSync(f.task.archive_directory),false);
+});
+
+test('delete pending removes only its video and task, without a replacement or redownload',async t=>{
+  const f=fixture(t);const neighbor=path.join(reviewDirectory(f.root,'other'),'other.mp4');
+  fs.mkdirSync(path.dirname(neighbor),{recursive:true});fs.writeFileSync(neighbor,'keep');
+  const cleared=[];f.runtime.beforeDelete=async id=>{assert.equal(f.task.review_status,'deleting');assert.ok(fs.existsSync(f.source));cleared.push(id);};
+  await assert.rejects(f.runtime.deletePending('task-1',false),/确认/);
+  assert.ok(fs.existsSync(f.source));
+  await f.runtime.deletePending('task-1',true);
+  assert.equal(fs.existsSync(f.source),false);assert.equal(fs.existsSync(path.dirname(f.source)),false);
+  assert.deepEqual(Object.keys(f.tasks),[]);assert.deepEqual(cleared,['task-1']);
+  assert.equal(fs.readFileSync(neighbor,'utf8'),'keep');
+  f.runtime.beforeDelete=async()=>{};await f.runtime.deletePending('task-1',true);
+});
+
+test('failed task deletion can be retried after file removal; approval cannot race it',async t=>{
+  const f=fixture(t);f.failReport(true);
+  await assert.rejects(f.runtime.deletePending('task-1',true),/unavailable/);
+  assert.equal(f.task.review_status,'deleting');assert.equal(fs.existsSync(f.source),false);
+  await assert.rejects(f.runtime.approve('task-1',true),/not pending/);
+  f.failReport(false);await f.runtime.deletePending('task-1',true);assert.deepEqual(Object.keys(f.tasks),[]);
+});
+
+test('a tombstone save failure or a locked video keeps the task available for cleanup retry',async t=>{
+  const f=fixture(t);f.runtime.beforeDelete=async()=>{throw Error('disk locked');};
+  await assert.rejects(f.runtime.deletePending('task-1',true),/disk locked/);
+  assert.ok(fs.existsSync(f.source));assert.ok(f.tasks['task-1']);
+  f.runtime.beforeDelete=async()=>{};
+  const original=fs.unlinkSync;
+  try {fs.unlinkSync=()=>{throw Object.assign(Error('video locked'),{code:'EPERM'});};await assert.rejects(f.runtime.deletePending('task-1',true),/video locked/);}
+  finally {fs.unlinkSync=original;}
+  assert.ok(fs.existsSync(f.source));assert.ok(f.tasks['task-1']);
+  await f.runtime.deletePending('task-1',true);assert.equal(fs.existsSync(f.source),false);
+});
+
+test('delete rejects released videos, other task folders and directory links',async t=>{
+  const f=fixture(t);for(const status of ['approved','approving','replaced']){
+    f.task.review_status=status;await assert.rejects(f.runtime.deletePending('task-1',true));assert.ok(fs.existsSync(f.source));
+  }
+  f.task.review_status='pending';
+  const other=path.join(f.root,'outside','keep.mp4');fs.mkdirSync(path.dirname(other));fs.writeFileSync(other,'keep');
+  f.task.download_path=other;await assert.rejects(f.runtime.deletePending('task-1',true),/临时/);
+  f.task.download_path=path.join(path.dirname(f.source),'linked','keep.mp4');
+  fs.symlinkSync(path.dirname(other),path.join(path.dirname(f.source),'linked'),'junction');
+  await assert.rejects(f.runtime.deletePending('task-1',true),/路径异常/);
+  assert.equal(fs.readFileSync(other,'utf8'),'keep');
+});
+
+test('open temporary folder targets this task; manually missing video still permits task cleanup',async t=>{
+  const f=fixture(t);await f.runtime.openFolder('task-1');assert.deepEqual(f.opened,[path.dirname(f.source)]);
+  fs.unlinkSync(f.source);await f.runtime.deletePending('task-1',true);assert.deepEqual(Object.keys(f.tasks),[]);
 });
 
 test('same product approvals use publisher-compatible suffix without replacing existing video',async t=>{

@@ -388,6 +388,7 @@ function taskStatusLabel(task: Task) {
     if (task.review_status === 'replaced') return '已重做';
     if (task.review_status === 'approved') return '已通过';
     if (task.review_status === 'approving') return '放行待完成';
+    if (task.review_status === 'deleting') return '删除待完成';
     return task.download_path ? '待检查' : '成片下载中';
   }
   return statusLabels[task.status] || task.status;
@@ -402,7 +403,8 @@ async function api(path: string, init?: RequestInit) {
 
 type FlowCutDesktopBridge = {
   openReviewVideo?: (id: string) => Promise<boolean>;
-  openReviewFolder?: () => Promise<boolean>;
+  openReviewFolder?: (id?: string) => Promise<boolean>;
+  deletePendingReviewVideo?: (id: string, confirmed: boolean) => Promise<boolean>;
   approveReviewVideo?: (id: string, confirmed: boolean) => Promise<{file:string;alreadyApproved?:boolean}>;
   discardReviewVideo?: (id: string, replacementId: string) => Promise<boolean>;
   listGemBindings?: (gem: Gem) => Promise<Array<{ id: string; name: string; authenticated: boolean; binding: { url?: string; status: string; name?: string } | null }>>;
@@ -2774,7 +2776,7 @@ function TasksPage({
             </button>
             <TaskChain task={task} compact />
             <div className="task-live-status"><span className={`status ${taskStatusClass(task)}`}>{taskStatusLabel(task)}</span><small>{progressText(task)}</small></div>
-            <div className="row-actions">{task.download_path && task.review_status !== 'replaced' && <button onClick={() => void openVideo(task)}>查看视频</button>}<button onClick={() => onPreview(task)}>{failed(task) ? "查看 / 继续" : pendingReview(task) ? "审核" : "查看"}</button><button onClick={() => onDelete(task.id)}>×</button></div>
+            <div className="row-actions">{task.download_path && task.review_status === 'approved' && <button onClick={() => void openVideo(task)}>查看视频</button>}<button onClick={() => onPreview(task)}>{failed(task) ? "查看 / 继续" : pendingReview(task) ? "审核" : "查看"}</button><button onClick={() => onDelete(task.id)}>×</button></div>
           </div>
         ))}
         {!!tasks.length && !visibleTasks.length && <EmptyState icon="↗" title="没有匹配的任务" text="换一个筛选条件或搜索词。" />}
@@ -4128,12 +4130,21 @@ function PromptDrawer({
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
   }
-  async function reviewAction(action: 'open' | 'approve') {
+  async function reviewAction(action: 'open' | 'approve' | 'folder' | 'delete') {
     if (busy) return;
     setBusy(action); setRecreateError('');
     try {
       const desktop = desktopBridge();
-      if (action === 'open') {
+      if (action === 'delete') {
+        if (!await confirmAction(`确认删除该任务并永久删除该视频？商品 ID：${task.product_external_id || '未填写'}，TK 账号：${task.tiktok_account_name || '未填写'}。临时目录中的这条视频和任务记录将一起删除，不会重新生成。商品图片和 Gem 模板保留。`)) return;
+        if (!desktop?.deletePendingReviewVideo) throw Error('请在最新版 FlowCut 桌面程序中删除任务和视频');
+        await desktop.deletePendingReviewVideo(task.id, true);
+        await onUpdated('已删除该任务及临时视频，没有重新生成');
+        onClose();
+      } else if (action === 'folder') {
+        if (!desktop?.openReviewFolder) throw Error('请在最新版 FlowCut 桌面程序中打开临时目录');
+        await desktop.openReviewFolder(task.id);
+      } else if (action === 'open') {
         if (!desktop?.openReviewVideo) throw Error('请在新版 FlowCut 桌面程序中查看视频');
         await desktop.openReviewVideo(task.id);
       } else {
@@ -4231,7 +4242,8 @@ function PromptDrawer({
             <b>{task.review_status === 'approved' ? '成片已审核通过' : '成片已下载 · 请检查'}</b>
             <span>{task.approved_path || task.download_path}</span>
             <button className="secondary" disabled={Boolean(busy) || task.review_status === 'replaced'} onClick={() => reviewAction('open')}>外部打开视频</button>
-            {!['approved','replaced'].includes(task.review_status || '') && <button className="primary" disabled={Boolean(busy)} onClick={() => reviewAction('approve')}>通过检查并送入发布目录</button>}
+            {!['approved','replaced'].includes(task.review_status || '') && <button className="secondary" disabled={Boolean(busy)} onClick={() => reviewAction('folder')}>打开临时存放目录</button>}
+            {!['approved','replaced','deleting'].includes(task.review_status || '') && <button className="primary" disabled={Boolean(busy)} onClick={() => reviewAction('approve')}>通过检查并送入发布目录</button>}
             {task.approved_path && <span>已放行至：{task.approved_path}</span>}
             {!task.download_path.includes('review-videos') && task.review_status !== 'approved' && <span>这是旧版已下载的文件，可能早已在发布目录中。此状态不会撤回已开始的发布。</span>}
           </div>
@@ -4241,14 +4253,17 @@ function PromptDrawer({
             <b>成片不满意？用这些素材重新制作</b>
             <span>删除旧成片和旧任务，复用原图片和商品 ID，从提示词开始重做。默认沿用原 Gem，也可切换。新成片仍需检查。</span>
             <label>重做使用的 Gem
-              <select aria-label="重做使用的 Gem" value={recreateGemId} disabled={Boolean(busy) || Boolean(recreateRequest.current) || task.review_status === 'replaced'} onChange={event => setRecreateGemId(event.target.value)}>
+              <select aria-label="重做使用的 Gem" value={recreateGemId} disabled={Boolean(busy) || Boolean(recreateRequest.current) || ['replaced','deleting'].includes(task.review_status || '')} onChange={event => setRecreateGemId(event.target.value)}>
                 <option value="">沿用原任务 Gem（{task.gem_name || '原设定'}）</option>
                 {gems.map(gem => <option key={gem.id} value={gem.id}>{gem.name}</option>)}
               </select>
             </label>
-            <button className="secondary" disabled={Boolean(busy)} onClick={recreateTask}>
+            <button className="secondary" disabled={Boolean(busy) || task.review_status === 'deleting'} onClick={recreateTask}>
               {busy === "recreate" ? "正在处理…" : task.review_status === 'replaced' ? '完成旧成片清理（不重复生成）' : "重新生成该任务"}
             </button>
+            {['pending','deleting'].includes(task.review_status || 'pending') && task.download_path && <button className="secondary" disabled={Boolean(busy) || Boolean(recreateRequest.current)} onClick={() => reviewAction('delete')}>
+              {busy === 'delete' ? '正在删除…' : '删除该任务并删除该视频'}
+            </button>}
           </div>
         )}
         {recreateError && <div role="alert" className="warning-box">{recreateError}</div>}

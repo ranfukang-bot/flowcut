@@ -1042,6 +1042,11 @@ function bindIpc() {
     return action === 'begin' ? monitor.begin() : monitor.status();
   });
   videoReview = new VideoReview({ userData: app.getPath('userData'), shell,
+    beforeDelete: async id => {
+      if (!seedanceRuntime?.store) throw Error('视频执行器尚未就绪，请稍后重试');
+      seedanceRuntime.clearTasks([id]);
+      if (seedanceRuntime.store.persistError) throw Error('无法保存任务删除记录，请稍后重试');
+    },
     defaultDirectory: () => seedanceRuntime?.store?.settings.downloadDirectory || path.join(app.getPath('downloads'), 'FlowCut视频'),
     request: async (route, init = {}) => {
       const response = await fetch(store.state.settings.flowcutUrl.replace(/\/+$/, '') + route, {
@@ -1051,7 +1056,8 @@ function bindIpc() {
     },
   });
   ipcMain.handle('video-review:open', (_event, id) => videoReview.open(String(id || '')));
-  ipcMain.handle('video-review:folder', () => videoReview.openFolder());
+  ipcMain.handle('video-review:folder', (_event, id) => videoReview.openFolder(String(id || '')));
+  ipcMain.handle('video-review:delete-pending', (_event, input) => videoReview.deletePending(String(input?.id || ''), input?.confirmed === true));
   ipcMain.handle('video-review:approve', (_event, input) => videoReview.approve(String(input?.id || ''), input?.confirmed === true));
   ipcMain.handle('video-review:discard', async (_event, input) => {
     const id = String(input?.id || '');

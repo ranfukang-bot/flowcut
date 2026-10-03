@@ -28,7 +28,7 @@ export async function POST(request: Request) {
         image_keys_snapshot: string | null; review_status: string;
       }>();
     if (!source) return Response.json({ error: "原任务不存在" }, { status: 404 });
-    if (['approved','approving'].includes(source.review_status)) return Response.json({error:'成片已送入发布流程或正在放行，不能直接重做删除'}, {status:409});
+    if (['approved','approving','deleting'].includes(source.review_status)) return Response.json({error:'成片正在删除、已送入发布流程或正在放行，不能直接重做删除'}, {status:409});
     if (!["video_ready", "scheduled"].includes(source.status)) {
       return Response.json({ error: "请等原任务成片完成后再重新生成；进行中的任务不会被中断" }, { status: 409 });
     }

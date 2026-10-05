@@ -13,6 +13,7 @@ const { FlowCutBridge } = require("../../vendor/seedance-engine/flowcut-bridge.j
 const { LOGIN_URL, configureLoginSession, createLoginNetworkReporter } = require('./seedance-login-network');
 const { protectLoginNavigation } = require('./web-login-navigation');
 const { reviewDirectory } = require('./video-review');
+const { completedDelivery, rememberDelivery } = require('./video-delivery');
 const {
   accountVideoDirectory,
   availableVideoPath,
@@ -44,6 +45,7 @@ class SeedanceRuntime {
     this.onPersistenceProblem = onPersistenceProblem;
     this.authWindows = new Map();
     this.activeDownloads = new Map();
+    this.downloadLocks = new Set();
     this.downloadControllers = new Map();
     this.store = null;
     this.accountManager = null;
@@ -278,7 +280,29 @@ class SeedanceRuntime {
 
   async downloadTask(task) {
     const id = task.id;
+    // Reserve before the first await; concurrent refreshes must not start two downloads.
+    if (this.downloadLocks.has(id)) throw new Error("这条任务正在下载");
+    this.downloadLocks.add(id);
+    try { return await this.downloadTaskOnce(task); }
+    finally { this.downloadLocks.delete(id); }
+  }
+
+  async downloadTaskOnce(task) {
+    const id = task.id;
     if (this.activeDownloads.has(id)) throw new Error("这条任务正在下载");
+    if (this.store.isFlowcutTaskCleared?.(task.flowcutTaskId)) throw new Error("任务已清除");
+    task = this.store.getTask(id);
+    if (!task) throw new Error("任务已清除");
+    const delivered = await completedDelivery(this.app.getPath('userData'),task);
+    if (this.store.isFlowcutTaskCleared?.(task.flowcutTaskId) || !this.store.getTask(id)) throw new Error("任务已清除");
+    if (delivered) {
+      task.lastDownloadedPath = delivered.file;
+      task.lastDownloadedAt = delivered.deliveredAt;
+      if (task.flowcutTaskId && (!task.flowcutTaskKind || task.flowcutTaskKind === 'standard')) task.reviewDownload = true;
+      rememberDelivery(this.app.getPath('userData'),task,delivered.file);
+      this.store.upsertTask?.(task);
+      return {destination:delivered.file,alreadyDelivered:true};
+    }
     await this.engine.refreshTaskResult(id).catch(() => {});
     task = this.store.getTask(id);
     if (!task) throw new Error("任务已清除");
@@ -352,6 +376,7 @@ class SeedanceRuntime {
       task.lastDownloadedPath = result.destination;
       if (task.flowcutTaskId && (!task.flowcutTaskKind || task.flowcutTaskKind === 'standard')) task.reviewDownload = true;
       task.lastDownloadedAt = Date.now();
+      rememberDelivery(this.app.getPath('userData'),task,result.destination);
       task.autoDownloadError = "";
       task.nextAutoDownloadAt = 0;
       try {

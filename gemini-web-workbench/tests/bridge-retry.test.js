@@ -49,6 +49,29 @@ function fixture(runJob) {
   return { engine, reports, logs, store };
 }
 
+test("Electron connection loss defers a task and the next claim can succeed", async () => {
+  let attempts = 0;
+  const { engine, reports } = fixture(async () => {
+    if (++attempts === 1) throw new Error("ERR_CONNECTION_CLOSED (-100) loading 'https://gemini.google.com/gem/example'");
+    return "x".repeat(350);
+  });
+  const account = { id: "network-account", name: "Gemini" };
+  const job = { id: "network-task", imageUrls: [] };
+  engine.active.set(account.id, { taskId: job.id });
+  await engine.execute(account, job);
+  assert.deepEqual(reports.map(r => r.action), ["defer"]);
+  assert.equal(engine.active.size, 0);
+  engine.active.set(account.id, { taskId: job.id });
+  await engine.execute(account, job);
+  assert.deepEqual(reports.map(r => r.action), ["defer", "result"]);
+});
+
+test("connection codes retry but certificate and explicit request rejection do not", () => {
+  assert.equal(isRetryableJobError({ code: "ERR_CONNECTION_RESET", message: "navigation" }), true);
+  assert.equal(isRetryableJobError(new Error("ERR_CERT_AUTHORITY_INVALID")), false);
+  assert.equal(isRetryableJobError(Object.assign(new Error("Gemini 拒绝了本次请求"), { code: "GEMINI_REQUEST_REJECTED" })), false);
+});
+
 test("upload failure yields the account; the next claim can complete", async () => {
   let attempts = 0;
   const { engine, reports } = fixture(async () => {

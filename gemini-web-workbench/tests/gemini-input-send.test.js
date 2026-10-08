@@ -28,7 +28,7 @@ function fixture(mode='correct') {
 test('normal composer write preserves exact original content; one click produces matching new user message',async()=>{
   const f=fixture();await f.context.typePrompt('印尼，iPhone实拍质感。\n只生成提示词。');await f.context.submitPrompt();
   assert.equal(f.read().messages[0].innerText,'印尼，iPhone实拍质感。\n只生成提示词。');assert.equal(f.read().clicks,1);assert.equal(f.read().keys,0);
-  assert.equal(f.log.at(-1).phase,'submit_confirmed');
+  assert.equal(f.log.at(-1).phase,'submit_visible');
 });
 test('90-percent text is no longer accepted as complete input',async()=>{
   const f=fixture('truncated');await assert.rejects(f.context.typePrompt('a'.repeat(100)),{code:'PROMPT_INPUT_FAILED'});

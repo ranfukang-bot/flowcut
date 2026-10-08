@@ -6,6 +6,16 @@ const { EventEmitter } = require("node:events");
 const { watchGeminiJob } = require("../src/gemini-job-watchdog");
 const source = fs.readFileSync(require.resolve("../src/gemini-preload.js"), "utf8");
 const responseCode = source.slice(source.indexOf("async function waitForResponse("), source.indexOf("\nasync function runJob("));
+test("explicit unsafe-image refusal reports the actual reply without automatic resubmission", () => {
+  const code = source.slice(source.indexOf("function classifyUnusableResponse("), source.indexOf("// Only a fresh answer"));
+  const classify = vm.runInNewContext(code + "; classifyUnusableResponse", {
+    codedError: (message, code) => Object.assign(new Error(message), { code }),
+  });
+  const error = classify("抱歉，我无法生成不安全的图像。");
+  assert.equal(error.code, "GEMINI_REQUEST_REJECTED");
+  assert.match(error.message, /原始答复：抱歉/);
+  assert.equal(classify("镜头缓缓靠近商品，展示包装和外观细节。"), null);
+});
 async function responseScenario(snapshot, generating, initial = []) {
   let now = 0;
   const context = vm.createContext({

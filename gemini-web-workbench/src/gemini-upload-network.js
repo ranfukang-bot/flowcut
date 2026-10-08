@@ -15,9 +15,26 @@ async function observeGeminiUploads(contents) {
   if (attachedHere) api.attach('1.3');
   let active = false, lost = false, updatedAt = Date.now();
   const requests = new Map();
+  const generation = new Map();
   const detach = () => { lost = true; };
   const message = (_event, method, params) => {
     if (!active) return;
+    if (method === 'Network.requestWillBeSent' && params.request?.method === 'POST') {
+      try {
+        const url = new URL(params.request.url);
+        if ((url.hostname === 'gemini.google.com' && url.pathname.endsWith('/StreamGenerate')) ||
+            (url.hostname === 'geminiweb-pa.clients6.google.com' && url.pathname === '/v1/processSession')) {
+          generation.set(params.requestId, {endpoint:url.pathname.split('/').pop(),status:0,bytes:0,done:false,error:''});
+        }
+      } catch {}
+    }
+    const generating = generation.get(params.requestId);
+    if (generating) {
+      if (method === 'Network.responseReceived') generating.status = params.response.status;
+      if (method === 'Network.dataReceived') generating.bytes += Number(params.dataLength || 0);
+      if (method === 'Network.loadingFinished') generating.done = true;
+      if (method === 'Network.loadingFailed') { generating.done = true; generating.error = params.errorText || '连接中断'; }
+    }
     if (method === 'Network.requestWillBeSent' && isUploadRequest(params.request)) {
       requests.set(params.requestId, { done:false, status:0, error:'' });
       updatedAt = Date.now();
@@ -37,23 +54,33 @@ async function observeGeminiUploads(contents) {
   };
   api.on('message', message);
   api.on('detach', detach);
-  try { await api.sendCommand('Network.enable'); }
+  try {
+    // Gemini defers response display when its worker loses focus/visibility.
+    // Keep the page active throughout generation, not just during text input.
+    contents.backgroundThrottling = false;
+    await api.sendCommand('Network.enable');
+    await api.sendCommand('Emulation.setFocusEmulationEnabled', { enabled:true });
+  }
   catch (error) {
     api.removeListener('message', message); api.removeListener('detach', detach);
     if (attachedHere && api.isAttached()) api.detach();
     throw error;
   }
   return {
-    begin() { requests.clear(); active = true; updatedAt = Date.now(); return this.status(); },
+    begin() { requests.clear(); generation.clear(); active = true; updatedAt = Date.now(); return this.status(); },
     status() {
       const values = [...requests.values()];
       return { available:!lost, observed:values.length, pending:values.filter(r => !r.done).length,
         completed:values.filter(r => r.done && !r.error && r.status >= 200 && r.status < 400).length,
-        failed:values.filter(r => r.error).map(r => r.error), quietMs:Date.now()-updatedAt };
+        failed:values.filter(r => r.error).map(r => r.error), quietMs:Date.now()-updatedAt,
+        generation:[...generation.values()].map(r=>({...r})) };
     },
-    stop() {
+    async stop() {
       active = false; api.removeListener('message', message); api.removeListener('detach', detach);
-      if (!contents.isDestroyed?.() && attachedHere && api.isAttached()) api.detach();
+      if (!contents.isDestroyed?.() && api.isAttached()) {
+        await api.sendCommand('Emulation.setFocusEmulationEnabled', { enabled:false }).catch(()=>{});
+        if (attachedHere && api.isAttached()) api.detach();
+      }
     },
   };
 }

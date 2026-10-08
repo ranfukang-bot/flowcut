@@ -768,7 +768,7 @@ async function submitPrompt() {
       "SUBMIT_NOT_CONFIRMED"
     );
   }
-  ipcRenderer.send('gemini:job-diagnostic', {phase:'submit_confirmed',characters:promptLengthBefore,attachmentsBefore,matchingMessage:true});
+  ipcRenderer.send('gemini:job-diagnostic', {phase:'submit_visible',characters:promptLengthBefore,attachmentsBefore,matchingMessage:true,location:location.href});
   pendingUploadCount = 0;
   await sleep(800);
 }
@@ -793,6 +793,14 @@ function visibleGeminiError() {
 function classifyUnusableResponse(text) {
   const value = String(text || "").trim();
   if (value.length >= 280) return null;
+
+  // A completed safety refusal needs user input, not repeated submissions.
+  if (/无法生成不安全的图像|(?:无法|不能).{0,16}(?:不安全|违规|违反政策).{0,12}(?:图像|图片|内容)|(?:cannot|can't|unable to) generate unsafe (?:images?|content)/i.test(value)) {
+    return codedError(
+      "Gemini 拒绝了本次请求，未生成视频提示词。请检查商品图、Gem 设定和附加文字后再试。原始答复：" + value,
+      "GEMINI_REQUEST_REJECTED"
+    );
+  }
 
   if (
     /(?:我无法|我未能|未能|无法)(?:查看|读取|识别|获取|处理)(?:该|此|您上传的|提供的)?(?:图片|图文|附件|文件)/i.test(

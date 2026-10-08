@@ -30,6 +30,10 @@ function isRetryableJobError(error) {
   if (RETRYABLE_JOB_CODES.has(error?.code || "")) return true;
   if (error?.name === "TimeoutError" || error?.name === "AbortError") return true;
   const message = error instanceof Error ? error.message : String(error);
+  // Electron navigation errors can arrive as either a code or a message.
+  // These failures occur before submission and should yield to a later claim.
+  const navigationError = /\bERR_(?:CONNECTION_CLOSED|CONNECTION_RESET|CONNECTION_REFUSED|NETWORK_CHANGED|INTERNET_DISCONNECTED|PROXY_CONNECTION_FAILED|TUNNEL_CONNECTION_FAILED|NAME_NOT_RESOLVED|TIMED_OUT|CONNECTION_TIMED_OUT)\b/;
+  if (navigationError.test(String(error?.code || "")) || navigationError.test(message)) return true;
   return /Gemini 页面加载超时|Gemini 网页任务超过|输入框|发送按钮/.test(message);
 }
 

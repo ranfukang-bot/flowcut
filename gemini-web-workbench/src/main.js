@@ -16,6 +16,7 @@ const { BridgeEngine } = require("./bridge-engine");
 const { watchGeminiJob } = require("./gemini-job-watchdog");
 const { pageFiles } = require("./gemini-page-files");
 const { observeGeminiUploads } = require('./gemini-upload-network');
+const { chromeUserAgent } = require('./chrome-user-agent');
 const uploadMonitors = new Map();
 const {
   DETECT_GEMINI_AUTH_SCRIPT,
@@ -108,9 +109,7 @@ function desktopRuntimeHeaders(extra = {}) {
   };
 }
 
-const regularChromeUserAgent =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-  "Chrome/142.0.0.0 Safari/537.36";
+const regularChromeUserAgent = chromeUserAgent(process.versions.chrome);
 
 function importLocalBridgeKey() {
   if (store.state.settings.bridgeKey) return;
@@ -739,8 +738,12 @@ async function hideLoginWindow(id) {
   return true;
 }
 
-function workerWindow(account) {
+function workerWindow(account, fresh = false) {
   let window = workerWindows.get(account.id);
+  // A reused Gemini renderer can upload bytes into a disposed composer after
+  // navigation. Start each job with a new page; the account partition retains
+  // cookies, login and saved Gem bindings.
+  if (fresh && window && !window.isDestroyed()) window.destroy();
   if (!window || window.isDestroyed()) {
     window = createGeminiWindow(account, false);
     workerWindows.set(account.id, window);
@@ -802,7 +805,7 @@ async function runGeminiJob(account, job) {
     throw error;
   }
   bridge?.assertTaskActive(job.id);
-  const window = workerWindow(account);
+  const window = workerWindow(account, true);
   let gemUrl = "";
   if (!job.kind || job.kind === "standard") {
     const active = bridge?.active.get(account.id);
@@ -894,9 +897,18 @@ async function runGeminiJob(account, job) {
   }
   try {
     return await resultPromise;
+  } catch (error) {
+    if (["NO_RESPONSE_DETECTED", "RESPONSE_STALLED", "RESPONSE_TIMEOUT"].includes(error?.code)) {
+      // Discard the still-pending request before reusing the account.
+      if (!window.isDestroyed()) window.destroy();
+      await refreshAccountNetwork(account).catch(() => {});
+      store.log(`${account.name} 回复等待超时，已重建网页执行器并刷新网络连接`, "warn");
+    }
+    throw error;
   } finally {
     uploadMonitors.delete(contentsId);
-    uploadMonitor.stop();
+    await uploadMonitor.stop();
+    if (!window.isDestroyed()) window.destroy();
     // A locked temp file must not replace a finished Gemini result with an error.
     for (const files of [temporary, referenceTemporary]) {
       try {
@@ -1022,7 +1034,7 @@ ipcMain.on("gemini:job-diagnostic", (event, diagnostic) => {
   const accountId = active?.accountId;
   const window = accountId ? workerWindows.get(accountId) : null;
   const informational =
-    ['upload_accepted', 'upload_settled', 'prompt_written', 'submit_confirmed'].includes(diagnostic?.phase) ||
+    ['upload_accepted', 'upload_settled', 'prompt_written', 'submit_visible', 'conversation_created', 'submit_confirmed'].includes(diagnostic?.phase) ||
     diagnostic?.phase === "upload_native_confirmed_dom_changed" ||
     diagnostic?.phase === "upload_native_chooser_failed";
   store.log(

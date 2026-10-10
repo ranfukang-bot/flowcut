@@ -2,7 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {execFileSync}=require('node:child_process');
 const {splitDualPrompts,acceptDualJob,dualStatus}=require('../../vendor/seedance-engine/dual-video');
-const {DualVideoComposer,segmentDirectory,probe}=require('../src/dual-video-composer');
+const {DualVideoComposer,segmentDirectory,probe,segmentTiming}=require('../src/dual-video-composer');
 const {cleanupSegments,reviewDirectory}=require('../src/video-review');
 const {completedDelivery}=require('../src/video-delivery');
 const {FlowCutBridge}=require('../../vendor/seedance-engine/flowcut-bridge');
@@ -30,6 +30,15 @@ test('recovers interruption between creating first and second child without resu
   const f=fixture();await acceptDualJob(f.bridge,f.job);f.store.tasks.pop();await acceptDualJob(f.bridge,f.job);assert.deepEqual(f.store.tasks.map(t=>t.segmentIndex),[1,2]);assert.equal(f.store.tasks[0].id,'1');
 });
 test('incomplete or refused output never creates any child',async()=>{const f=fixture();await assert.rejects(acceptDualJob(f.bridge,{...f.job,prompt:'拒绝生成'}));assert.equal(f.store.tasks.length,0);assert.equal(f.downloads(),0);});
+test('timing uses the full spoken tail, accepts moderate deviations, and rejects damaged inputs',()=>{
+  const media=(video,audio)=>({streams:[{codec_type:'video',duration:video},...(audio===undefined?[]:[{codec_type:'audio',duration:audio}])]});
+  const timing=segmentTiming(media(13.208333,13.815873),2);
+  assert.equal(timing.duration,13.815873);assert.ok(timing.stretch>1 && timing.stretch<1.1);
+  assert.equal(segmentTiming(media(16.5,16.5),1).tempo,1.1);
+  assert.equal(segmentTiming(media(12),1).audioDuration,0);
+  for(const input of [media(3,3),media(25,25),media(13,15),media('N/A'),media(15,'NaN')]) assert.throws(()=>segmentTiming(input,2),/第 2 段/);
+  assert.equal(segmentTiming({streams:[{codec_type:'video',duration_ts:360,time_base:'1/24'}]},1).duration,15);
+});
 test('only combined video can mark the main task ready; reports failing segment',async()=>{
   const f=fixture();await acceptDualJob(f.bridge,f.job);for(const t of f.store.tasks){t.status='success';t.lastDownloadedPath=`${t.id}.mp4`;t.videoUrl='https://segment';}
   let status=dualStatus(f.store.tasks);assert.equal(status.providerStatus,'generating');assert.equal(status.outputUrl,'');assert.equal(status.downloadPath,'');
@@ -64,4 +73,26 @@ test('real ffmpeg joins in order with audio, recovers receipt, and cleans only t
   // A child must not recover a sibling or final video.
   const delivered=await completedDelivery(root,{...children[1],lastDownloadedPath:undefined});assert.equal(delivered.file,children[1].lastDownloadedPath);
   cleanupSegments(root,'parent');assert.equal(fs.existsSync(path.join(reviewDirectory(root,'parent'),'segments')),false);assert.ok(fs.existsSync(path.join(reviewDirectory(root,'parent'),'composition.json')));
+});
+
+test('real short clip with longer spoken tail becomes 30s without dropping tail or changing pitch',{timeout:180000},async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'flowcut-dual-short-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const children=[1,2].map(segmentIndex=>({flowcutTaskId:'short-parent',segmentIndex,dualSignature:'short-test'}));
+  for(const task of children){
+    const first=task.segmentIndex===1,dir=segmentDirectory(root,task.flowcutTaskId,task.segmentIndex);fs.mkdirSync(dir,{recursive:true});
+    task.lastDownloadedPath=path.join(dir,'clip.mp4');
+    execFileSync('ffmpeg',['-v','error','-f','lavfi','-i',`color=c=${first?'red':'blue'}:s=180x320:r=24:d=${first?'15.041667':'13.208333'}`,'-f','lavfi','-i',`sine=frequency=880:sample_rate=48000:duration=${first?'15.069002':'13.815873'}`,'-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-c:a','aac',task.lastDownloadedPath],{windowsHide:true});
+  }
+  const file=await new DualVideoComposer(root).compose(children),info=await probe(file);
+  assert.ok(Math.abs(Number(info.format.duration)-30)<0.05);
+  const video=info.streams.find(s=>s.codec_type==='video');assert.equal(Number(video.nb_frames),900);
+  for(const [time,channel] of [[14.8,0],[15.1,2],[29.8,2]]){
+    const pixel=execFileSync('ffmpeg',['-v','error','-ss',String(time),'-i',file,'-vframes','1','-vf','scale=1:1','-f','rawvideo','-pix_fmt','rgb24','pipe:1'],{windowsHide:true});
+    assert.ok(pixel[channel]>200,'no gap and correct order');
+  }
+  const pcm=execFileSync('ffmpeg',['-v','error','-ss','29.25','-i',file,'-t','0.5','-vn','-ac','1','-ar','48000','-f','s16le','pipe:1'],{windowsHide:true});
+  let energy=0,crossings=0,previous=0;
+  for(let i=0;i<pcm.length;i+=2){const sample=pcm.readInt16LE(i);energy+=sample*sample;if(previous<=0 && sample>0)crossings++;previous=sample;}
+  assert.ok(Math.sqrt(energy/(pcm.length/2))>500,'spoken tail is not silent padding');
+  assert.ok(Math.abs(crossings/(pcm.length/2/48000)-880)<20,'tempo adjustment preserves pitch');
 });

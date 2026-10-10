@@ -20,6 +20,32 @@ async function probe(file, signal) {
   if (!value.streams.some(s=>s.codec_type === 'video')) throw Error('文件中没有视频画面');
   return value;
 }
+function segmentTiming(media, index) {
+  const video=media.streams.find(s=>s.codec_type==='video');
+  const audio=media.streams.find(s=>s.codec_type==='audio');
+  const seconds=stream=>{
+    const direct=Number(stream?.duration);
+    if (Number.isFinite(direct) && direct>0) return direct;
+    const [n,d]=String(stream?.time_base || '').split('/').map(Number);
+    const ticks=Number(stream?.duration_ts)*n/d;
+    if (Number.isFinite(ticks) && ticks>0) return ticks;
+    return Number(media.format?.duration);
+  };
+  const videoDuration=seconds(video), audioDuration=audio ? seconds(audio) : 0;
+  const duration=Math.max(videoDuration,audioDuration);
+  if (!video || !Number.isFinite(videoDuration) || videoDuration<=0 || !Number.isFinite(duration) || (audio && (!Number.isFinite(audioDuration) || audioDuration<=0))) {
+    throw Error(`第 ${index} 段无法读取有效时长，请检查视频`);
+  }
+  // Requested 15s clips can be a little short/long. Use one clock for both
+  // streams, retaining the entire spoken tail and preserving audio pitch.
+  // Large discrepancies still need inspection instead of hiding bad input.
+  if (duration<12 || duration>18) throw Error(`第 ${index} 段实际时长 ${duration.toFixed(2)} 秒，超出自动适配范围（12–18 秒），请检查视频`);
+  const stretch=15/duration;
+  if (audio && Math.abs(videoDuration-audioDuration)*stretch>0.8) {
+    throw Error(`第 ${index} 段画面与声音时长差异过大（画面 ${videoDuration.toFixed(2)} 秒，声音 ${audioDuration.toFixed(2)} 秒），请检查视频`);
+  }
+  return {videoDuration,audioDuration,duration,stretch,tempo:duration/15};
+}
 class DualVideoComposer {
   constructor(userData) { this.userData=userData; this.active=new Map(); }
   cancel(id) { this.active.get(id)?.abort(); }
@@ -48,15 +74,12 @@ class DualVideoComposer {
         if (path.dirname(fs.realpathSync(files[i]))!==expected) throw Error('分段视频不在该任务的临时目录中');
       }
       const media=await Promise.all(files.map(f=>probe(f,controller.signal)));
-      media.forEach((m,i)=>{
-        const duration=Number(m.streams.find(s=>s.codec_type==='video').duration || m.format.duration);
-        if (!Number.isFinite(duration) || Math.abs(duration-15)>0.6) throw Error(`第 ${i+1} 段实际时长不是 15 秒，已停止拼接，请检查视频`);
-      });
+      const timing=media.map((m,i)=>segmentTiming(m,i+1));
       const filters=[];
       for(let i=0;i<2;i++) {
-        filters.push(`[${i}:v:0]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,tpad=stop_mode=clone:stop_duration=1,trim=duration=15,setpts=PTS-STARTPTS[v${i}]`);
+        filters.push(`[${i}:v:0]setpts=(PTS-STARTPTS)*${timing[i].stretch},scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,tpad=stop_mode=clone:stop_duration=15,trim=duration=15,setpts=PTS-STARTPTS[v${i}]`);
         const audio=media[i].streams.some(s=>s.codec_type==='audio') ? `${i}:a:0` : '2:a:0';
-        filters.push(`[${audio}]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,apad,atrim=duration=15,asetpts=PTS-STARTPTS[a${i}]`);
+        filters.push(`[${audio}]asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atempo=${timing[i].tempo},apad,atrim=duration=15,asetpts=PTS-STARTPTS[a${i}]`);
       }
       filters.push('[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]');
       fs.mkdirSync(folder,{recursive:true});
@@ -71,4 +94,4 @@ class DualVideoComposer {
     }
   }
 }
-module.exports={DualVideoComposer,segmentDirectory,probe};
+module.exports={DualVideoComposer,segmentDirectory,probe,segmentTiming};

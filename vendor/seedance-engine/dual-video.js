@@ -1,19 +1,32 @@
 const { createHash } = require('node:crypto');
 
-// Gemini's rendered response can omit Markdown fences, so section headings
-// delimit the prompts. Never fall back to sending the entire answer.
+// Rendered code blocks may lose their surrounding headings. Accept either
+// section headings or two explicit generation directives, never the whole reply.
 function splitDualPrompts(value) {
   const text = String(value || '').replace(/\r\n/g, '\n');
-  const headings = [...text.matchAll(/^[ \t#*]*(?:视频|Video)\s*([12１２])\s*[｜|:：·—-][^\n]*$/gim)];
+  let headings = [...text.matchAll(/^[ \t#*]*(?:视频|Video)[ \t]*([12１２])[ \t]*[｜|:：·—-][^\n]*$/gim)]
+    .filter(heading => /上半段|下半段/.test(heading[0]) || !/(?:\d+(?:\.\d+)?\s*(?:词|words?\b)|口播|朗读|word count|预算)/i.test(heading[0]));
+  let bodyBoundaries = false;
+  if (!headings.length) {
+    bodyBoundaries = true;
+    headings = [...text.matchAll(/^[ \t]*(?:(?:\d+[.、][ \t]*)?生成任务[：:][ \t]*)?生成一段[^\n]*?15[ \t]*秒[^\n]*?(上半段|下半段)[^\n]*$/gm)]
+      .map(match => {
+        // Include a separate task label / code-block language line in the
+        // boundary so it cannot leak into the end of the preceding prompt.
+        const prefix = text.slice(0, match.index).match(/(?:[ \t]*(?:```(?:text|plaintext)|Plaintext|text|复制代码|Copy code|【生成任务】|(?:\d+[.、][ \t]*)?生成任务[：:])[ \t]*\n|[ \t]*\n)+$/i);
+        return { index: match.index - (prefix?.[0].length || 0), 0:'', 1:match[1] === '上半段' ? '1' : '2' };
+      });
+  }
   if (headings.length !== 2 || !/[1１]/.test(headings[0][1]) || !/[2２]/.test(headings[1][1])) {
     throw Error('双段模式需要且只能有一组「视频1｜上半段」和「视频2｜下半段」，请检查 Gem 输出后重新生成提示词');
   }
   return headings.map((heading, index) => {
     let section = text.slice(heading.index + heading[0].length, headings[index + 1]?.index ?? text.length);
-    section = section.split(/\n[ \t#*]*拼接说明[^\n]*\n/)[0].trim();
+    section = section.split(/\n[ \t#*]*拼接说明[^\n]*(?:\n|$)/)[0].trim();
     const fenced = section.match(/```[^\n]*\n([\s\S]*?)```/);
     const prompt = (fenced ? fenced[1] : section).replace(/^(?:复制代码|Copy code|plaintext|text)\s*\n/i, '').trim();
     if (prompt.length < 300 || !/15\s*(?:秒|s\b)/i.test(prompt)) throw Error(`第 ${index + 1} 段缺少完整的 15 秒提示词，已阻止提交`);
+    if (!bodyBoundaries && /上半段|下半段/.test(heading[0]) && !heading[0].includes(index === 0 ? '上半段' : '下半段')) throw Error('双段标题与上下半段顺序不一致，已阻止提交');
     return prompt;
   });
 }

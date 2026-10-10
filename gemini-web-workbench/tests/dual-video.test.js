@@ -13,6 +13,30 @@ test('parses both rendered text and fenced prompts, without strategy or joining 
   for(const fenced of [true,false]) assert.deepEqual(splitDualPrompts(response(fenced)),[part(1),part(2)]);
   for(const bad of ['一段提示词',response()+ '\n视频1｜另一条创意\n'+part(1),response().replace(part(2),'15秒太短'),response().replace('视频1｜','视频2｜')]) assert.throws(()=>splitDualPrompts(bad));
 });
+test('spoken word budgets are metadata, not additional video headings',()=>{
+  const budget='视频1：约39词（Taglish），预计朗读13.0秒。\n视频2：约38词（Taglish），预计朗读12.6秒。\n';
+  assert.deepEqual(splitDualPrompts(budget+response()),[part(1),part(2)]);
+  assert.throws(()=>splitDualPrompts(budget),'budgets alone cannot create prompts');
+});
+
+const directive=n=>`生成一段完整连续的15秒、9:16竖屏视频。这是30秒内容的${n===1?'上':'下'}半段，本次只生成本段15秒。\n${part(n)}`;
+test('rendered code bodies without headings retain both complete generation tasks',()=>{
+  for(const label of ['', '【生成任务】\n', '生成任务：\n', '1. 生成任务：\n', '1. 生成任务：']) {
+    const parts=[1,2].map(n=>label+directive(n));
+    for(const render of [p=>'Plaintext\n'+p,p=>'```text\n'+p+'\n```',p=>p]) {
+      const text='创意策略\n视频1：39词；预计朗读13秒。\n视频2：38词；预计朗读12秒。\n\n'+parts.map(render).join('\n\n')+'\n\n拼接说明\n参考上段末帧，不应提交这段说明';
+      assert.deepEqual(splitDualPrompts(text),parts);
+    }
+  }
+});
+
+test('missing headings never permit reversed, duplicated, missing or short generation bodies',()=>{
+  const upper=directive(1),lower=directive(2);
+  for(const text of [upper,lower+'\n'+upper,upper+'\n'+upper,upper+'\n'+lower+'\n'+upper,upper+'\n生成一段15秒视频，这是下半段。',response().replace('视频1｜上半段','视频1｜下半段')]) {
+    assert.throws(()=>splitDualPrompts(text));
+  }
+});
+
 function fixture(){
   let sequence=0,downloads=0;const retries=[];
   const store={tasks:[],isFlowcutTaskCleared:()=>false,upsertTask:t=>{if(!store.tasks.includes(t))store.tasks.push(t);}};

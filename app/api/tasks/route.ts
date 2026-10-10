@@ -242,6 +242,7 @@ export async function POST(request: Request) {
     const now = new Date().toISOString();
     const provider = gemini.config.mode === "web" ? "gemini-web" : "gemini-api";
     const duration = normalizeTaskDuration(body.duration);
+    if (duration === 30 && (await getProviderConfig("seedance")).config.mode !== "local-api") return Response.json({error:"双段 30 秒需要本机 Seedance 执行器"},{status:400});
     const region = normalizeTaskRegion(body.region);
     const shootingStyle = normalizeShootingStyle(body.shootingStyle);
     const geminiRequestText = body.geminiRequestText ?? renderGemRequest(DEFAULT_GEM_REQUEST, { duration, region, shooting_style: shootingStyle });

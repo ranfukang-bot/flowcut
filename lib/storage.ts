@@ -174,6 +174,7 @@ async function initializeWorkspace() {
   await ensureColumn("tasks", "reviewed_at", "TEXT");
   await ensureColumn("tasks", "approved_path", "TEXT");
   await ensureColumn("tasks", "image_keys_snapshot", "TEXT");
+  await ensureColumn("tasks", "segment_progress", "TEXT");
   await ensureColumn("tasks", "download_error", "TEXT");
   await ensureColumn("tasks", "duration", "INTEGER NOT NULL DEFAULT 15");
   await ensureColumn("tasks", "region", "TEXT NOT NULL DEFAULT '印尼'");

@@ -1,4 +1,4 @@
-export const TASK_DURATIONS = [5, 10, 15] as const;
+export const TASK_DURATIONS = [5, 10, 15, 30] as const;
 
 export const TASK_REGIONS = [
   "印尼",

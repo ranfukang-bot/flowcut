@@ -294,6 +294,7 @@ async function main() {
   await page.getByRole("button", { name: "选择 / 更改保存文件夹", exact: true }).click();
   await page.screenshot({ path: path.join(evidence, "自选归档文件夹.png"), fullPage: true });
   await page.getByRole("radio", { name: /选择已有商品/ }).click();
+  await page.getByRole("dialog", {name:"看图选择商品"}).locator(".product-image-option").first().click();
   const requestEditor = page.getByLabel('发送给 Gem 的文字', { exact: true });
   assert.doesNotMatch(await requestEditor.inputValue(), /信息不足|保守处理/);
   await requestEditor.fill('只写文字提示词。\n地区：{地区}，时长：{时长}秒。');

@@ -1,0 +1,53 @@
+// Real packaged HTTP routes + rendered UI, isolated data and a simulated provider.
+const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto'),assert=require('node:assert/strict');
+const {FlowCutBridge}=require('../../vendor/seedance-engine/flowcut-bridge');
+const {chromium}=require('../../vendor/publisher/node_modules/playwright-core');
+const pkg=path.resolve(process.argv[2]);
+const site=path.join(pkg,'resources/flowcut-site');
+process.env.CLOUDFLARE_CF_FETCH_ENABLED='false';
+const {unstable_dev}=require(path.join(site,'node_modules/wrangler/wrangler-dist/cli.js'));
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'flowcut-dual-smoke-'));
+const evidence=path.resolve(__dirname,'../verification');fs.mkdirSync(evidence,{recursive:true});
+const token=crypto.randomBytes(32).toString('hex'),base='http://127.0.0.1:4197';
+const headers={'x-flowcut-desktop-token':token,'content-type':'application/json'};
+let worker,browser;
+async function api(route,options={}) {const r=await fetch(base+route,{...options,headers:{...headers,...options.headers}});const text=await r.text();assert.ok(r.ok,`${route}: ${r.status} ${text}`);return JSON.parse(text);}
+async function main(){
+ worker=await unstable_dev(path.join(site,'dist/server/index.js'),{config:path.join(site,'dist/server/wrangler.json'),ip:'127.0.0.1',port:4197,persistTo:root,vars:{FLOWCUT_PERSONAL_MODE:'1',FLOWCUT_DESKTOP_RUNTIME:'1',FLOWCUT_DESKTOP_TOKEN:token,CREDENTIALS_MASTER_KEY:crypto.randomBytes(32).toString('base64')},experimental:{watch:false,disableExperimentalWarning:true}});
+ await api('/api/settings',{method:'PUT',body:JSON.stringify({provider:'gemini',config:{mode:'web'}})});
+ await api('/api/settings',{method:'PUT',body:JSON.stringify({provider:'seedance',config:{mode:'local-api'},apiKey:'dual-test-key'})});
+ await api('/api/tiktok-accounts',{method:'POST',body:JSON.stringify({name:'双段测试账号',archiveDirectory:path.join(root,'publish')})});
+ const gem=await api('/api/gems',{method:'POST',body:JSON.stringify({name:'双15秒测试 Gem',content:'两份完整15秒提示词'})});
+ const form=new FormData();form.set('name','双段测试商品');form.set('externalId','1735360337668113923');
+ form.append('images',new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jWzUAAAAASUVORK5CYII=','base64')],{type:'image/png'}),'sample.png');
+ const productResponse=await fetch(base+'/api/products',{method:'POST',headers:{'x-flowcut-desktop-token':token},body:form});assert.ok(productResponse.ok);const product=await productResponse.json();
+ const custom='按我的双段 Gem 生成两段15秒提示词。';
+ const task=await api('/api/tasks',{method:'POST',body:JSON.stringify({productId:product.id,gemId:gem.id,tiktokAccountName:'双段测试账号',duration:30,geminiRequestText:custom})});
+ const auth={authorization:'Bearer dual-test-key'};
+ const claim=await api('/api/gemini-bridge?workerId=gem-test&capacity=1&accountIds=test',{headers:auth});
+ assert.equal(claim.jobs[0].prompt,custom);
+ const part=n=>`生成一段完整连续15秒。第${n}段。`+'人物、产品、声音档案保持一致，镜头按时间轴自然运动。'.repeat(25);
+ const prompt=`视频1｜上半段｜15秒\n${part(1)}\n视频2｜下半段｜15秒\n${part(2)}\n拼接说明\n视频1→视频2`;
+ await api('/api/gemini-bridge',{method:'POST',headers:auth,body:JSON.stringify({action:'result',taskId:task.id,workerId:'gem-test',prompt})});
+ assert.equal((await api('/api/seedance-bridge?workerId=old-worker',{headers:auth})).jobs.length,0,'old workers cannot claim dual tasks');
+ const store={tasks:[],settings:{apiKey:'dual-test-key',flowcutBridgeUrl:base,flowcutWorkerId:'dual-test'},isFlowcutTaskCleared:()=>false,upsertTask:t=>{if(!store.tasks.includes(t))store.tasks.push(t);},log:()=>{}};
+ const retries=[];
+ const engine={createTask:(prompt,paths,meta)=>{const t={id:crypto.randomUUID(),prompt,status:'queued',imageItems:paths.map(localPath=>({localPath})),...meta};store.upsertTask(t);return t;},retryFailedTask:async id=>{retries.push(id);store.tasks.find(t=>t.id===id).status='queued';return {action:'retry'};}};
+ const bridge=new FlowCutBridge({store,engine,uploadsDirectory:path.join(root,'images'),version:'1.4.30',desktopToken:token});
+ await bridge.acceptJobs();assert.equal(store.tasks.length,2);assert.deepEqual(store.tasks.map(t=>t.duration),[15,15]);
+ const row=async()=>(await api('/api/workspace')).tasks.find(t=>t.id===task.id);
+ assert.equal((await row()).duration,30);assert.equal((await api('/api/workspace')).tasks.length,1);
+ store.tasks[0].status='success';store.tasks[0].lastDownloadedPath=path.join(root,'first.mp4');store.tasks[1].status='failed';store.tasks[1].errorMessage='模拟第二段失败';
+ await bridge.syncStatuses();assert.equal((await row()).status,'failed');assert.equal((await row()).download_path,null);
+ await api('/api/tasks',{method:'PATCH',body:JSON.stringify({id:task.id,action:'queue'})});await bridge.acceptJobs();assert.equal(store.tasks.length,2);assert.deepEqual(retries,[store.tasks[1].id]);
+ store.tasks[1].status='success';store.tasks[1].lastDownloadedPath=path.join(root,'second.mp4');await bridge.syncStatuses();assert.equal((await row()).status,'video_generating');
+ store.tasks[0].combinedPath=path.join(root,'review-videos','combined-30s.mp4');await bridge.syncStatuses();assert.equal((await row()).status,'video_ready');assert.equal((await row()).download_path,store.tasks[0].combinedPath);assert.match((await row()).segment_progress,/第 2 段：已下载/);
+ browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});
+ const page=await browser.newPage({viewport:{width:1440,height:1000},extraHTTPHeaders:{'x-flowcut-desktop-token':token}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(base,{waitUntil:'networkidle'});await page.getByRole('navigation').getByRole('button',{name:'创作中心'}).click();
+ const select=page.locator('select').filter({has:page.locator('option[value="30"]')});assert.equal(await select.count(),1);await select.selectOption('30');
+ await page.getByText('双段 30 秒 · 消耗两次视频生成额度',{exact:true}).waitFor();await page.screenshot({path:path.join(evidence,'双段30秒-创作.png'),fullPage:true});
+ await page.getByRole('navigation').getByRole('button',{name:'任务队列'}).click();await page.getByRole('button',{name:'审核',exact:true}).click();await page.getByText('双段 30 秒 · 15秒＋15秒',{exact:true}).waitFor();await page.screenshot({path:path.join(evidence,'双段30秒-审核.png'),fullPage:true});
+ assert.deepEqual(errors,[]);fs.writeFileSync(path.join(evidence,'dual-video-smoke.json'),JSON.stringify({passed:true,checks:['exact Gem request preserved','old worker blocked','one parent two children','only retry failed second segment','no segment delivery','final review only','rendered mode and progress']},null,2));console.log('Dual-video packaged API and UI: PASS');
+}
+main().catch(e=>{console.error(e);process.exitCode=1;}).finally(async()=>{await browser?.close();await worker?.stop();if(root.startsWith(path.join(os.tmpdir(),'flowcut-dual-smoke-')))fs.rmSync(root,{recursive:true,force:true});});

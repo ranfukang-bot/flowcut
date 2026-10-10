@@ -1,6 +1,6 @@
 {
   "name": "flowcut-desktop-workbench",
-  "version": "1.4.29",
+  "version": "1.4.30",
   "description": "FlowCut 全自动 AI 视频桌面工作台",
   "main": "dist-protected/bootstrap.cjs",
   "author": "Codex",
@@ -13,7 +13,7 @@
     "test:quota-ui": "node scripts/test-gem-electron.cjs --quota-ui",
     "test:review-ui": "node scripts/test-gem-electron.cjs --review-ui",
     "build:protected": "node scripts/build-protected.cjs",
-    "build:win": "npm --prefix .. run build && node scripts/harden-site-build.cjs && node scripts/build-protected.cjs && node scripts/prepare-runtime.cjs && electron-builder --win nsis portable",
+    "build:win": "npm --prefix .. run build && node scripts/harden-site-build.cjs && node scripts/build-protected.cjs && node scripts/prepare-runtime.cjs && node scripts/prepare-media-tools.cjs && electron-builder --win nsis portable",
     "build:runtime": "node scripts/prepare-runtime.cjs"
   },
   "devDependencies": {
@@ -78,6 +78,10 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "media-tools",
+        "to": "media-tools"
       }
     ],
     "win": {

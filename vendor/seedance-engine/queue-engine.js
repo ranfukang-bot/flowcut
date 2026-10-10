@@ -29,7 +29,7 @@ const SNAPSHOT_FIELDS = [
   'id', 'order', 'prompt', 'imageItems', 'imageName', 'duration', 'model',
   'accountId', 'accountName', 'source', 'flowcutTaskId', 'flowcutTaskKind',
   'tiktokAccountName', 'archiveDirectory', 'productExternalId',
-  'managedLocalFiles', 'excelRow', 'folderIndex', 'createdAt', 'taskIds', 'attempts',
+  'segmentIndex', 'dualSignature', 'managedLocalFiles', 'excelRow', 'folderIndex', 'createdAt', 'taskIds', 'attempts',
 ];
 
 function submissionSnapshot(task) {

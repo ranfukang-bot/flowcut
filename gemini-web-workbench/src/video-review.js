@@ -17,6 +17,24 @@ function saveRecord(file, record) {
   try { fs.writeFileSync(fd, JSON.stringify(record)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(temp, file);
 }
+// Remove only app-owned segment files; never follow links or recurse outside a task.
+function cleanupSegments(userData,id) {
+  const root=path.resolve(reviewDirectory(userData,id));
+  const segments=path.join(root,'segments');
+  if (!fs.existsSync(segments)) return;
+  if (fs.realpathSync(root)!==root || fs.realpathSync(segments)!==segments) throw Error('分段临时目录含链接，未清理');
+  for(const index of [1,2]) {
+    const dir=path.join(segments,String(index));
+    if(!fs.existsSync(dir)) continue;
+    if(fs.realpathSync(dir)!==dir) throw Error('分段目录含链接，未清理');
+    for(const entry of fs.readdirSync(dir,{withFileTypes:true})) {
+      const file=path.join(dir,entry.name);
+      if(entry.isFile() && /\.mp4(?:\.partial)?$/i.test(entry.name) && fs.realpathSync(file)===file) fs.unlinkSync(file);
+    }
+    try {fs.rmdirSync(dir);} catch(e) {if(!['ENOENT','ENOTEMPTY','EEXIST'].includes(e.code)) throw e;}
+  }
+  try {fs.rmdirSync(segments);} catch(e) {if(!['ENOENT','ENOTEMPTY','EEXIST'].includes(e.code)) throw e;}
+}
 function availableReleasePath(folder, productId) {
   if (!/^\d{10,30}$/.test(productId || '')) throw Error('商品 ID 不完整，不能送入自动发布目录');
   for (let n = 1; n <= 9999; n++) {
@@ -91,6 +109,7 @@ class VideoReview {
       // Persist a worker tombstone first: a late callback must not re-download it.
       await this.beforeDelete(id);
       try { fs.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      cleanupSegments(this.userData,id);
       await this.request('/api/tasks/review', {method:'POST',body:JSON.stringify({id,action:'delete-pending',confirmed:true})});
       // Only the now-empty directory belonging to this task is removed.
       try { fs.rmdirSync(folder); } catch (error) { if (!['ENOENT','ENOTEMPTY','EEXIST'].includes(error.code)) throw error; }
@@ -172,6 +191,7 @@ class VideoReview {
       const source = this.checkedSource(task);
       fs.unlinkSync(source);
     }
+    cleanupSegments(this.userData,id);
     await this.request('/api/tasks/review', { method:'POST', body:JSON.stringify({id,replacementId,action:'discard',confirmed:true}) });
     return true;
   }
@@ -231,6 +251,7 @@ class VideoReview {
         saveRecord(recordFile,record);
       }
       await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id, path: record.file, confirmed: true, approvedAt:record.approvedAt, timeZone:record.timeZone }) });
+      cleanupSegments(this.userData,id);
       return { file: record.file, legacy: record.legacy || false };
     } catch (error) {
       if (!fs.existsSync(path.join(reviewDirectory(this.userData, id), 'approval.json'))) {
@@ -240,4 +261,4 @@ class VideoReview {
     } finally { this.locks.delete(id); }
   }
 }
-module.exports = { VideoReview, reviewDirectory, moveToStaging };
+module.exports = { VideoReview, reviewDirectory, moveToStaging, cleanupSegments };

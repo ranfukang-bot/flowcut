@@ -20,6 +20,7 @@ function headers(config: SeedanceConfig, apiKey?: string) {
 }
 
 export async function submitSeedance(input: SubmitInput) {
+  if (input.duration === 30) throw new Error("双段 30 秒需要本机 Seedance 执行器，请使用桌面端本机模式");
   const { config, secrets } = await getProviderConfig("seedance");
   if (config.mode === "local-api") {
     throw new Error("本机 Seedance 需要由当前浏览器提交");

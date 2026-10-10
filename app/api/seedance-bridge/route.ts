@@ -48,12 +48,13 @@ export async function GET(request: Request) {
          FROM tasks
          LEFT JOIN products ON products.id = tasks.product_id
          WHERE tasks.provider = 'seedance-bridge'
+           AND (tasks.duration <> 30 OR ? = 1)
            AND tasks.status = 'video_queued'
            AND tasks.provider_job_id IS NULL
            AND (tasks.bridge_claimed_at IS NULL OR tasks.bridge_claimed_at < ?)
          ORDER BY tasks.created_at ASC LIMIT 4`
       )
-      .bind(staleBefore)
+      .bind(new URL(request.url).searchParams.get("dualVideo") === "1" ? 1 : 0, staleBefore)
       .all<{
         id: string;
         product_id: string;
@@ -178,6 +179,7 @@ export async function POST(request: Request) {
       error?: string;
       downloadPath?: string;
       downloadError?: string;
+      segmentProgress?: string;
       workerId?: string;
       version?: string;
       authenticated?: boolean;
@@ -273,7 +275,7 @@ export async function POST(request: Request) {
         .prepare(
           `UPDATE tasks SET status = ?, progress = ?, output_url = ?,
            download_path = COALESCE(?, download_path), download_error = ?,
-           error = ?, updated_at = ?
+           error = ?, segment_progress = ?, updated_at = ?
            WHERE id = ? AND provider = 'seedance-bridge'`
         )
         .bind(
@@ -283,6 +285,7 @@ export async function POST(request: Request) {
           String(body.downloadPath || "").trim() || null,
           String(body.downloadError || "").trim() || null,
           body.error || null,
+          String(body.segmentProgress || "").slice(0,2000) || null,
           now,
           body.taskId
         )

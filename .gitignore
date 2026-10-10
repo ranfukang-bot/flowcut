@@ -86,3 +86,5 @@ gemini-web-workbench/runtime-deps/
 *.asar
 *.jsc
 *.zip
+
+/gemini-web-workbench/media-tools/

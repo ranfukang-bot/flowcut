@@ -1,4 +1,5 @@
 const fs = require("node:fs");
+const {DualVideoComposer,segmentDirectory} = require("./dual-video-composer");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
 const { BrowserWindow, dialog, session, shell } = require("electron");
@@ -273,6 +274,7 @@ class SeedanceRuntime {
 
   clearTasks(ids) {
     const selected = new Set(ids);
+    for (const id of ids) this.dualComposer?.cancel(id);
     for (const task of this.store.tasks) if (selected.has(task.flowcutTaskId)) this.downloadControllers.get(task.id)?.abort();
     this.store.clearFlowcutTasks(ids);
     this.emit();
@@ -312,7 +314,7 @@ class SeedanceRuntime {
       path.join(this.app.getPath("downloads"), "FlowCut视频");
     const archiveAccount = String(task.tiktokAccountName || "").trim();
     const downloadDirectory = task.flowcutTaskId && (!task.flowcutTaskKind || task.flowcutTaskKind === 'standard')
-      ? reviewDirectory(this.app.getPath('userData'), task.flowcutTaskId)
+      ? (task.segmentIndex ? segmentDirectory(this.app.getPath('userData'),task.flowcutTaskId,task.segmentIndex) : reviewDirectory(this.app.getPath('userData'), task.flowcutTaskId))
       : task.archiveDirectory
       ? path.resolve(task.archiveDirectory)
       : archiveAccount ? accountVideoDirectory(rootDirectory, archiveAccount) : rootDirectory;
@@ -452,7 +454,9 @@ class SeedanceRuntime {
     require('./seedance-quota-recovery.cjs').patchEngine(this.engine);
     this.engine.onUnsavedSubmission = (submission) =>
       this.onPersistenceProblem({ source: "Seedance 任务库", unsavedSubmission: submission });
+    this.dualComposer = new DualVideoComposer(this.app.getPath("userData"));
     this.flowcutBridge = new FlowCutBridge({
+      composeDual: children => this.dualComposer.compose(children),
       engine: this.engine,
       store: this.store,
       uploadsDirectory: path.join(this.userDataRoot(), "api-uploads"),

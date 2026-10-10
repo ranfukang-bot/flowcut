@@ -25,14 +25,15 @@ async function completedDelivery(userData, task) {
   const receipt = readRecord(receiptPath(userData,task));
   if (receipt) return receipt;
   const standard = task.flowcutTaskId && (!task.flowcutTaskKind || task.flowcutTaskKind === 'standard');
-  if (standard) {
+  if (standard && !task.segmentIndex) {
     const approval = readRecord(path.join(reviewDirectory(userData,task.flowcutTaskId),'approval.json'));
     if (approval?.status === 'released') return {file:approval.file, deliveredAt:Date.parse(approval.approvedAt) || Date.now()};
     if (approval) throw Error('成片正在审核归档，已阻止重复下载');
   }
   if (task.lastDownloadedPath && (task.lastDownloadedAt || task.reviewDownload)) return {file:task.lastDownloadedPath,deliveredAt:task.lastDownloadedAt || Date.now()};
   if (standard) {
-    const folder = reviewDirectory(userData,task.flowcutTaskId);
+    const root = reviewDirectory(userData,task.flowcutTaskId);
+    const folder = task.segmentIndex ? path.join(root,'segments',String(task.segmentIndex)) : root;
     if (!fs.existsSync(folder)) return null;
     // Recover the small crash window between a complete download and its receipt.
     const files = fs.readdirSync(folder,{withFileTypes:true}).filter(entry=>entry.isFile() && /\.mp4$/i.test(entry.name));

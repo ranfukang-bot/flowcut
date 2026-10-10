@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const {acceptDualJob,dualChildren,dualStatus} = require('./dual-video');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
@@ -19,6 +20,7 @@ class FlowCutBridge {
     uploadsDirectory,
     version,
     downloadTask = null,
+    composeDual = null,
     desktopToken = '',
     onChange = () => {},
     fetchImpl = fetch,
@@ -28,6 +30,8 @@ class FlowCutBridge {
     this.uploadsDirectory = uploadsDirectory;
     this.version = version;
     this.downloadTask = downloadTask;
+    this.composeDual = composeDual;
+    this.compositions = new Set();
     this.desktopToken = String(desktopToken || '');
     this.onChange = onChange;
     this.fetch = fetchImpl;
@@ -155,9 +159,16 @@ class FlowCutBridge {
   }
 
   async acceptJobs() {
-    const query = `?workerId=${encodeURIComponent(this.workerId())}`;
+    const query = `?workerId=${encodeURIComponent(this.workerId())}&dualVideo=1`;
     const result = await this.request(this.endpoint(query));
     for (const job of result.jobs || []) {
+      if (Number(job.duration) === 30 && (!job.kind || job.kind === 'standard')) {
+        try { await acceptDualJob(this,job); }
+        catch (error) {
+          await this.request(this.endpoint(),{method:'POST',body:JSON.stringify({action:'status',taskId:job.id,kind:'standard',providerStatus:'failed',error:error.message})});
+        }
+        continue;
+      }
       let task = this.store.tasks.find((item) => item.flowcutTaskId === job.id);
       if (
         task &&
@@ -282,8 +293,35 @@ class FlowCutBridge {
     }
   }
 
+  scheduleCompositions() {
+    if (!this.composeDual) return;
+    const ids = new Set(this.store.tasks.filter(t=>t.segmentIndex).map(t=>t.flowcutTaskId));
+    for (const id of ids) {
+      const children=dualChildren(this.store,id), first=children[0];
+      if (!id || this.store.isFlowcutTaskCleared?.(id) || children.length!==2 || children.some(t=>t.status!=='success' || !t.lastDownloadedPath) || first.combinedPath || this.compositions.has(id) || Number(first.nextComposeAt || 0)>Date.now()) continue;
+      this.compositions.add(id);
+      void this.composeDual(children).then(file=>{
+        if (!file || this.store.isFlowcutTaskCleared?.(id)) return;
+        first.combinedPath=file; first.compositionError=''; first.nextComposeAt=0;
+        this.store.upsertTask(first);
+      }).catch(error=>{
+        if (this.store.isFlowcutTaskCleared?.(id)) return;
+        first.compositionError=`自动拼接失败：${error.message}`; first.nextComposeAt=Date.now()+60000;
+        this.store.upsertTask(first);
+      }).finally(()=>{this.compositions.delete(id);this.onChange();});
+    }
+  }
+
   async syncStatuses() {
-    for (const task of this.store.tasks.filter((item) => item.flowcutTaskId)) {
+    for (const id of new Set(this.store.tasks.filter(t=>t.segmentIndex && t.flowcutTaskId).map(t=>t.flowcutTaskId))) {
+      if (this.store.isFlowcutTaskCleared?.(id)) continue;
+      const body=dualStatus(dualChildren(this.store,id));
+      const snapshot=JSON.stringify(body),key=`dual:${id}`;
+      if(this.sentStatus.get(key)===snapshot) continue;
+      await this.request(this.endpoint(),{method:'POST',body:JSON.stringify({...body,workerId:this.workerId()})});
+      this.sentStatus.set(key,snapshot);
+    }
+    for (const task of this.store.tasks.filter((item) => item.flowcutTaskId && !item.segmentIndex)) {
       const snapshot = JSON.stringify([
         task.status,
         task.activity,
@@ -321,6 +359,7 @@ class FlowCutBridge {
       // 成片归档只依赖本机 Seedance 结果，不能因为本地站点临时 503、
       // 页面关闭或 Bridge 写回失败而被跳过。
       this.scheduleAutoDownloads();
+      this.scheduleCompositions();
       if (
         !this.store.settings.flowcutBridgeEnabled ||
         !this.store.settings.flowcutBridgeUrl ||

@@ -76,6 +76,7 @@ type Task = {
   download_path?: string | null;
   review_status?: string;
   approved_path?: string | null;
+  segment_progress?: string | null;
   download_error?: string | null;
   created_at: string;
 };
@@ -1722,7 +1723,7 @@ function Dashboard({
                 >
                   {TASK_DURATIONS.map((duration) => (
                     <option key={duration} value={duration}>
-                      {duration} 秒{duration === 15 ? "（常用）" : ""}
+                      {duration === 30 ? "双段 30 秒（15秒＋15秒，自动拼接）" : `${duration} 秒${duration === 15 ? "（常用）" : ""}`}
                     </option>
                   ))}
                 </select>
@@ -1830,7 +1831,8 @@ function Dashboard({
           </div>}
           <div className="composer-foot">
             <div className="chips">
-              <span>{selectedDuration} 秒</span>
+              <span>{selectedDuration === 30 ? "双段 30 秒 · 消耗两次视频生成额度" : `${selectedDuration} 秒`}</span>
+              {selectedDuration === 30 && <span>请选择双段 Gem：需输出「视频1｜上半段」和「视频2｜下半段」两份完整提示词</span>}
               <span>9:16</span>
               <span>{selectedShootingStyle}</span>
               <span>{selectedRegion}</span>
@@ -2780,7 +2782,7 @@ function TasksPage({
       if (!geminiRuntime.authenticated) return "等待 Gemini 账号登录";
       return task.error || "排队中，账号空闲后自动开始";
     }
-    return task.download_error || task.error || "";
+    return task.download_error || task.error || task.segment_progress || "";
   };
   return (
     <div className="page-body">
@@ -4276,6 +4278,7 @@ function PromptDrawer({
           </em>
           <time>{formatTime(task.created_at)}</time>
         </div>
+        {task.duration === 30 && <div className="download-result"><b>双段 30 秒 · 15秒＋15秒</b><span>{task.segment_progress || "等待 Gemini 生成两段提示词"}</span></div>}
         <div className="drawer-chain-wrap">
           <span>本任务执行链路</span>
           <TaskChain task={task} />

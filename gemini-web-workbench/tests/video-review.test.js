@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const {VideoReview,reviewDirectory,moveToStaging} = require('../src/video-review');
+const {VideoReview,reviewDirectory,moveToStaging,cleanupSegments} = require('../src/video-review');
 function fixture(t) {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'flowcut-review-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
@@ -27,6 +27,36 @@ function fixture(t) {
 test('pending video lives outside publishing directory; opens exact local video externally',async t=>{
   const f=fixture(t);assert.equal(fs.existsSync(f.task.archive_directory),false);
   await f.runtime.open('task-1');assert.deepEqual(f.opened,[fs.realpathSync(f.source)]);
+});
+
+test('approval and deletion clean original and regenerated segments without touching other files',async t=>{
+  for(const action of ['approve','deletePending','discard']) {
+    const f=fixture(t),segments=path.join(path.dirname(f.source),'segments');
+    for(const index of [1,2]) {
+      const dir=path.join(segments,String(index)),retry=path.join(dir,'retry-1');fs.mkdirSync(retry,{recursive:true});
+      fs.writeFileSync(path.join(dir,'original.mp4'),'original');
+      fs.writeFileSync(path.join(retry,'replacement.mp4'),'retry');
+      fs.writeFileSync(path.join(retry,'download.mp4.partial'),'partial');
+    }
+    const unrelated=path.join(segments,'1','unrelated');fs.mkdirSync(unrelated);fs.writeFileSync(path.join(unrelated,'keep.mp4'),'unrelated');
+    fs.writeFileSync(path.join(segments,'1','receipt.json'),'keep');
+    if(action==='discard') {
+      f.tasks['replacement']={id:'replacement',regenerated_from_task_id:'task-1'};
+      f.task.review_status='replaced';
+    }
+    await f.runtime[action]('task-1',action==='discard'?'replacement':true);
+    for(const index of [1,2]) {assert.equal(fs.existsSync(path.join(segments,String(index),'retry-1')),false);assert.equal(fs.existsSync(path.join(segments,String(index),'original.mp4')),false);}
+    assert.equal(fs.readFileSync(path.join(unrelated,'keep.mp4'),'utf8'),'unrelated');
+    assert.equal(fs.readFileSync(path.join(segments,'1','receipt.json'),'utf8'),'keep');
+  }
+});
+
+test('regenerated segment cleanup refuses junctions and keeps their target videos',t=>{
+  const f=fixture(t),dir=path.join(path.dirname(f.source),'segments','1'),other=path.join(f.root,'other-task');
+  fs.mkdirSync(dir,{recursive:true});fs.mkdirSync(other);fs.writeFileSync(path.join(other,'keep.mp4'),'other video');
+  const link=path.join(dir,'retry-1');fs.symlinkSync(other,link,'junction');
+  try {assert.throws(()=>cleanupSegments(f.root,'task-1'),/含链接/);assert.equal(fs.readFileSync(path.join(other,'keep.mp4'),'utf8'),'other video');}
+  finally {fs.unlinkSync(link);}
 });
 test('approval needs explicit confirmation, publishes exact product filename and is idempotent',async t=>{
   const f=fixture(t);await assert.rejects(f.runtime.approve('task-1',false));

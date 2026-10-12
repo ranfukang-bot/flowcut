@@ -27,11 +27,20 @@ function cleanupSegments(userData,id) {
     const dir=path.join(segments,String(index));
     if(!fs.existsSync(dir)) continue;
     if(fs.realpathSync(dir)!==dir) throw Error('分段目录含链接，未清理');
-    for(const entry of fs.readdirSync(dir,{withFileTypes:true})) {
-      const file=path.join(dir,entry.name);
-      if(entry.isFile() && /\.mp4(?:\.partial)?$/i.test(entry.name) && fs.realpathSync(file)===file) fs.unlinkSync(file);
+    // Only the known retry folder belongs to this workflow; never recurse into
+    // arbitrary directories or follow a junction to another task's files.
+    const retry=path.join(dir,'retry-1');
+    const folders=fs.existsSync(retry) ? [retry,dir] : [dir];
+    for(const folder of folders) {
+      if(fs.lstatSync(folder).isSymbolicLink() || fs.realpathSync(folder)!==folder) throw Error('分段目录含链接，未清理');
     }
-    try {fs.rmdirSync(dir);} catch(e) {if(!['ENOENT','ENOTEMPTY','EEXIST'].includes(e.code)) throw e;}
+    for(const folder of folders) {
+      for(const entry of fs.readdirSync(folder,{withFileTypes:true})) {
+        const file=path.join(folder,entry.name);
+        if(entry.isFile() && /\.mp4(?:\.partial)?$/i.test(entry.name) && fs.realpathSync(file)===file) fs.unlinkSync(file);
+      }
+      try {fs.rmdirSync(folder);} catch(e) {if(!['ENOENT','ENOTEMPTY','EEXIST'].includes(e.code)) throw e;}
+    }
   }
   try {fs.rmdirSync(segments);} catch(e) {if(!['ENOENT','ENOTEMPTY','EEXIST'].includes(e.code)) throw e;}
 }

@@ -24,7 +24,11 @@ async function main(){
  const custom='按我的双段 Gem 生成两段15秒提示词。';
  const task=await api('/api/tasks',{method:'POST',body:JSON.stringify({productId:product.id,gemId:gem.id,tiktokAccountName:'双段测试账号',duration:30,geminiRequestText:custom})});
  const auth={authorization:'Bearer dual-test-key'};
- const claim=await api('/api/gemini-bridge?workerId=gem-test&capacity=1&accountIds=test',{headers:auth});
+ const gemKey=require('../src/saved-gems').gemVersion({id:gem.id,content:'两份完整15秒提示词'});
+ const blocked=encodeURIComponent(JSON.stringify({blocked:[gemKey]}));
+ assert.equal((await api('/api/gemini-bridge?workerId=gem-test&capacity=1&accountIds=blocked&blockedGemVersions='+blocked,{headers:auth})).jobs.length,0,'all blocked keeps original job queued');
+ const claim=await api('/api/gemini-bridge?workerId=gem-test&capacity=1&accountIds=blocked,test&blockedGemVersions='+blocked,{headers:auth});
+ assert.equal(claim.jobs[0].accountId,'test','unavailable saved Gem must not receive another job');
  assert.equal(claim.jobs[0].prompt,custom);
  const part=n=>`【生成任务】\n生成一段完整连续15.0秒。第${n}段。\n视频${n}-镜头1（0.0s–2.0s）\n`+'人物、产品、声音档案保持一致，镜头按时间轴自然运动。'.repeat(25)+`\n视频${n}-镜头2\n保持完整口播。`;
  const prompt=`视频1：约39词，预计朗读13秒。\n视频2：约38词，预计朗读12秒。\n视频1｜上半段｜15秒\nMarkdown\n${part(1)}\n视频2｜下半段｜15秒\nPlaintext\n${part(2)}\n拼接说明\n视频1→视频2`;

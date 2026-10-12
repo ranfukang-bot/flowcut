@@ -1,5 +1,5 @@
 import { buildSavedGemPrompt } from "../../../lib/gemini";
-import { chooseGeminiAccount } from "../../../lib/gemini-account-routing";
+import { chooseGeminiAccount, availableGemAccounts } from "../../../lib/gemini-account-routing";
 import { geminiRetryPlan } from "../../../lib/gemini-retry";
 import { getProviderConfig } from "../../../lib/provider-config";
 import { submitSeedance } from "../../../lib/seedance";
@@ -155,6 +155,13 @@ export async function GET(request: Request) {
     const db = getDb();
     const staleBefore = new Date(Date.now() - 12 * 60_000).toISOString();
     const retryReadyAt = new Date().toISOString();
+    const blockedGemVersions: Record<string,string[]> = {};
+    const advertisedBlocks = JSON.parse(url.searchParams.get("blockedGemVersions") || "{}");
+    if (advertisedBlocks && typeof advertisedBlocks === "object" && !Array.isArray(advertisedBlocks)) {
+      for (const [account, values] of Object.entries(advertisedBlocks)) {
+        if (Array.isArray(values)) blockedGemVersions[account] = values.filter((value): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value));
+      }
+    }
     const pending = await db
       .prepare(
       `SELECT t.id, t.product_id, t.gemini_account_id, t.created_at, COALESCE(t.gemini_retry_at, t.created_at) AS queue_at,
@@ -260,7 +267,10 @@ export async function GET(request: Request) {
     for (const candidate of candidates) {
       const task = candidate.task;
       if (jobs.length >= capacity) break;
-      const accountId = chooseGeminiAccount(candidate.kind, task.gemini_account_id, availableAccounts);
+      const eligibleAccounts = candidate.kind === "standard"
+        ? await availableGemAccounts(availableAccounts, blockedGemVersions, candidate.task.gem_id, candidate.task.content)
+        : availableAccounts;
+      const accountId = chooseGeminiAccount(candidate.kind, task.gemini_account_id, eligibleAccounts);
       if (!accountId) continue;
       const claimedAt = new Date().toISOString();
       const scriptHasGroups = candidate.kind === "script-pipeline" && (() => {

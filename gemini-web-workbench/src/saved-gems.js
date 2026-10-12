@@ -1,7 +1,7 @@
 const { createHash } = require("node:crypto");
 
 function gemError(message) {
-  return Object.assign(new Error(message), { code: "GEM_SETUP_REQUIRED" });
+  return Object.assign(new Error(message), { code: "GEM_SETUP_REQUIRED", bindingUnavailable: true });
 }
 
 function cleanGemUrl(value) {

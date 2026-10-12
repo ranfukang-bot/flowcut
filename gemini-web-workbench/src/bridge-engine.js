@@ -1,7 +1,9 @@
 const { randomUUID } = require("node:crypto");
+const { gemVersion } = require("./saved-gems");
 
 const RETRYABLE_JOB_CODES = new Set([
   "GEM_SETUP_RETRYABLE",
+  "GEM_SETUP_REQUIRED",
   "CONVERSATION_RESET_FAILED",
   "GEMINI_PAGE_ERROR",
   "GEMINI_MEDIA_UNREADABLE",
@@ -214,6 +216,11 @@ class BridgeEngine {
         workerId: this.workerId,
         capacity: String(idle.length),
         accountIds: idle.map((account) => account.id).join(","),
+        blockedGemVersions: JSON.stringify(Object.fromEntries(idle.map(account=>[account.id,
+          Object.keys(account.gemSetupHolds || {}).filter(key=>{
+            const binding=account.gemBindings?.[key],hold=account.gemSetupHolds[key];
+            return binding?.status !== "ready" || binding.at === hold.bindingAt;
+          })]))),
       });
       const result = await this.request(`?${params.toString()}`);
       const jobs = Array.isArray(result.jobs) ? result.jobs : [];
@@ -425,6 +432,16 @@ class BridgeEngine {
         });
         await this.report(job.id, "release", { kind: job.kind, error: message }).catch(() => {});
         this.store.log(`任务 ${job.id} 等待账号重新登录：${message}`, "warn");
+      } else if (code === "GEM_SETUP_REQUIRED" && error.bindingUnavailable && job.gem && (!job.kind || job.kind === "standard")) {
+        // No product prompt was submitted. Hold only this account/template
+        // version and release the original job for another account. Persist
+        // the hold so restarting cannot repeat the failure for every job.
+        const key=gemVersion(job.gem);
+        this.store.updateAccount(account.id,{gemSetupHolds:{...account.gemSetupHolds,
+          [key]:{message,at:new Date().toISOString(),bindingAt:account.gemBindings?.[key]?.at || null}}});
+        const detail=`${account.name} 的该 Gem 暂不可用，任务已退回队列；其他可用账号继续处理。若所有账号都不可用，请在 Gem 模板中恢复绑定。${message}`;
+        await this.report(job.id,"release",{kind:job.kind,error:detail}).catch(()=>{});
+        this.store.log(detail,"warn");
       } else if (isRetryableJobError(error)) {
         const recovery = await this.report(job.id, "defer", {
           kind: job.kind,

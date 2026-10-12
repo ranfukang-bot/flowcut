@@ -49,6 +49,24 @@ function fixture(runJob) {
   return { engine, reports, logs, store };
 }
 
+test('Gem setup failure persists a version-specific hold and releases rather than failing successive jobs',async()=>{
+  const {engine,reports,store}=fixture(async()=>{throw Object.assign(Error('saved Gem uncertain'),{code:'GEM_SETUP_REQUIRED',bindingUnavailable:true});});
+  const account={id:'a',name:'A'},gem={id:'gem',content:'original instructions'};
+  store.state.accounts=[account];store.state.settings.queueRunning=true;
+  store.updateAccount=(_id,patch)=>Object.assign(account,patch);
+  engine.active.set(account.id,{taskId:'task'});
+  await engine.execute(account,{id:'task',kind:'standard',gem,imageUrls:[]});
+  assert.deepEqual(reports.map(r=>r.action),['release']);
+  const key=Object.keys(account.gemSetupHolds)[0];assert.match(key,/^[a-f0-9]{64}$/);
+  const restored=JSON.parse(JSON.stringify(account));
+  const restarted=new BridgeEngine({store,getAuthenticatedAccounts:()=>[restored],onChange(){}});
+  let advertised;
+  restarted.request=async path=>{if(path.startsWith('?'))advertised=JSON.parse(new URLSearchParams(path.slice(1)).get('blockedGemVersions'));return {jobs:[]};};
+  await restarted.tick();assert.deepEqual(advertised,{a:[key]});
+  restored.gemBindings={[key]:{status:'ready',at:'new-binding',url:'https://gemini.google.com/gem/saved'}};
+  await restarted.tick();assert.deepEqual(advertised,{a:[]},'verified binding restores this account without clearing another Gem hold');
+});
+
 test("Electron connection loss defers a task and the next claim can succeed", async () => {
   let attempts = 0;
   const { engine, reports } = fixture(async () => {

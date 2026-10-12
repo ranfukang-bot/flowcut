@@ -811,7 +811,10 @@ async function runGeminiJob(account, job) {
     const active = bridge?.active.get(account.id);
     if (active) { active.stage = "准备已保存的 Gem（首次自动创建）"; broadcast(); }
     if (gemSetupAccounts.has(account.id)) throw Object.assign(new Error("该账号正在设置网页 Gem，请稍后重试"), { code: "GEM_SETUP_REQUIRED" });
-    gemUrl = await savedGems.ensure(account.id, job.gem, createGemDriver(window));
+    const ensureGem = () => savedGems.ensure(account.id, job.gem, createGemDriver(window));
+    gemUrl = savedGems.get(account.id, job.gem)?.status === "ready"
+      ? await ensureGem()
+      : await runWithActivatedGeminiWorker({workerWindow:window,ownerWindow:mainWindow,debugVisible:showGeminiWorkerForDebug,action:ensureGem});
   }
   await loadGeminiPage(account, window, 3, gemUrl || "https://gemini.google.com/app");
   await new Promise((resolve) => setTimeout(resolve, 2200));
@@ -1172,7 +1175,9 @@ function bindIpc() {
         return null;
       }
       if (!(await refreshAccount(account))) throw new Error("请先登录此 Gemini 账号");
-      const resultUrl = await savedGems.ensure(accountId, gem, createGemDriver(workerWindow(account)));
+      const setupWorker=workerWindow(account);
+      const resultUrl = await runWithActivatedGeminiWorker({workerWindow:setupWorker,ownerWindow:mainWindow,debugVisible:showGeminiWorkerForDebug,
+        action:()=>savedGems.ensure(accountId, gem, createGemDriver(setupWorker))});
       return { url: resultUrl };
     } finally { gemSetupAccounts.delete(accountId); broadcast(); }
   });

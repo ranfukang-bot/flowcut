@@ -1,6 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chooseGeminiAccount } from '../lib/gemini-account-routing.ts';
+import { chooseGeminiAccount, availableGemAccounts } from '../lib/gemini-account-routing.ts';
+import { createRequire } from 'node:module';
+const {gemVersion}=createRequire(import.meta.url)('../gemini-web-workbench/src/saved-gems.js');
+
+test('blocked Gem versions route to another account and remain queued if all are blocked', async () => {
+  const gem={id:'gem',content:'original instructions'},key=gemVersion(gem),all=new Set(['a','b']);
+  assert.deepEqual([...await availableGemAccounts(all,{a:[key]},gem.id,gem.content)],['b']);
+  assert.equal((await availableGemAccounts(all,{a:[key],b:[key]},gem.id,gem.content)).size,0);
+  assert.deepEqual([...await availableGemAccounts(all,{a:[key]},gem.id,'updated instructions')],['a','b']);
+  assert.deepEqual([...all],['a','b'],'other templates can still use both idle accounts');
+});
 
 test('product jobs use an idle account even when their legacy default is busy or deleted', () => {
   for (const pin of ['busy-account', 'deleted-account', null, 'idle-b']) {

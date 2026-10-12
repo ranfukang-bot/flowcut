@@ -90,6 +90,7 @@ test("an accepted generation stays tracked when saving right after submit fails"
   const store = new WorkbenchStore(directory);
   store.updateSettings({ running: true });
   const task = queuedTask(store);
+  Object.assign(task,{segmentIndex:1,segmentRetryOf:'original-segment',segmentRegeneration:1});
   let lockStateFile = false;
   patchFs(t, "renameSync", (original, from, to) => {
     // A lock on the state file blocks renaming it away as well as over it.
@@ -107,6 +108,8 @@ test("an accepted generation stays tracked when saving right after submit fails"
   await engine.submitTask(task, store.accounts[0]);
 
   assert.equal(client.submits, 1);
+  const journal=fs.readFileSync(store.submissionJournalPath,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  assert.ok(journal.some(entry=>entry.snapshot?.segmentRetryOf==='original-segment' && entry.snapshot?.segmentRegeneration===1),'crash recovery retains the one-regeneration limit and replacement relationship');
   assert.equal(task.status, "generating");
   assert.equal(task.taskId, "7390000000000000123");
   assert.ok(store.persistError, "the save failure is known and reported");

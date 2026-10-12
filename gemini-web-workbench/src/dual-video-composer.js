@@ -6,9 +6,11 @@ const run = promisify(execFile);
 const {reviewDirectory} = require('./video-review');
 const {loadJsonState,writeTextDurable} = require('../../vendor/seedance-engine/durable-json');
 
-function segmentDirectory(userData,id,index) {
+function segmentDirectory(userData,id,index,regeneration=0) {
   if (![1,2].includes(index)) throw Error('无效的视频分段');
-  return path.join(reviewDirectory(userData,id),'segments',String(index));
+  if (![0,1].includes(regeneration)) throw Error('无效的分段补做次数');
+  const folder=path.join(reviewDirectory(userData,id),'segments',String(index));
+  return regeneration ? path.join(folder,'retry-1') : folder;
 }
 function mediaTool(name) {
   const bundled = path.join(process.resourcesPath || '', 'media-tools', name + '.exe');
@@ -39,7 +41,12 @@ function segmentTiming(media, index) {
   // Requested 15s clips can be a little short/long. Use one clock for both
   // streams, retaining the entire spoken tail and preserving audio pitch.
   // Large discrepancies still need inspection instead of hiding bad input.
-  if (duration<12 || duration>18) throw Error(`第 ${index} 段实际时长 ${duration.toFixed(2)} 秒，超出自动适配范围（12–18 秒），请检查视频`);
+  if (duration<12 || duration>18) {
+    const error=Error(`第 ${index} 段实际时长 ${duration.toFixed(2)} 秒，超出自动适配范围（12–18 秒），请检查视频`);
+    error.code=duration<12 ? 'DUAL_SEGMENT_TOO_SHORT' : 'DUAL_SEGMENT_TOO_LONG';
+    error.segmentIndex=index;
+    throw error;
+  }
   const stretch=15/duration;
   if (audio && Math.abs(videoDuration-audioDuration)*stretch>0.8) {
     throw Error(`第 ${index} 段画面与声音时长差异过大（画面 ${videoDuration.toFixed(2)} 秒，声音 ${audioDuration.toFixed(2)} 秒），请检查视频`);
@@ -70,7 +77,7 @@ class DualVideoComposer {
       if (children.length!==2 || children.some(t=>!t.lastDownloadedPath)) return null;
       const files=children.map(t=>t.lastDownloadedPath);
       for (let i=0;i<2;i++) {
-        const expected=fs.realpathSync(segmentDirectory(this.userData,id,i+1));
+        const expected=fs.realpathSync(segmentDirectory(this.userData,id,i+1,children[i].segmentRegeneration || 0));
         if (path.dirname(fs.realpathSync(files[i]))!==expected) throw Error('分段视频不在该任务的临时目录中');
       }
       const media=await Promise.all(files.map(f=>probe(f,controller.signal)));

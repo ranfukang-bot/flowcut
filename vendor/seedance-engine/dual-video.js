@@ -9,7 +9,7 @@ function splitDualPrompts(value) {
   let bodyBoundaries = false;
   if (!headings.length) {
     bodyBoundaries = true;
-    headings = [...text.matchAll(/^[ \t]*(?:(?:\d+[.、][ \t]*)?生成任务[：:][ \t]*)?生成一段[^\n]*?15[ \t]*秒[^\n]*?(上半段|下半段)[^\n]*$/gm)]
+    headings = [...text.matchAll(/^[ \t]*(?:(?:\d+[.、][ \t]*)?生成任务[：:][ \t]*)?生成一段[^\n]*?\b15(?:\.0+)?[ \t]*秒[^\n]*?(上半段|下半段)[^\n]*$/gm)]
       .map(match => {
         // Include a separate task label / code-block language line in the
         // boundary so it cannot leak into the end of the preceding prompt.
@@ -25,14 +25,42 @@ function splitDualPrompts(value) {
     section = section.split(/\n[ \t#*]*拼接说明[^\n]*(?:\n|$)/)[0].trim();
     const fenced = section.match(/```[^\n]*\n([\s\S]*?)```/);
     const prompt = (fenced ? fenced[1] : section).replace(/^(?:复制代码|Copy code|plaintext|text)\s*\n/i, '').trim();
-    if (prompt.length < 300 || !/15\s*(?:秒|s\b)/i.test(prompt)) throw Error(`第 ${index + 1} 段缺少完整的 15 秒提示词，已阻止提交`);
+    if (prompt.length < 300 || !/\b15(?:\.0+)?\s*(?:秒|s\b)/i.test(prompt)) throw Error(`第 ${index + 1} 段缺少完整的 15 秒提示词，已阻止提交`);
     if (!bodyBoundaries && /上半段|下半段/.test(heading[0]) && !heading[0].includes(index === 0 ? '上半段' : '下半段')) throw Error('双段标题与上下半段顺序不一致，已阻止提交');
     return prompt;
   });
 }
 
 function dualSignature(prompt) { return createHash('sha256').update(prompt).digest('hex'); }
-function dualChildren(store, id) { return store.tasks.filter(t => t.flowcutTaskId === id && t.segmentIndex).sort((a,b) => a.segmentIndex-b.segmentIndex); }
+function dualChildren(store, id) {
+  const tasks=store.tasks.filter(t => t.flowcutTaskId === id && t.segmentIndex);
+  const replaced=new Set(tasks.map(t=>t.segmentRetryOf).filter(Boolean));
+  return tasks.filter(t=>!replaced.has(t.id)).sort((a,b) => a.segmentIndex-b.segmentIndex);
+}
+
+function regenerateShortSegment(bridge, children, error) {
+  if (error?.code!=='DUAL_SEGMENT_TOO_SHORT') return false;
+  const task=children.find(t=>t.segmentIndex===error.segmentIndex);
+  if (!task || task.status!=='success' || !task.taskId || !task.lastDownloadedPath || Number(task.segmentRegeneration || 0)>=1 || bridge.store.blocked || bridge.store.persistError) return false;
+  // Keep the original task, remote ID and file. A deterministic replacement
+  // identity makes recovery after a save/notification failure idempotent.
+  const id=task.id+'-segment-retry-1';
+  if (!bridge.store.tasks.some(t=>t.id===id)) {
+    bridge.engine.createTask(task.prompt,task.imageItems.map(i=>i.localPath),{
+      id, source:'flowcut', flowcutTaskId:task.flowcutTaskId, flowcutTaskKind:task.flowcutTaskKind || 'standard',
+      segmentIndex:task.segmentIndex, dualSignature:task.dualSignature, duration:15,
+      segmentRetryOf:task.id, segmentRegeneration:1,
+      tiktokAccountName:task.tiktokAccountName, archiveDirectory:task.archiveDirectory,
+      productExternalId:task.productExternalId, managedLocalFiles:task.imageItems.map(i=>i.localPath),
+      activity:`第 ${task.segmentIndex} 段时长不足，自动补做一次；原片保留`,
+    });
+  }
+  const first=dualChildren(bridge.store,task.flowcutTaskId)[0];
+  first.compositionError=''; first.nextComposeAt=0; first.compositionBlocked=false;
+  bridge.store.upsertTask(first);
+  bridge.sentStatus.delete(`dual:${task.flowcutTaskId}`);
+  return true;
+}
 
 async function acceptDualJob(bridge, job) {
   const prompts = splitDualPrompts(job.prompt);
@@ -51,7 +79,7 @@ async function acceptDualJob(bridge, job) {
         tiktokAccountName:job.tiktokAccountName, archiveDirectory:job.archiveDirectory,
         productExternalId:job.productExternalId, managedLocalFiles:imagePaths,
       });
-    } else { task.nextComposeAt=0; task.compositionError=''; await bridge.resumeRequeuedTask(task); }
+    } else { task.nextComposeAt=0; task.compositionError=''; task.compositionBlocked=false; await bridge.resumeRequeuedTask(task); }
     bridge.sentStatus.delete(`dual:${job.id}`);
   }
   children = dualChildren(bridge.store, job.id);
@@ -76,4 +104,4 @@ function dualStatus(children) {
     segmentProgress:`${progress}；拼接：${complete ? '已完成' : first.compositionError ? '失败，可重试' : children.length === 2 && children.every(t=>t.lastDownloadedPath) ? '处理中' : '等待两段视频'}`,
   };
 }
-module.exports = {splitDualPrompts,dualSignature,dualChildren,acceptDualJob,dualStatus};
+module.exports = {splitDualPrompts,dualSignature,dualChildren,acceptDualJob,dualStatus,regenerateShortSegment};

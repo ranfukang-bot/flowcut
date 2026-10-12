@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {execFileSync}=require('node:child_process');
-const {splitDualPrompts,acceptDualJob,dualStatus}=require('../../vendor/seedance-engine/dual-video');
+const {splitDualPrompts,acceptDualJob,dualStatus,dualChildren,regenerateShortSegment}=require('../../vendor/seedance-engine/dual-video');
 const {DualVideoComposer,segmentDirectory,probe,segmentTiming}=require('../src/dual-video-composer');
 const {cleanupSegments,reviewDirectory}=require('../src/video-review');
 const {completedDelivery}=require('../src/video-delivery');
@@ -17,6 +17,15 @@ test('spoken word budgets are metadata, not additional video headings',()=>{
   const budget='视频1：约39词（Taglish），预计朗读13.0秒。\n视频2：约38词（Taglish），预计朗读12.6秒。\n';
   assert.deepEqual(splitDualPrompts(budget+response()),[part(1),part(2)]);
   assert.throws(()=>splitDualPrompts(budget),'budgets alone cannot create prompts');
+});
+
+test('15.0 seconds is accepted in complete prompts, with or without outer headings',()=>{
+  for(const number of ['15.0','15.00']) {
+    assert.deepEqual(splitDualPrompts(response().replaceAll('15秒',number+'秒')),[part(1),part(2)].map(p=>p.replaceAll('15秒',number+'秒')));
+    const bodies=[1,2].map(n=>directive(n).replaceAll('15秒',number+'秒'));
+    assert.deepEqual(splitDualPrompts(bodies.join('\n\n')),bodies);
+  }
+  for(const invalid of ['14.5','115','15.5']) assert.throws(()=>splitDualPrompts(response().replaceAll('15秒',invalid+'秒')));
 });
 
 const directive=n=>`生成一段完整连续的15秒、9:16竖屏视频。这是30秒内容的${n===1?'上':'下'}半段，本次只生成本段15秒。\n${part(n)}`;
@@ -54,6 +63,47 @@ test('recovers interruption between creating first and second child without resu
   const f=fixture();await acceptDualJob(f.bridge,f.job);f.store.tasks.pop();await acceptDualJob(f.bridge,f.job);assert.deepEqual(f.store.tasks.map(t=>t.segmentIndex),[1,2]);assert.equal(f.store.tasks[0].id,'1');
 });
 test('incomplete or refused output never creates any child',async()=>{const f=fixture();await assert.rejects(acceptDualJob(f.bridge,{...f.job,prompt:'拒绝生成'}));assert.equal(f.store.tasks.length,0);assert.equal(f.downloads(),0);});
+
+test('a definitively short completed segment is replaced once; sibling and original survive restart',async()=>{
+  for(const index of [1,2]) {
+    const f=fixture();await acceptDualJob(f.bridge,f.job);
+    for(const t of f.store.tasks){t.status='success';t.taskId='remote-'+t.id;t.lastDownloadedPath='original-'+t.id+'.mp4';}
+    const originals=f.store.tasks.map(t=>({...t})),failed=f.store.tasks[index-1];
+    const error=Object.assign(Error('short'),{code:'DUAL_SEGMENT_TOO_SHORT',segmentIndex:index});
+    assert.equal(regenerateShortSegment(f.bridge,f.store.tasks.slice(),error),true);
+    assert.equal(regenerateShortSegment(f.bridge,originals,error),true,'repeated callback reuses deterministic replacement');
+    assert.equal(f.store.tasks.length,3);
+    f.store.tasks=JSON.parse(JSON.stringify(f.store.tasks));
+    const current=dualChildren(f.store,'parent'),replacement=current[index-1];
+    assert.equal(current.length,2);assert.equal(replacement.segmentRetryOf,failed.id);
+    assert.equal(replacement.prompt,failed.prompt);assert.equal(replacement.duration,15);
+    assert.equal(current[2-index].id,originals[2-index].id);
+    assert.equal(current[2-index].lastDownloadedPath,originals[2-index].lastDownloadedPath);
+    assert.equal(f.store.tasks.find(t=>t.id===failed.id).taskId,failed.taskId);
+    replacement.status='success';replacement.taskId='remote-replacement';replacement.lastDownloadedPath='retry.mp4';
+    assert.equal(regenerateShortSegment(f.bridge,current,error),false,'one automatic regeneration maximum');
+    assert.equal(regenerateShortSegment(f.bridge,current,Object.assign(Error('network'),{segmentIndex:3-index})),false);
+  }
+});
+
+test('composition failure triggers recovery and a second short result blocks further automatic generation',async()=>{
+  const f=fixture();await acceptDualJob(f.bridge,f.job);
+  for(const t of f.store.tasks){t.status='success';t.taskId='remote-'+t.id;t.lastDownloadedPath='original.mp4';}
+  const b=new FlowCutBridge({store:f.store,engine:f.bridge.engine,composeDual:async()=>{throw Object.assign(Error('7.59 seconds'),{code:'DUAL_SEGMENT_TOO_SHORT',segmentIndex:1});}});
+  b.scheduleCompositions();await new Promise(r=>setImmediate(r));assert.equal(f.store.tasks.length,3);
+  const current=dualChildren(f.store,'parent');current[0].status='success';current[0].taskId='new-remote';current[0].lastDownloadedPath='retry.mp4';
+  b.scheduleCompositions();await new Promise(r=>setImmediate(r));assert.equal(current[0].compositionBlocked,true);
+  assert.match(current[0].compositionError,/已自动补做一次/);current[0].nextComposeAt=0;
+  b.scheduleCompositions();await new Promise(r=>setImmediate(r));assert.equal(f.store.tasks.length,3);
+});
+
+test('a replacement download never recovers the rejected original file',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'flowcut-replacement-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const old=segmentDirectory(root,'parent',1);fs.mkdirSync(old,{recursive:true});fs.writeFileSync(path.join(old,'short.mp4'),'original');
+  const replacement={id:'replacement',taskId:'new-remote',flowcutTaskId:'parent',segmentIndex:1,segmentRegeneration:1};
+  assert.equal(await completedDelivery(root,replacement),null);
+  assert.equal(segmentDirectory(root,'parent',1,1),path.join(old,'retry-1'));
+});
 test('timing uses the full spoken tail, accepts moderate deviations, and rejects damaged inputs',()=>{
   const media=(video,audio)=>({streams:[{codec_type:'video',duration:video},...(audio===undefined?[]:[{codec_type:'audio',duration:audio}])]});
   const timing=segmentTiming(media(13.208333,13.815873),2);
@@ -101,9 +151,9 @@ test('real ffmpeg joins in order with audio, recovers receipt, and cleans only t
 
 test('real short clip with longer spoken tail becomes 30s without dropping tail or changing pitch',{timeout:180000},async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'flowcut-dual-short-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const children=[1,2].map(segmentIndex=>({flowcutTaskId:'short-parent',segmentIndex,dualSignature:'short-test'}));
+  const children=[1,2].map(segmentIndex=>({flowcutTaskId:'short-parent',segmentIndex,dualSignature:'short-test',segmentRegeneration:segmentIndex===1?1:0}));
   for(const task of children){
-    const first=task.segmentIndex===1,dir=segmentDirectory(root,task.flowcutTaskId,task.segmentIndex);fs.mkdirSync(dir,{recursive:true});
+    const first=task.segmentIndex===1,dir=segmentDirectory(root,task.flowcutTaskId,task.segmentIndex,task.segmentRegeneration);fs.mkdirSync(dir,{recursive:true});
     task.lastDownloadedPath=path.join(dir,'clip.mp4');
     execFileSync('ffmpeg',['-v','error','-f','lavfi','-i',`color=c=${first?'red':'blue'}:s=180x320:r=24:d=${first?'15.041667':'13.208333'}`,'-f','lavfi','-i',`sine=frequency=880:sample_rate=48000:duration=${first?'15.069002':'13.815873'}`,'-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-c:a','aac',task.lastDownloadedPath],{windowsHide:true});
   }

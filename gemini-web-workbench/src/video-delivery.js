@@ -33,7 +33,7 @@ async function completedDelivery(userData, task) {
   if (task.lastDownloadedPath && (task.lastDownloadedAt || task.reviewDownload)) return {file:task.lastDownloadedPath,deliveredAt:task.lastDownloadedAt || Date.now()};
   if (standard) {
     const root = reviewDirectory(userData,task.flowcutTaskId);
-    const folder = task.segmentIndex ? path.join(root,'segments',String(task.segmentIndex)) : root;
+    const folder = task.segmentIndex ? path.join(root,'segments',String(task.segmentIndex),...(task.segmentRegeneration ? ['retry-1'] : [])) : root;
     if (!fs.existsSync(folder)) return null;
     // Recover the small crash window between a complete download and its receipt.
     const files = fs.readdirSync(folder,{withFileTypes:true}).filter(entry=>entry.isFile() && /\.mp4$/i.test(entry.name));

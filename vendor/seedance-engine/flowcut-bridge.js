@@ -1,5 +1,5 @@
 const crypto = require('node:crypto');
-const {acceptDualJob,dualChildren,dualStatus} = require('./dual-video');
+const {acceptDualJob,dualChildren,dualStatus,regenerateShortSegment} = require('./dual-video');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
@@ -298,7 +298,7 @@ class FlowCutBridge {
     const ids = new Set(this.store.tasks.filter(t=>t.segmentIndex).map(t=>t.flowcutTaskId));
     for (const id of ids) {
       const children=dualChildren(this.store,id), first=children[0];
-      if (!id || this.store.isFlowcutTaskCleared?.(id) || children.length!==2 || children.some(t=>t.status!=='success' || !t.lastDownloadedPath) || first.combinedPath || this.compositions.has(id) || Number(first.nextComposeAt || 0)>Date.now()) continue;
+      if (!id || this.store.isFlowcutTaskCleared?.(id) || children.length!==2 || children.some(t=>t.status!=='success' || !t.lastDownloadedPath) || first.combinedPath || first.compositionBlocked || this.compositions.has(id) || Number(first.nextComposeAt || 0)>Date.now()) continue;
       this.compositions.add(id);
       void this.composeDual(children).then(file=>{
         if (!file || this.store.isFlowcutTaskCleared?.(id)) return;
@@ -306,7 +306,15 @@ class FlowCutBridge {
         this.store.upsertTask(first);
       }).catch(error=>{
         if (this.store.isFlowcutTaskCleared?.(id)) return;
+        let recoveryError;
+        try { if (regenerateShortSegment(this,children,error)) return; }
+        catch (failure) { recoveryError=failure; }
         first.compositionError=`自动拼接失败：${error.message}`; first.nextComposeAt=Date.now()+60000;
+        if (recoveryError) first.compositionError+=`；补做准备失败：${recoveryError.message}`;
+        if (error?.code==='DUAL_SEGMENT_TOO_SHORT' && !recoveryError) {
+          first.compositionBlocked=true;
+          if (children.some(t=>t.segmentIndex===error.segmentIndex && t.segmentRegeneration)) first.compositionError+='（该段已自动补做一次，停止继续生成）';
+        }
         this.store.upsertTask(first);
       }).finally(()=>{this.compositions.delete(id);this.onChange();});
     }

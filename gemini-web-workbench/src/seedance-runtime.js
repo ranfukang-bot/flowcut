@@ -314,7 +314,7 @@ class SeedanceRuntime {
       path.join(this.app.getPath("downloads"), "FlowCut视频");
     const archiveAccount = String(task.tiktokAccountName || "").trim();
     const downloadDirectory = task.flowcutTaskId && (!task.flowcutTaskKind || task.flowcutTaskKind === 'standard')
-      ? (task.segmentIndex ? segmentDirectory(this.app.getPath('userData'),task.flowcutTaskId,task.segmentIndex) : reviewDirectory(this.app.getPath('userData'), task.flowcutTaskId))
+      ? (task.segmentIndex ? segmentDirectory(this.app.getPath('userData'),task.flowcutTaskId,task.segmentIndex,task.segmentRegeneration || 0) : reviewDirectory(this.app.getPath('userData'), task.flowcutTaskId))
       : task.archiveDirectory
       ? path.resolve(task.archiveDirectory)
       : archiveAccount ? accountVideoDirectory(rootDirectory, archiveAccount) : rootDirectory;

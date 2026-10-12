@@ -19,6 +19,39 @@ test('spoken word budgets are metadata, not additional video headings',()=>{
   assert.throws(()=>splitDualPrompts(budget),'budgets alone cannot create prompts');
 });
 
+test('shot labels remain verbatim inside their two prompts, including rendered Markdown',()=>{
+  for(const label of ['镜头','分镜','场景','画面','Shot ','Scene ']) {
+    for(const separator of ['-', '｜', '：', '—', '–']) {
+      const bodies=[1,2].map(n=>`${part(n)}\n视频${n}${separator}${label}1（0.0s–2.0s）\n动作与口播一\n视频${n}${separator}${label}2（2.0s–4.1s）\n动作与口播二`);
+      const text=bodies.map((p,i)=>`视频${i+1}｜${i?'下':'上'}半段｜15秒\nMarkdown\n${p}`).join('\n\n')+'\n拼接说明\n视频1：末帧衔接\n视频2：首帧衔接';
+      assert.deepEqual(splitDualPrompts(text),bodies);
+    }
+  }
+});
+
+test('section wrappers and Chinese/fullwidth numbering do not change prompt contents',()=>{
+  for(const numbers of [['1','2'],['１','２'],['一','二']]) {
+    for(const wrap of [s=>s,s=>'## **'+s+'**',s=>'【'+s+'】',s=>'['+s+']',s=>'__'+s+'__']) {
+      const text=[1,2].map((n,i)=>wrap(`视频${numbers[i]}｜${i?'下':'上'}半段｜15秒`)+ '\n'+part(n)).join('\n')+'\n### 【拼接说明】\n视频1：保留末帧\n视频2：衔接首帧';
+      assert.deepEqual(splitDualPrompts(text),[part(1),part(2)]);
+    }
+  }
+});
+
+test('headingless rendered bodies may contain shot labels without creating extra sections',()=>{
+  const bodies=[1,2].map(n=>`【生成任务】\n${directive(n)}\n视频${n}-镜头1\n动作细节\n视频${n}-镜头2\n口播细节`);
+  assert.deepEqual(splitDualPrompts(bodies.map(p=>'Markdown\n'+p).join('\n\n')),bodies);
+});
+
+test('invalid outputs report structure, order or incomplete body without silently choosing a pair',()=>{
+  for(const [text,code] of [
+    [response()+'\n视频1｜另一条创意\n'+part(1),'DUAL_PROMPT_STRUCTURE'],
+    [response().replace('视频1｜','视频2｜'),'DUAL_PROMPT_ORDER'],
+    [response().replace(part(2),'15秒'),'DUAL_PROMPT_INCOMPLETE'],
+    [response().replace('视频1｜上半段','视频1｜下半段'),'DUAL_PROMPT_ORDER'],
+  ]) assert.throws(()=>splitDualPrompts(text.replace('拼接说明\n先1后2；这里不是生成提示词。','')),e=>e.code===code);
+});
+
 test('15.0 seconds is accepted in complete prompts, with or without outer headings',()=>{
   for(const number of ['15.0','15.00']) {
     assert.deepEqual(splitDualPrompts(response().replaceAll('15秒',number+'秒')),[part(1),part(2)].map(p=>p.replaceAll('15秒',number+'秒')));

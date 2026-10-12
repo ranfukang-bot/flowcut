@@ -26,15 +26,16 @@ async function main(){
  const auth={authorization:'Bearer dual-test-key'};
  const claim=await api('/api/gemini-bridge?workerId=gem-test&capacity=1&accountIds=test',{headers:auth});
  assert.equal(claim.jobs[0].prompt,custom);
- const part=n=>`生成一段完整连续15秒。第${n}段。`+'人物、产品、声音档案保持一致，镜头按时间轴自然运动。'.repeat(25);
- const prompt=`视频1｜上半段｜15秒\n${part(1)}\n视频2｜下半段｜15秒\n${part(2)}\n拼接说明\n视频1→视频2`;
+ const part=n=>`【生成任务】\n生成一段完整连续15.0秒。第${n}段。\n视频${n}-镜头1（0.0s–2.0s）\n`+'人物、产品、声音档案保持一致，镜头按时间轴自然运动。'.repeat(25)+`\n视频${n}-镜头2\n保持完整口播。`;
+ const prompt=`视频1：约39词，预计朗读13秒。\n视频2：约38词，预计朗读12秒。\n视频1｜上半段｜15秒\nMarkdown\n${part(1)}\n视频2｜下半段｜15秒\nPlaintext\n${part(2)}\n拼接说明\n视频1→视频2`;
  await api('/api/gemini-bridge',{method:'POST',headers:auth,body:JSON.stringify({action:'result',taskId:task.id,workerId:'gem-test',prompt})});
  assert.equal((await api('/api/seedance-bridge?workerId=old-worker',{headers:auth})).jobs.length,0,'old workers cannot claim dual tasks');
  const store={tasks:[],settings:{apiKey:'dual-test-key',flowcutBridgeUrl:base,flowcutWorkerId:'dual-test'},isFlowcutTaskCleared:()=>false,upsertTask:t=>{if(!store.tasks.includes(t))store.tasks.push(t);},log:()=>{}};
  const retries=[];
  const engine={createTask:(prompt,paths,meta)=>{const t={id:crypto.randomUUID(),prompt,status:'queued',imageItems:paths.map(localPath=>({localPath})),...meta};store.upsertTask(t);return t;},retryFailedTask:async id=>{retries.push(id);store.tasks.find(t=>t.id===id).status='queued';return {action:'retry'};}};
- const bridge=new FlowCutBridge({store,engine,uploadsDirectory:path.join(root,'images'),version:'1.4.30',desktopToken:token});
+ const bridge=new FlowCutBridge({store,engine,uploadsDirectory:path.join(root,'images'),version:require('../package.json').version,desktopToken:token});
  await bridge.acceptJobs();assert.equal(store.tasks.length,2);assert.deepEqual(store.tasks.map(t=>t.duration),[15,15]);
+ assert.deepEqual(store.tasks.map(t=>t.prompt),[part(1),part(2)],'all shots preserved without language labels or strategy');
  const row=async()=>(await api('/api/workspace')).tasks.find(t=>t.id===task.id);
  assert.equal((await row()).duration,30);assert.equal((await api('/api/workspace')).tasks.length,1);
  store.tasks[0].status='success';store.tasks[0].lastDownloadedPath=path.join(root,'first.mp4');store.tasks[1].status='failed';store.tasks[1].errorMessage='模拟第二段失败';
@@ -42,7 +43,7 @@ async function main(){
  await api('/api/tasks',{method:'PATCH',body:JSON.stringify({id:task.id,action:'queue'})});await bridge.acceptJobs();assert.equal(store.tasks.length,2);assert.deepEqual(retries,[store.tasks[1].id]);
  store.tasks[1].status='success';store.tasks[1].lastDownloadedPath=path.join(root,'second.mp4');await bridge.syncStatuses();assert.equal((await row()).status,'video_generating');
  store.tasks[0].combinedPath=path.join(root,'review-videos','combined-30s.mp4');await bridge.syncStatuses();assert.equal((await row()).status,'video_ready');assert.equal((await row()).download_path,store.tasks[0].combinedPath);assert.match((await row()).segment_progress,/第 2 段：已下载/);
- browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});
+ browser=await chromium.launch({executablePath:process.env.FLOWCUT_TEST_CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});
  const page=await browser.newPage({viewport:{width:1440,height:1000},extraHTTPHeaders:{'x-flowcut-desktop-token':token}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(base,{waitUntil:'networkidle'});await page.getByRole('navigation').getByRole('button',{name:'创作中心'}).click();
  const select=page.locator('select').filter({has:page.locator('option[value="30"]')});assert.equal(await select.count(),1);await select.selectOption('30');

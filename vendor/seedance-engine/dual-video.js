@@ -1,11 +1,24 @@
 const { createHash } = require('node:crypto');
 
+function promptError(code, message) {
+  return Object.assign(Error(message), {code});
+}
+
+// A shot label or narration budget describes a section; it does not start one.
+// Keep unknown video headings as boundaries so extra alternatives are rejected.
+function isSectionHeading(match) {
+  const suffix = match[2].replace(/^[\s*_【\[]+/, '');
+  return !/^(?:(?:镜头|分镜|场景|画面|shot|scene)\s*(?:[0-9０-９一二三四五六七八九十]+|[：:]))/i.test(suffix)
+    && !/^(?:(?:保留|接续|承接)?(?:末帧|首帧|最后一帧|第一帧)|末句|首句|衔接)/.test(suffix)
+    && !/(?:\d+(?:\.\d+)?\s*(?:词|words?\b)|口播预算|朗读|word count)/i.test(suffix);
+}
+
 // Rendered code blocks may lose their surrounding headings. Accept either
 // section headings or two explicit generation directives, never the whole reply.
 function splitDualPrompts(value) {
   const text = String(value || '').replace(/\r\n/g, '\n');
-  let headings = [...text.matchAll(/^[ \t#*]*(?:视频|Video)[ \t]*([12１２])[ \t]*[｜|:：·—-][^\n]*$/gim)]
-    .filter(heading => /上半段|下半段/.test(heading[0]) || !/(?:\d+(?:\.\d+)?\s*(?:词|words?\b)|口播|朗读|word count|预算)/i.test(heading[0]));
+  let headings = [...text.matchAll(/^[ \t#*_]*(?:【|\[)?(?:视频|Video)[ \t]*([12１２一二])[ \t]*[｜|:：·—–-]([^\n]*)$/gim)]
+    .filter(isSectionHeading);
   let bodyBoundaries = false;
   if (!headings.length) {
     bodyBoundaries = true;
@@ -13,20 +26,23 @@ function splitDualPrompts(value) {
       .map(match => {
         // Include a separate task label / code-block language line in the
         // boundary so it cannot leak into the end of the preceding prompt.
-        const prefix = text.slice(0, match.index).match(/(?:[ \t]*(?:```(?:text|plaintext)|Plaintext|text|复制代码|Copy code|【生成任务】|(?:\d+[.、][ \t]*)?生成任务[：:])[ \t]*\n|[ \t]*\n)+$/i);
+        const prefix = text.slice(0, match.index).match(/(?:[ \t]*(?:```(?:text|plaintext|markdown)|Plaintext|Markdown|text|复制代码|Copy code|【生成任务】|(?:\d+[.、][ \t]*)?生成任务[：:])[ \t]*\n|[ \t]*\n)+$/i);
         return { index: match.index - (prefix?.[0].length || 0), 0:'', 1:match[1] === '上半段' ? '1' : '2' };
       });
   }
-  if (headings.length !== 2 || !/[1１]/.test(headings[0][1]) || !/[2２]/.test(headings[1][1])) {
-    throw Error('双段模式需要且只能有一组「视频1｜上半段」和「视频2｜下半段」，请检查 Gem 输出后重新生成提示词');
+  if (headings.length !== 2) {
+    throw promptError('DUAL_PROMPT_STRUCTURE', `双段提示词解析失败：识别到 ${headings.length} 个分段，应为上下两段。请在任务详情检查原始输出，保留一组「视频1｜上半段」和「视频2｜下半段」后继续；无需重做已有视频`);
+  }
+  if (!/[1１一]/.test(headings[0][1]) || !/[2２二]/.test(headings[1][1])) {
+    throw promptError('DUAL_PROMPT_ORDER', '双段提示词顺序错误或编号重复：应先视频1（上半段），再视频2（下半段）；已阻止提交');
   }
   return headings.map((heading, index) => {
     let section = text.slice(heading.index + heading[0].length, headings[index + 1]?.index ?? text.length);
-    section = section.split(/\n[ \t#*]*拼接说明[^\n]*(?:\n|$)/)[0].trim();
+    section = section.split(/\n[ \t#*_]*(?:【|\[)?拼接说明[^\n]*(?:\n|$)/)[0].trim();
     const fenced = section.match(/```[^\n]*\n([\s\S]*?)```/);
-    const prompt = (fenced ? fenced[1] : section).replace(/^(?:复制代码|Copy code|plaintext|text)\s*\n/i, '').trim();
-    if (prompt.length < 300 || !/\b15(?:\.0+)?\s*(?:秒|s\b)/i.test(prompt)) throw Error(`第 ${index + 1} 段缺少完整的 15 秒提示词，已阻止提交`);
-    if (!bodyBoundaries && /上半段|下半段/.test(heading[0]) && !heading[0].includes(index === 0 ? '上半段' : '下半段')) throw Error('双段标题与上下半段顺序不一致，已阻止提交');
+    const prompt = (fenced ? fenced[1] : section).replace(/^(?:(?:复制代码|Copy code|plaintext|markdown|text)[ \t]*\n)+/i, '').trim();
+    if (prompt.length < 300 || !/\b15(?:\.0+)?\s*(?:秒|s\b)/i.test(prompt)) throw promptError('DUAL_PROMPT_INCOMPLETE', `第 ${index + 1} 段缺少完整的 15 秒提示词（正文 ${prompt.length} 字符），已阻止提交；请检查该段是否被截断或缺少时长说明`);
+    if (!bodyBoundaries && /上半段|下半段/.test(heading[0]) && !heading[0].includes(index === 0 ? '上半段' : '下半段')) throw promptError('DUAL_PROMPT_ORDER', '双段标题与上下半段顺序不一致，已阻止提交');
     return prompt;
   });
 }

@@ -608,7 +608,7 @@ class QueueEngine {
     if (this.activeUploads.has(task.id)) return;
     this.activeUploads.add(task.id);
     const account = await this.accounts.availableAccount(task.accountId);
-    if (!account) {
+    if (!account || account.enabled === false) {
       task.status = 'upload_wait';
       task.nextUploadRetryAt = Date.now() + 30_000;
       task.errorMessage = '没有已登录且可用的 TikTok 账号';
@@ -907,6 +907,7 @@ class QueueEngine {
 
   async submitTask(task, account) {
     if (this.store.isFlowcutTaskCleared?.(task.flowcutTaskId)) return;
+    if (account.enabled === false) return;
     this.assignTaskAccount(task, account, false);
     const selectedModel = this.accounts.effectiveModel ? this.accounts.effectiveModel(account) : requireModel(account.preferredModel);
     if (!selectedModel) {

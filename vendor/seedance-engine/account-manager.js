@@ -176,9 +176,9 @@ class AccountManager {
 
   ensureActiveAccount() {
     const current = this.store.getAccount(this.store.settings.activeAccountId);
-    if (current?.enabled !== false) return current;
+    if (current && current.enabled !== false) return current;
     const first = this.store.accounts.find((account) => account.enabled !== false);
-    if (first) this.store.updateSettings({ activeAccountId: first.id });
+    this.store.updateSettings({ activeAccountId: first?.id || '' });
     return first || null;
   }
 

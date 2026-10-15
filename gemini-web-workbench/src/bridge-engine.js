@@ -180,6 +180,7 @@ class BridgeEngine {
           id: account.id,
           name: account.name,
           authenticated: Boolean(account.authenticated),
+          enabled: account.enabled !== false,
           busy: this.active.has(account.id),
         })),
       }),
@@ -192,7 +193,7 @@ class BridgeEngine {
     try {
       const key = this.store.state.settings.bridgeKey;
       if (!key) throw new Error("尚未读取到本机 Bridge Key");
-      const accounts = this.getAuthenticatedAccounts();
+      const accounts = this.getAuthenticatedAccounts().filter((account) => account.enabled !== false);
       const planLimit = Math.max(1, Number(this.getMaxConcurrent() || 1));
       const effectiveLimit = Math.min(planLimit, accounts.length);
       await this.heartbeat(this.store.state.accounts, effectiveLimit);
@@ -203,7 +204,7 @@ class BridgeEngine {
       if ((this.store.state.pendingResults || []).length) return;
 
       if (!this.store.state.settings.queueRunning) return;
-      const availableSlots = Math.max(0, effectiveLimit - this.active.size);
+      const availableSlots = Math.max(0, planLimit - this.active.size);
       const idle = accounts
         .filter(
           (account) =>
@@ -238,6 +239,11 @@ class BridgeEngine {
           continue;
         }
         const [account] = remaining.splice(index, 1);
+        // An account can be paused while the claim request is in flight.
+        if (account.enabled === false || !this.store.state.settings.queueRunning) {
+          await this.report(job.id, "release", { kind: job.kind, error: "账号或队列已暂停，任务已退回队列" });
+          continue;
+        }
         this.active.set(account.id, {
           taskId: job.id,
           accountId: account.id,

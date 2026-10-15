@@ -417,6 +417,7 @@ export async function POST(request: Request) {
         id: string;
         name: string;
         authenticated: boolean;
+        enabled?: boolean;
         busy?: boolean;
       }>;
     };
@@ -437,10 +438,10 @@ export async function POST(request: Request) {
         })),
         maxConcurrent: Number(
           body.maxConcurrent ??
-            accounts.filter((account) => account.authenticated).length
+            accounts.filter((account) => account.authenticated && account.enabled !== false).length
         ),
         defaultAccountId: body.defaultAccountId || "",
-        authenticated: accounts.some((account) => account.authenticated),
+        authenticated: accounts.some((account) => account.authenticated && account.enabled !== false),
         accounts,
       };
       await db

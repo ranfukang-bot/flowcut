@@ -23,6 +23,8 @@ const desktopApi = {
   hideLogin: (id) => ipcRenderer.invoke("account:hide-login", id),
   checkAccount: (id) => ipcRenderer.invoke("account:check", id),
   removeAccount: (id) => ipcRenderer.invoke("account:remove", id),
+  renameAccount: (id, name) => ipcRenderer.invoke("account:rename", { id, name }),
+  setAccountEnabled: (id, enabled) => ipcRenderer.invoke("account:set-enabled", { id, enabled }),
   setDefaultAccount: (id) => ipcRenderer.invoke("account:set-default", id),
   setQueueRunning: (running) =>
     ipcRenderer.invoke("workbench:set-queue-running", running),
@@ -38,6 +40,8 @@ const desktopApi = {
     ipcRenderer.invoke("seedance:account-save-login", id),
   seedanceRemoveAccount: (id) =>
     ipcRenderer.invoke("seedance:account-remove", id),
+  seedanceRenameAccount: (id, name) => ipcRenderer.invoke("seedance:account-rename", { id, name }),
+  seedanceSetAccountEnabled: (id, enabled) => ipcRenderer.invoke("seedance:account-set-enabled", { id, enabled }),
   seedanceSetRunning: (running) =>
     ipcRenderer.invoke("seedance:set-running", running),
   seedanceChooseDownloadDirectory: () =>

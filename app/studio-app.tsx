@@ -187,6 +187,7 @@ type Workspace = {
         id: string;
         name: string;
         authenticated: boolean;
+        enabled?: boolean;
         busy?: boolean;
       }>;
     };
@@ -413,7 +414,7 @@ type FlowCutDesktopBridge = {
   seedanceSetPreferredModel?: (id: string, model: string) => Promise<SeedanceDesktopState>;
   seedanceDecideFastFallback?: (id: string, choice: string, date: string) => Promise<SeedanceDesktopState>;
   seedanceReconnectLogin?: (id: string) => Promise<SeedanceDesktopState>;
-  getState?: () => Promise<{ update?: UpdateState }>;
+  getState?: () => Promise<{ update?: UpdateState; accounts?: NonNullable<Workspace["integrations"]["geminiRuntime"]>["accounts"]; defaultAccountId?: string; bridge?: { activeJobs: Array<{ accountId: string }> } }>;
   updateState?: () => Promise<UpdateState>;
   chooseArchiveDirectory?: () => Promise<string | null>;
   setQueueRunning?: (running: boolean) => Promise<unknown>;
@@ -432,12 +433,16 @@ type FlowCutDesktopBridge = {
   hideLogin: (id: string) => Promise<unknown>;
   checkAccount: (id: string) => Promise<unknown>;
   removeAccount: (id: string) => Promise<unknown>;
+  renameAccount: (id: string, name: string) => Promise<unknown>;
+  setAccountEnabled: (id: string, enabled: boolean) => Promise<unknown>;
   setDefaultAccount: (id: string) => Promise<unknown>;
   seedanceState: () => Promise<SeedanceDesktopState | null>;
   seedanceAddAccount: (name: string) => Promise<SeedanceDesktopState>;
   seedanceOpenLogin: (id: string) => Promise<unknown>;
   seedanceSaveLogin: (id: string) => Promise<SeedanceDesktopState>;
   seedanceRemoveAccount: (id: string) => Promise<SeedanceDesktopState>;
+  seedanceRenameAccount: (id: string, name: string) => Promise<SeedanceDesktopState>;
+  seedanceSetAccountEnabled: (id: string, enabled: boolean) => Promise<SeedanceDesktopState>;
   seedanceSetRunning: (running: boolean) => Promise<SeedanceDesktopState>;
   seedanceChooseDownloadDirectory: () => Promise<SeedanceDesktopState>;
   seedanceOpenDownloadDirectory: () => Promise<unknown>;
@@ -1046,7 +1051,7 @@ export function StudioApp() {
         {page === "scripts" && (
           <ScriptPipelinePage
             tasks={data.scriptPipelineTasks}
-            geminiAccounts={data.integrations.geminiRuntime?.accounts || []}
+            geminiAccounts={(data.integrations.geminiRuntime?.accounts || []).filter(account => account.enabled !== false)}
             defaultGeminiAccountId={data.integrations.geminiRuntime?.defaultAccountId || ""}
             integrations={data.integrations}
             onReload={reload}
@@ -1057,7 +1062,7 @@ export function StudioApp() {
           <ReferenceRemixPage
             tasks={data.referenceRemixTasks}
             settings={data.referenceRemixSettings}
-            geminiAccounts={data.integrations.geminiRuntime?.accounts || []}
+            geminiAccounts={(data.integrations.geminiRuntime?.accounts || []).filter(account => account.enabled !== false)}
             defaultGeminiAccountId={
               data.integrations.geminiRuntime?.defaultAccountId || ""
             }
@@ -2914,6 +2919,29 @@ function CalendarPage({
   );
 }
 
+function AccountNameEditor({ name, disabled, onSave }: {
+  name: string; disabled: boolean; onSave: (name: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name);
+  const [error, setError] = useState("");
+  async function save() {
+    const value = draft.trim();
+    if (!value) { setError("账号名称不能为空"); return; }
+    try { await onSave(value); setEditing(false); setError(""); }
+    catch (error) { setError(error instanceof Error ? error.message : "名称保存失败"); }
+  }
+  return <span className="account-name-editor">
+    {editing ? <>
+      <input aria-label="账号名称" value={draft} autoFocus disabled={disabled} onChange={event => setDraft(event.target.value)}
+        onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); if (!disabled) void save(); } else if (event.key === "Escape") { event.preventDefault(); setEditing(false); } }} />
+      <button type="button" disabled={disabled} onClick={() => void save()}>保存名称</button>
+      <button type="button" disabled={disabled} onClick={() => setEditing(false)}>取消</button>
+      {error && <small role="alert">{error}</small>}
+    </> : <><b>{name}</b><button type="button" disabled={disabled} onClick={() => { setDraft(name); setError(""); setEditing(true); }}>编辑名称</button></>}
+  </span>;
+}
+
 function SettingsPage({
   integrations,
   onUpdated,
@@ -2958,6 +2986,26 @@ function SettingsPage({
   const [message, setMessage] = useState("");
   const [accountName, setAccountName] = useState("");
   const [seedanceAccountName, setSeedanceAccountName] = useState("");
+
+  async function updateManagedAccount(kind: "gemini" | "seedance", id: string, change: { name: string } | { enabled: boolean }) {
+    const desktop = desktopBridge();
+    if (!desktop) throw new Error("请在 FlowCut 桌面程序中管理账号");
+    setBusy(`account-update-${id}`);
+    try {
+      if (kind === "gemini") {
+        if ("name" in change) await desktop.renameAccount(id, change.name);
+        else await desktop.setAccountEnabled(id, change.enabled);
+      } else {
+        setSeedanceDesktop("name" in change ? await desktop.seedanceRenameAccount(id, change.name) : await desktop.seedanceSetAccountEnabled(id, change.enabled));
+      }
+      await load();
+      await onUpdated();
+      setMessage("name" in change ? "账号名称已保存" : change.enabled ? "账号已恢复使用，后续任务可分配到此账号" : "账号已暂停使用，登录状态保留；正在执行的任务继续收尾");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "账号更新失败");
+      throw error;
+    } finally { setBusy(""); }
+  }
   const [seedanceDesktop, setSeedanceDesktop] =
     useState<SeedanceDesktopState | null>(null);
   useEffect(() => desktopBridge()?.onState?.(state => {
@@ -2974,6 +3022,14 @@ function SettingsPage({
     const result = (await api("/api/settings")) as unknown as NonNullable<
       typeof settings
     >;
+    const desktop = desktopBridge();
+    const local = await desktop?.getState?.();
+    if (local?.accounts && result.gemini.runtime) {
+      result.gemini.runtime = { ...result.gemini.runtime,
+        accounts: local.accounts.map(account => ({ ...account, busy: local.bridge?.activeJobs.some(job => job.accountId === account.id) })),
+        defaultAccountId: local.defaultAccountId,
+      };
+    }
     setSettings(result);
     setGeminiMode(result.gemini.mode);
     setSeedanceMode(result.seedance.mode);
@@ -2985,7 +3041,6 @@ function SettingsPage({
           result.seedance.runtime?.queueRunning
       )
     );
-    const desktop = desktopBridge();
     if (desktop?.seedanceState) {
       setSeedanceDesktop(await desktop.seedanceState());
     }
@@ -3342,15 +3397,15 @@ function SettingsPage({
                 <div className="gemini-account-list">
                   {(settings.gemini.runtime?.accounts || []).map((account) => (
                     <article
-                      className={account.authenticated ? "authenticated" : ""}
+                      className={account.enabled === false ? "account-paused" : account.authenticated ? "authenticated" : ""}
                       key={account.id}
                     >
                       <div>
-                        <b>{account.name}</b>
+                        <AccountNameEditor name={account.name} disabled={Boolean(busy)} onSave={name => updateManagedAccount("gemini", account.id, { name })} />
                         {settings.gemini.runtime?.defaultAccountId ===
                           account.id && <em>默认</em>}
                         <small>
-                          {account.authenticated
+                          {account.enabled === false ? `已暂停使用 · ${account.busy ? "当前任务完成后停止分配" : account.authenticated ? "登录状态保留" : "等待登录"}` : account.authenticated
                             ? account.busy
                               ? "已登录 · 正在生成"
                               : "已登录 · 空闲"
@@ -3358,6 +3413,9 @@ function SettingsPage({
                         </small>
                       </div>
                       <div>
+                        <button type="button" disabled={Boolean(busy)} onClick={() => void updateManagedAccount("gemini", account.id, { enabled: account.enabled === false }).catch(() => {})}>
+                          {account.enabled === false ? "恢复使用" : "暂停使用"}
+                        </button>
                         <button
                           type="button"
                           onClick={() => desktopAccountAction("open", account.id)}
@@ -3380,7 +3438,7 @@ function SettingsPage({
                         >
                           检查
                         </button>
-                        {settings.gemini.runtime?.defaultAccountId !==
+                        {account.enabled !== false && settings.gemini.runtime?.defaultAccountId !==
                           account.id && (
                           <button
                             type="button"
@@ -3625,12 +3683,13 @@ function SettingsPage({
               <div className="gemini-account-list">
                 {(seedanceDesktop?.accountState.items || []).map((account) => (
                   <article
-                    className={account.authenticated ? "authenticated" : ""}
+                    className={account.enabled === false ? "account-paused" : account.authenticated ? "authenticated" : ""}
                     key={account.id}
                   >
                     <div>
-                      <b>{account.name}</b>
+                      <AccountNameEditor name={account.name} disabled={Boolean(busy)} onSave={name => updateManagedAccount("seedance", account.id, { name })} />
                       {account.active && <em>当前</em>}
+                      {account.enabled === false && <small>已暂停使用 · 登录状态保留，已提交的视频继续处理</small>}
                       <label>首选模型
                         <select aria-label={`${account.name} 首选模型`} value={account.preferredModel || "2000012"} disabled={Boolean(busy)} onChange={async event => {
                           const model = event.target.value;
@@ -3650,7 +3709,7 @@ function SettingsPage({
                       <small>{account.effectiveModel === "2000004" ? "当前使用：Seedance 2.0" : account.effectiveModel === "2000012" ? "当前使用：Seedance 2.0 Fast" : "当前模型等待额度恢复或手动选择"}</small>
                       {account.loginNetworkError && <small className="form-error">{account.loginNetworkError}</small>}
                       <small>Fast：{account.fastExhaustedToday ? "今日已上限" : "今日尚未检测到上限"} · 2.0：{account.standardExhaustedToday ? "今日已上限" : "今日尚未检测到上限"}</small>
-                      {seedanceDesktop?.accountState.allFastExhausted && account.fastExhaustedToday && account.preferredModel !== "2000004" && account.fallbackDecision !== "standard" && <SeedanceQuotaChoice account={account} onUpdated={setSeedanceDesktop} onError={setMessage} />}
+                      {account.enabled !== false && seedanceDesktop?.accountState.allFastExhausted && account.fastExhaustedToday && account.preferredModel !== "2000004" && account.fallbackDecision !== "standard" && <SeedanceQuotaChoice account={account} onUpdated={setSeedanceDesktop} onError={setMessage} />}
                       <small>
                         {account.authenticated
                           ? account.exhaustedToday
@@ -3660,6 +3719,9 @@ function SettingsPage({
                       </small>
                     </div>
                     <div>
+                      <button type="button" disabled={Boolean(busy)} onClick={() => void updateManagedAccount("seedance", account.id, { enabled: account.enabled === false }).catch(() => {})}>
+                        {account.enabled === false ? "恢复使用" : "暂停使用"}
+                      </button>
                       <button
                         type="button"
                         onClick={() =>

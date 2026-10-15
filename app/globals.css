@@ -1072,6 +1072,10 @@ select, input, textarea { border: 1px solid #d7d7d1; background: #fff; color: va
 .gemini-account-list article > div:last-child { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 5px; }
 .gemini-account-list article button { border: 1px solid #d6d8d1; border-radius: 7px; background: white; padding: 6px 8px; color: #555a61; font-size: 8px; cursor: pointer; }
 .gemini-account-list article button:hover { border-color: #aeb3a7; }
+.gemini-account-list article.account-paused { border-color: #d9d9d0; background: #f1f1ed; }
+.account-name-editor { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; width: 100%; }
+.account-name-editor input { min-width: 100px; width: 100%; max-width: 280px; }
+.gemini-account-list article .account-name-editor small { color: #a5483d; }
 .gemini-account-list article button.danger-text { color: #a5483d; }
 .settings-message { margin: 14px 0 0; padding: 10px 12px; border-radius: 9px; background: #eef8ff; color: #226b82; font-size: 9px; }
 .settings-security { margin-top: 16px; background: #fff8e7; border: 1px solid #eadab2; color: #735b23; border-radius: 12px; padding: 14px 16px; font-size: 9px; line-height: 1.65; }

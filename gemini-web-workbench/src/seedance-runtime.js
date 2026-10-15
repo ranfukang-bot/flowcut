@@ -492,6 +492,20 @@ class SeedanceRuntime {
     return this.state();
   }
 
+  renameAccount(id, name) {
+    this.accountManager.renameAccount(id, name);
+    this.emit();
+    return this.state();
+  }
+
+  setAccountEnabled(id, enabled) {
+    const account = this.accountManager.setEnabled(id, enabled);
+    this.store.log(`账号“${account.name}”已${account.enabled ? "恢复使用" : "暂停使用，已提交的视频继续处理"}`);
+    this.emit();
+    void this.engine.tick();
+    return this.state();
+  }
+
   async setRunning(running) {
     await this.engine.setRunning(Boolean(running));
     return this.state();

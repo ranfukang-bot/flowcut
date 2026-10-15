@@ -1238,6 +1238,8 @@ function bindIpc() {
   ipcMain.handle("seedance:account-remove", (_event, id) => {
     return seedanceRuntime.removeAccount(id);
   });
+  ipcMain.handle("seedance:account-rename", (_event, input) => seedanceRuntime.renameAccount(input.id, input.name));
+  ipcMain.handle("seedance:account-set-enabled", (_event, input) => seedanceRuntime.setAccountEnabled(input.id, input.enabled));
   ipcMain.handle("seedance:set-running", (_event, running) => {
     return seedanceRuntime.setRunning(running);
   });
@@ -1274,8 +1276,24 @@ function bindIpc() {
   });
   ipcMain.handle("account:set-default", (_event, id) => {
     if (!accountById(id)) throw new Error("账号不存在");
+    if (accountById(id).enabled === false) throw new Error("请先恢复使用该账号");
     store.state.defaultAccountId = id;
     store.save();
+    broadcast();
+    tickBridgeSoon();
+    return publicState();
+  });
+  ipcMain.handle("account:rename", (_event, input) => {
+    const account = store.renameAccount(input.id, input.name);
+    const active = bridge?.active.get(account.id);
+    if (active) active.accountName = account.name;
+    broadcast();
+    tickBridgeSoon();
+    return publicState();
+  });
+  ipcMain.handle("account:set-enabled", (_event, input) => {
+    const account = store.setAccountEnabled(input.id, input.enabled);
+    store.log(`账号“${account.name}”已${account.enabled ? "恢复使用" : "暂停使用，正在执行的任务会收尾"}`);
     broadcast();
     tickBridgeSoon();
     return publicState();
@@ -1359,7 +1377,7 @@ async function activateWorkbench() {
     bridge = new BridgeEngine({
       store,
       getAuthenticatedAccounts: () =>
-        store.state.accounts.filter((account) => account.authenticated && !gemSetupAccounts.has(account.id)),
+        store.state.accounts.filter((account) => account.authenticated && account.enabled !== false && !gemSetupAccounts.has(account.id)),
       getMaxConcurrent: () => store.state.settings.maxConcurrent,
       getDesktopToken: () => desktopRuntimeToken,
       version: appVersion,

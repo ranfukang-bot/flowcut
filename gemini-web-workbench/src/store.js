@@ -124,6 +124,7 @@ class Store {
       name: String(name || `Gemini 账号 ${this.state.accounts.length + 1}`),
       partition: `persist:flowcut-gemini-${id}`,
       authenticated: false,
+      enabled: true,
       createdAt: new Date().toISOString(),
       lastCheckedAt: "",
       error: "",
@@ -138,6 +139,25 @@ class Store {
     const account = this.state.accounts.find((item) => item.id === id);
     if (!account) return null;
     Object.assign(account, patch);
+    this.save();
+    return account;
+  }
+
+  renameAccount(id, name) {
+    const account = this.state.accounts.find((item) => item.id === id);
+    if (!account) throw new Error("账号不存在");
+    const cleanName = String(name || "").trim();
+    if (!cleanName) throw new Error("账号名称不能为空");
+    return this.updateAccount(id, { name: cleanName });
+  }
+
+  setAccountEnabled(id, enabled) {
+    const account = this.state.accounts.find((item) => item.id === id);
+    if (!account) throw new Error("账号不存在");
+    account.enabled = Boolean(enabled);
+    if (!this.state.defaultAccountId || (this.state.defaultAccountId === id && !account.enabled)) {
+      this.state.defaultAccountId = this.state.accounts.find((item) => item.enabled !== false)?.id || "";
+    }
     this.save();
     return account;
   }

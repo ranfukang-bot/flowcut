@@ -62,3 +62,4 @@ Pop-Location
 6. 不升级 Electron 大版本。依赖调整仅限当前任务明确授权的范围；本轮限 T3 列出的安全更新，不使用 `npm audit fix --force`。
 7. 每次发版同步更新 `gemini-web-workbench/package.json`、对应锁文件、README 当前版本及 `CHANGELOG.md`。
 8. 保留已有用户修改。普通代码、构建输出和临时测试资料分离，禁止提交凭据、Cookie、真实数据库、成片或日志。
+9. 新增桌面 IPC 必须通过 `bindIpc` 中的 `handle` 注册。Gemini 结果必须匹配当前 pending job 的 webContents；导航、令牌和窗口来源边界见 `docs/desktop-security.md`。

@@ -7,7 +7,7 @@ const desktop = path.resolve(__dirname, '..');
 const output = fs.mkdtempSync(path.join(os.tmpdir(), 'flowcut-gem-regression-'));
 
 (async () => {
-  const cases = process.argv.includes('--model-ui') ? [['gemini-model-selection-electron', 2]] : process.argv.includes('--account-ui') ? [['account-management-ui-electron', 1]] : process.argv.includes('--product-ui') ? [['product-library-ui-electron', 1]] : process.argv.includes('--review-ui') ? [['review-delete-ui-electron', 1]] : process.argv.includes('--quota-ui') ? [['seedance-quota-ui-electron', 1]] : [['gem-editor-electron', 4], ['gem-recovery-electron', 3]];
+  const cases = process.argv.includes('--security-ui') ? [['desktop-security-electron', 3]] : process.argv.includes('--model-ui') ? [['gemini-model-selection-electron', 2]] : process.argv.includes('--account-ui') ? [['account-management-ui-electron', 1]] : process.argv.includes('--product-ui') ? [['product-library-ui-electron', 1]] : process.argv.includes('--review-ui') ? [['review-delete-ui-electron', 1]] : process.argv.includes('--quota-ui') ? [['seedance-quota-ui-electron', 1]] : [['gem-editor-electron', 4], ['gem-recovery-electron', 3]];
   for (const [name, expectedResults] of cases) {
     const result = path.join(output, `${name}.jsonl`);
     const child = spawn(require('electron'), [
@@ -20,7 +20,7 @@ const output = fs.mkdtempSync(path.join(os.tmpdir(), 'flowcut-gem-regression-'))
       child.once('error', error => { clearTimeout(timer); reject(error); });
       child.once('exit', code => { clearTimeout(timer); resolve(code); });
     });
-    assert.equal(code, 0, name + ' exit code');
+    assert.equal(code, 0, name + ' exit code; evidence: ' + result + (fs.existsSync(result) ? '\n' + fs.readFileSync(result, 'utf8') : ''));
     const rows = fs.readFileSync(result, 'utf8').trim().split('\n').map(JSON.parse);
     assert.equal(rows.length, expectedResults);
     assert.ok(rows.every(row => row.pass), JSON.stringify(rows));

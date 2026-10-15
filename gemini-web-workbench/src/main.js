@@ -9,6 +9,7 @@ const {
 } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
+const { pathToFileURL } = require('node:url');
 const { createHash, randomBytes, randomUUID } = require("node:crypto");
 const { Store } = require("./store");
 const { SavedGems, createGemDriver, cleanGemUrl } = require("./saved-gems");
@@ -28,6 +29,7 @@ const {
 } = require("./gemini-worker-activation");
 const { SeedanceRuntime } = require("./seedance-runtime");
 const { protectLoginNavigation } = require('./web-login-navigation');
+const { requireLocalSiteUrl, desktopRequestHeaders, protectMainNavigation, protectGeminiNavigation, securedIpcHandle, isIpcSourceAllowed, isJobResultSourceAllowed } = require('./desktop-security');
 const { PublisherRuntime } = require("./publisher-runtime");
 const { VideoReview } = require("./video-review");
 const { startRuntimeLogMaintenance } = require("./runtime-log-maintenance");
@@ -341,6 +343,17 @@ function flowcutWindowIcon() {
     : path.join(__dirname, "..", "build", "flowcut-icon.ico");
 }
 
+function navigationContext() {
+  return { mainId: mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.id : undefined,
+    siteUrl: store?.state?.settings?.flowcutUrl || 'http://127.0.0.1:4173', bootUrl: pathToFileURL(path.join(__dirname, 'boot.html')).href,
+    publisherOrigin: publisherRuntime?.origin || `http://127.0.0.1:${smokeProfile ? 18777 : 18776}` };
+}
+
+function ipcContext() {
+  return { mainId: mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.id : undefined,
+    geminiIds: [...new Set([...pendingJobs.values()].map(pending => pending.contentsId).concat([...uploadMonitors.keys()]))] };
+}
+
 function createMainWindow() {
   mainWindow = new BrowserWindow({
     show: !smokeProfile,
@@ -355,14 +368,14 @@ function createMainWindow() {
       preload: path.join(__dirname, "preload-ui.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
+  protectMainNavigation(mainWindow.webContents, navigationContext, url => shell.openExternal(url));
   mainWindow.webContents.session.webRequest.onBeforeSendHeaders(
-    { urls: ["http://127.0.0.1/*", "http://localhost/*"] },
+    { urls: ['<all_urls>'] },
     (details, callback) => {
-      details.requestHeaders["x-flowcut-desktop-token"] = desktopRuntimeToken;
-      callback({ requestHeaders: details.requestHeaders });
+      callback({ requestHeaders: desktopRequestHeaders(details, navigationContext(), desktopRuntimeToken) });
     },
   );
   mainWindow.on("focus", () => {
@@ -420,8 +433,10 @@ function flowcutSiteRoot() {
 }
 
 async function siteReady(url) {
+  requireLocalSiteUrl(url);
   try {
     const response = await fetch(`${url}/api/settings`, {
+      redirect: 'error',
       headers: desktopRuntimeHeaders(),
       signal: AbortSignal.timeout(2500),
     });
@@ -435,9 +450,11 @@ async function siteReady(url) {
 }
 
 async function syncSeedanceBridgeKey(siteUrl) {
+  requireLocalSiteUrl(siteUrl);
   const key = String(store.state.settings.bridgeKey || "").trim();
   if (!key) return false;
   const response = await fetch(`${siteUrl.replace(/\/+$/, "")}/api/settings`, {
+    redirect: 'error',
     method: "PUT",
     headers: desktopRuntimeHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
@@ -507,21 +524,18 @@ function startLocalSiteHealthMonitor() {
 }
 
 async function startLocalFlowcut() {
+  const siteUrl = store.state.settings.flowcutUrl.replace(/\/+$/, "");
+  const parsedUrl = requireLocalSiteUrl(siteUrl);
   if (!stopRuntimeLogMaintenance) {
     stopRuntimeLogMaintenance = startRuntimeLogMaintenance(app.getPath("userData"), {
       onError: (error, file) => console.warn(`运行日志清理暂时失败（${file}）：${error.message}`),
     });
   }
-  const siteUrl = store.state.settings.flowcutUrl.replace(/\/+$/, "");
   if (await siteReady(siteUrl)) {
     await syncSeedanceBridgeKey(siteUrl);
     return siteUrl;
   }
   flowcutProjectRoot = flowcutSiteRoot();
-  const parsedUrl = new URL(siteUrl);
-  if (!["127.0.0.1", "localhost"].includes(parsedUrl.hostname)) {
-    throw new Error("桌面完整版本只允许使用本机 FlowCut 地址");
-  }
   const runtimeDirectory = path.join(app.getPath("userData"), "site-runtime");
   const logDirectory = path.join(runtimeDirectory, "logs");
   fs.mkdirSync(logDirectory, { recursive: true });
@@ -658,15 +672,14 @@ function createGeminiWindow(account, visible) {
       preload: visible ? undefined : path.join(__dirname, "gemini-preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
       backgroundThrottling: false,
     },
   });
   window.webContents.setUserAgent(regularChromeUserAgent);
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    window.loadURL(url);
-    return { action: "deny" };
-  });
+  protectGeminiNavigation(window.webContents, url => {
+    if (!window.isDestroyed()) void window.loadURL(url).catch(() => store.log('Gemini 登录弹窗暂时无法打开，请在该账号窗口重试', 'warn'));
+  }, () => store.log('已阻止 Gemini 窗口中的非 Google 导航或外部应用协议', 'warn'));
   return window;
 }
 
@@ -885,14 +898,14 @@ async function runGeminiJob(account, job) {
           `globalThis.__flowcutRunGeminiJob(${JSON.stringify(pageJob)})`,
           true,
         );
-        completeGeminiJob(result);
+        completeGeminiJob(result, contentsId);
       } catch (error) {
         completeGeminiJob({
           requestId,
           ok: false,
           code: error?.code || "",
           error: error instanceof Error ? error.message : String(error),
-        });
+        }, contentsId);
       }
     })();
   } else {
@@ -935,7 +948,7 @@ async function smokeProtectedGeminiRuntime() {
       preload: path.join(__dirname, "gemini-preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
   const smokeContentsId = window.webContents.id;
@@ -1015,9 +1028,10 @@ async function selectJobModel(event) {
   return info;
 }
 
-function completeGeminiJob(result) {
+function completeGeminiJob(result, contentsId) {
   const pending = pendingJobs.get(result.requestId);
   if (!pending) return;
+  if (contentsId !== undefined && !isJobResultSourceAllowed(contentsId, pending.contentsId)) return;
   pendingJobs.delete(result.requestId);
   if (result.ok) {
     pending.resolve({
@@ -1040,12 +1054,14 @@ function completeGeminiJob(result) {
   pending.reject(error);
 }
 
-ipcMain.on("gemini:job-result", (_event, result) => {
-  completeGeminiJob(result);
+ipcMain.on("gemini:job-result", (event, result) => {
+  const pending = pendingJobs.get(result?.requestId);
+  if (!pending || !isJobResultSourceAllowed(event.sender.id, pending.contentsId)) return;
+  completeGeminiJob(result, event.sender.id);
 });
 
 ipcMain.on("gemini:job-stage", (event, result) => {
-  const pending = pendingJobs.get(result.requestId);
+  const pending = pendingJobs.get(result?.requestId);
   if (!pending || event.sender.id !== pending.contentsId) return;
   pending.touch();
   if (result.stage === "progress") {
@@ -1072,6 +1088,7 @@ ipcMain.on("gemini:job-stage", (event, result) => {
 });
 
 ipcMain.on("gemini:job-diagnostic", (event, diagnostic) => {
+  if (!isIpcSourceAllowed('gemini:job-diagnostic', event.sender.id, ipcContext())) return;
   const active = [...pendingJobs.values()].find(job => job.contentsId === event.sender.id);
   const accountId = active?.accountId;
   const window = accountId ? workerWindows.get(accountId) : null;
@@ -1090,11 +1107,12 @@ ipcMain.on("gemini:job-diagnostic", (event, diagnostic) => {
 });
 
 function bindIpc() {
-  ipcMain.handle('gemini:select-model', async event => {
+  const handle = securedIpcHandle(ipcMain, ipcContext);
+  handle('gemini:select-model', async event => {
     try { return { ok: true, ...await selectJobModel(event) }; }
     catch (error) { return { ok: false, code: error.code || 'GEMINI_PAGE_ERROR', error: error.message }; }
   });
-  ipcMain.handle('workbench:save-gemini-model', (_event, input) => {
+  handle('workbench:save-gemini-model', (_event, input) => {
     const previous = store.state.settings.geminiModel;
     store.state.settings.geminiModel = normalizeModelSettings(input);
     if (!store.save()) { store.state.settings.geminiModel = previous; throw new Error('无法保存 Gemini 模型设置，请检查磁盘后重试'); }
@@ -1108,7 +1126,7 @@ function bindIpc() {
     broadcast(); tickBridgeSoon();
     return publicState();
   });
-  ipcMain.handle('workbench:read-gemini-models', async () => {
+  handle('workbench:read-gemini-models', async () => {
     if (store.state.settings.queueRunning || bridge?.active.size || bridge?.polling || gemSetupAccounts.size) throw new Error('请先暂停 Gemini 队列并等待正在执行的任务结束，再读取模型列表');
     const accounts = store.state.accounts.filter(account => account.authenticated);
     if (!accounts.length) throw new Error('请先登录 Gemini 账号');
@@ -1133,7 +1151,7 @@ function bindIpc() {
     broadcast();
     return publicState();
   });
-  ipcMain.handle('gemini:upload-status', (event, action) => {
+  handle('gemini:upload-status', (event, action) => {
     const monitor = uploadMonitors.get(event.sender.id);
     if (!monitor) return { available:false, observed:0, pending:0, completed:0, failed:[], quietMs:0 };
     return action === 'begin' ? monitor.begin() : monitor.status();
@@ -1152,17 +1170,17 @@ function bindIpc() {
       const data = await response.json(); if (!response.ok) throw Error(data.error || '审核状态读取失败'); return data;
     },
   });
-  ipcMain.handle('video-review:open', (_event, id) => videoReview.open(String(id || '')));
-  ipcMain.handle('video-review:folder', (_event, id) => videoReview.openFolder(String(id || '')));
-  ipcMain.handle('video-review:delete-pending', (_event, input) => videoReview.deletePending(String(input?.id || ''), input?.confirmed === true));
-  ipcMain.handle('video-review:approve', (_event, input) => videoReview.approve(String(input?.id || ''), input?.confirmed === true));
-  ipcMain.handle('video-review:discard', async (_event, input) => {
+  handle('video-review:open', (_event, id) => videoReview.open(String(id || '')));
+  handle('video-review:folder', (_event, id) => videoReview.openFolder(String(id || '')));
+  handle('video-review:delete-pending', (_event, input) => videoReview.deletePending(String(input?.id || ''), input?.confirmed === true));
+  handle('video-review:approve', (_event, input) => videoReview.approve(String(input?.id || ''), input?.confirmed === true));
+  handle('video-review:discard', async (_event, input) => {
     const id = String(input?.id || '');
     await videoReview.discard(id, String(input?.replacementId || ''));
     seedanceRuntime?.clearTasks([id]);
     return true;
   });
-  ipcMain.handle("gemini:upload-files-via-chooser", async (event, filePaths) => {
+  handle("gemini:upload-files-via-chooser", async (event, filePaths) => {
     const uploadRoot = path.resolve(
       app.getPath("temp"),
       "flowcut-gemini-uploads"
@@ -1201,7 +1219,7 @@ function bindIpc() {
       },
     });
   });
-  ipcMain.handle("gemini:replace-editor-text", async (event, text) => {
+  handle("gemini:replace-editor-text", async (event, text) => {
     const webContents = event.sender;
     return runWithActivatedGeminiWorker({
       workerWindow:BrowserWindow.fromWebContents(webContents),ownerWindow:mainWindow,
@@ -1223,7 +1241,7 @@ function bindIpc() {
       },
     });
   });
-  ipcMain.handle("gemini:send-key", async (event, requestedKey) => {
+  handle("gemini:send-key", async (event, requestedKey) => {
     return runWithActivatedGeminiWorker({
       workerWindow:BrowserWindow.fromWebContents(event.sender),ownerWindow:mainWindow,
       debugVisible:showGeminiWorkerForDebug,action:async()=>{
@@ -1234,12 +1252,12 @@ function bindIpc() {
       },
     });
   });
-  ipcMain.handle("workbench:get-state", () => publicState());
-  ipcMain.handle("gem:list-bindings", (_event, gem) => store.state.accounts.map(account => ({
+  handle("workbench:get-state", () => publicState());
+  handle("gem:list-bindings", (_event, gem) => store.state.accounts.map(account => ({
     id: account.id, name: account.name, authenticated: account.authenticated,
     binding: savedGems.get(account.id, gem),
   })));
-  ipcMain.handle("gem:configure", async (_event, { accountId, gem, url, action }) => {
+  handle("gem:configure", async (_event, { accountId, gem, url, action }) => {
     // Explicit setup must not steal a worker from an in-flight job or claim.
     if (store.state.settings.queueRunning || bridge?.active.size || bridge?.polling) {
       throw new Error("请先暂停 Gemini 队列并等正在执行的任务收尾，再设置网页 Gem");
@@ -1263,7 +1281,7 @@ function bindIpc() {
       return { url: resultUrl };
     } finally { gemSetupAccounts.delete(accountId); broadcast(); }
   });
-  ipcMain.handle("archive:choose-directory", async () => {
+  handle("archive:choose-directory", async () => {
     try {
       const result = await dialog.showOpenDialog(mainWindow, { title: "选择视频保存文件夹", properties: ["openDirectory", "createDirectory"] });
       if (result.canceled || !result.filePaths[0]) return null;
@@ -1272,7 +1290,7 @@ function bindIpc() {
       return folder;
     } finally { if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.focus(); mainWindow.webContents.focus(); } }
   });
-  ipcMain.handle("tasks:clear-all", async () => {
+  handle("tasks:clear-all", async () => {
     store.state.settings.queueRunning = false;
     store.save();
     await seedanceRuntime?.setRunning(false);
@@ -1299,39 +1317,39 @@ function bindIpc() {
     broadcast();
     return { deleted: result.deleted };
   });
-  ipcMain.handle("publisher:start", () => publisherRuntime.start());
-  ipcMain.handle("publisher:import", (_event, rows) => publisherRuntime.importProducts(rows));
-  ipcMain.handle("publisher:open-extension", () => publisherRuntime.openExtension());
-  ipcMain.handle("publisher:release", (_event, input) => publisherRuntime.release(String(input?.taskId || ""), input?.confirmed === true));
-  ipcMain.handle("update:get-state", () => publicState().update);
-  ipcMain.handle("seedance:get-state", () => seedanceRuntime?.state() || null);
-  ipcMain.handle('seedance:preferred-model', (_event, input) => seedanceRuntime.setPreferredModel(input.id, input.model));
-  ipcMain.handle('seedance:fast-fallback', (_event, input) => seedanceRuntime.decideFastFallback(input.id, input.choice, input.date));
-  ipcMain.handle('seedance:reconnect-login', (_event, id) => seedanceRuntime.reconnectLogin(id));
-  ipcMain.handle("seedance:account-add", async (_event, name) => {
+  handle("publisher:start", () => publisherRuntime.start());
+  handle("publisher:import", (_event, rows) => publisherRuntime.importProducts(rows));
+  handle("publisher:open-extension", () => publisherRuntime.openExtension());
+  handle("publisher:release", (_event, input) => publisherRuntime.release(String(input?.taskId || ""), input?.confirmed === true));
+  handle("update:get-state", () => publicState().update);
+  handle("seedance:get-state", () => seedanceRuntime?.state() || null);
+  handle('seedance:preferred-model', (_event, input) => seedanceRuntime.setPreferredModel(input.id, input.model));
+  handle('seedance:fast-fallback', (_event, input) => seedanceRuntime.decideFastFallback(input.id, input.choice, input.date));
+  handle('seedance:reconnect-login', (_event, id) => seedanceRuntime.reconnectLogin(id));
+  handle("seedance:account-add", async (_event, name) => {
     return seedanceRuntime.addAccount(String(name || "").trim());
   });
-  ipcMain.handle("seedance:account-open-login", (_event, id) => {
+  handle("seedance:account-open-login", (_event, id) => {
     return seedanceRuntime.showLogin(id);
   });
-  ipcMain.handle("seedance:account-save-login", (_event, id) => {
+  handle("seedance:account-save-login", (_event, id) => {
     return seedanceRuntime.saveLogin(id);
   });
-  ipcMain.handle("seedance:account-remove", (_event, id) => {
+  handle("seedance:account-remove", (_event, id) => {
     return seedanceRuntime.removeAccount(id);
   });
-  ipcMain.handle("seedance:account-rename", (_event, input) => seedanceRuntime.renameAccount(input.id, input.name));
-  ipcMain.handle("seedance:account-set-enabled", (_event, input) => seedanceRuntime.setAccountEnabled(input.id, input.enabled));
-  ipcMain.handle("seedance:set-running", (_event, running) => {
+  handle("seedance:account-rename", (_event, input) => seedanceRuntime.renameAccount(input.id, input.name));
+  handle("seedance:account-set-enabled", (_event, input) => seedanceRuntime.setAccountEnabled(input.id, input.enabled));
+  handle("seedance:set-running", (_event, running) => {
     return seedanceRuntime.setRunning(running);
   });
-  ipcMain.handle("seedance:choose-download-directory", () => {
+  handle("seedance:choose-download-directory", () => {
     return seedanceRuntime.chooseDownloadDirectory();
   });
-  ipcMain.handle("seedance:open-download-directory", () =>
+  handle("seedance:open-download-directory", () =>
     seedanceRuntime.openDownloadDirectory(),
   );
-  ipcMain.handle("account:add", async (_event, name) => {
+  handle("account:add", async (_event, name) => {
     const account = store.addAccount(String(name || "").trim());
     store.log(`已添加账号：${account.name}`);
     await openLoginWindow(account.id);
@@ -1339,16 +1357,16 @@ function bindIpc() {
     tickBridgeSoon();
     return publicState();
   });
-  ipcMain.handle("account:open-login", async (_event, id) => {
+  handle("account:open-login", async (_event, id) => {
     await openLoginWindow(id);
     return true;
   });
-  ipcMain.handle("account:hide-login", async (_event, id) => {
+  handle("account:hide-login", async (_event, id) => {
     await hideLoginWindow(id);
     tickBridgeSoon();
     return publicState();
   });
-  ipcMain.handle("account:check", async (_event, id) => {
+  handle("account:check", async (_event, id) => {
     const account = accountById(id);
     if (!account) throw new Error("账号不存在");
     await refreshAccount(account);
@@ -1356,7 +1374,7 @@ function bindIpc() {
     tickBridgeSoon();
     return publicState();
   });
-  ipcMain.handle("account:set-default", (_event, id) => {
+  handle("account:set-default", (_event, id) => {
     if (!accountById(id)) throw new Error("账号不存在");
     if (accountById(id).enabled === false) throw new Error("请先恢复使用该账号");
     store.state.defaultAccountId = id;
@@ -1365,7 +1383,7 @@ function bindIpc() {
     tickBridgeSoon();
     return publicState();
   });
-  ipcMain.handle("account:rename", (_event, input) => {
+  handle("account:rename", (_event, input) => {
     const account = store.renameAccount(input.id, input.name);
     const active = bridge?.active.get(account.id);
     if (active) active.accountName = account.name;
@@ -1373,14 +1391,14 @@ function bindIpc() {
     tickBridgeSoon();
     return publicState();
   });
-  ipcMain.handle("account:set-enabled", (_event, input) => {
+  handle("account:set-enabled", (_event, input) => {
     const account = store.setAccountEnabled(input.id, input.enabled);
     store.log(`账号“${account.name}”已${account.enabled ? "恢复使用" : "暂停使用，正在执行的任务会收尾"}`);
     broadcast();
     tickBridgeSoon();
     return publicState();
   });
-  ipcMain.handle("account:remove", async (_event, id) => {
+  handle("account:remove", async (_event, id) => {
     const account = accountById(id);
     if (!account) return publicState();
     loginWindows.get(id)?.destroy();
@@ -1394,14 +1412,15 @@ function bindIpc() {
     tickBridgeSoon();
     return publicState();
   });
-  ipcMain.handle("workbench:set-queue-running", (_event, running) => {
+  handle("workbench:set-queue-running", (_event, running) => {
     store.state.settings.queueRunning = Boolean(running);
     store.save();
     broadcast();
     tickBridgeSoon();
     return publicState();
   });
-  ipcMain.handle("workbench:save-settings", async (_event, settings) => {
+  handle("workbench:save-settings", async (_event, settings) => {
+    requireLocalSiteUrl(settings?.flowcutUrl || 'http://127.0.0.1:4173');
     store.state.settings.flowcutUrl = String(
       settings?.flowcutUrl || "http://127.0.0.1:4173"
     ).replace(/\/+$/, "");
@@ -1540,6 +1559,14 @@ app.whenReady().then(async () => {
     onOpen: () => { if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); } } });
   await activateWorkbench();
   if (process.env.FLOWCUT_DESKTOP_SMOKE_FILE) {
+    const sandbox = { main: mainWindow.webContents.getLastWebPreferences().sandbox,
+      seedance: [...(seedanceRuntime?.authWindows.values() || [])].map(window => window.webContents.getLastWebPreferences().sandbox) };
+    const geminiProbe = createGeminiWindow({ name: '隔离沙箱验证', partition: 'flowcut-sandbox-probe' }, false);
+    try {
+      await geminiProbe.loadURL('data:text/html,isolated-sandbox-probe');
+      sandbox.gemini = geminiProbe.webContents.getLastWebPreferences().sandbox;
+      sandbox.geminiBridge = await geminiProbe.webContents.executeJavaScript('typeof globalThis.flowcutGeminiNative?.selectModel === "function"', true);
+    } finally { geminiProbe.destroy(); }
     const geminiPageRuntimeReady = await smokeProtectedGeminiRuntime().catch(
       () => false,
     );
@@ -1579,6 +1606,7 @@ app.whenReady().then(async () => {
       JSON.stringify(
         {
           edition: "personal",
+          sandbox,
           clearAllVerified: clearAllResult?.deleted === 0,
           modelPolicyVerified,
           nativeProtocolBlocked,

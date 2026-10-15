@@ -1,5 +1,10 @@
 const protectedContents = new WeakSet();
 
+function navigationHostname(value) {
+  try { return new URL(value).hostname || '（无主机名）'; }
+  catch { return '（无主机名）'; }
+}
+
 function isWebNavigation(value) {
   try {
     const url = new URL(value);
@@ -17,14 +22,14 @@ function protectLoginNavigation(contents, popupOptions, onBlocked = () => {}) {
     const url = event.url || legacyUrl;
     if (isWebNavigation(url)) return;
     event.preventDefault();
-    onBlocked(); // Never record URLs carrying login tokens.
+    onBlocked(navigationHostname(url)); // Never pass paths, credentials or login tokens to logs.
   };
   contents.on('will-navigate', guard);
   contents.on('will-frame-navigate', guard);
   contents.on('will-redirect', guard);
   contents.setWindowOpenHandler(({ url }) => {
     if (!(url === 'about:blank' || /^https:\/\//i.test(url))) {
-      onBlocked();
+      onBlocked(navigationHostname(url));
       return { action: 'deny' };
     }
     return { action: 'allow', overrideBrowserWindowOptions: popupOptions };
@@ -34,4 +39,4 @@ function protectLoginNavigation(contents, popupOptions, onBlocked = () => {}) {
   });
 }
 
-module.exports = { isWebNavigation, protectLoginNavigation };
+module.exports = { isWebNavigation, protectLoginNavigation, navigationHostname };

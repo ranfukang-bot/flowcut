@@ -1,6 +1,6 @@
-const { protectLoginNavigation } = require('./web-login-navigation');
+const { protectLoginNavigation, navigationHostname } = require('./web-login-navigation');
 
-const GOOGLE_LOGIN_HOSTS = Object.freeze(['gemini.google.com', 'accounts.google.com', 'myaccount.google.com', 'consent.google.com', 'www.google.com']);
+const GOOGLE_LOGIN_HOSTS = Object.freeze(['gemini.google.com', 'accounts.google.com', 'myaccount.google.com', 'consent.google.com', 'www.google.com', 'accounts.youtube.com']);
 const MAIN_CHANNEL_PREFIXES = ['workbench:', 'account:', 'seedance:', 'video-review:', 'publisher:', 'tasks:', 'gem:', 'archive:', 'update:'];
 
 function requireLocalSiteUrl(value) {
@@ -77,12 +77,12 @@ function protectGeminiNavigation(contents, navigate, onBlocked = () => {}) {
       if (event.defaultPrevented) return;
       const { url, isMainFrame } = navigationInfo(event, legacyUrl, legacyFrame, name);
       if (!isMainFrame || isGeminiPopupAllowed(url)) return;
-      event.preventDefault(); onBlocked();
+      event.preventDefault(); onBlocked(navigationHostname(url));
     });
   }
   contents.setWindowOpenHandler(({ url }) => {
     if (isGeminiPopupAllowed(url)) navigate(url);
-    else onBlocked();
+    else onBlocked(navigationHostname(url));
     return { action: 'deny' };
   });
 }

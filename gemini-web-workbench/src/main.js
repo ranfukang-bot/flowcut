@@ -688,7 +688,7 @@ function createGeminiWindow(account, visible) {
   window.webContents.setUserAgent(regularChromeUserAgent);
   protectGeminiNavigation(window.webContents, url => {
     if (!window.isDestroyed()) void window.loadURL(url).catch(() => store.log('Gemini 登录弹窗暂时无法打开，请在该账号窗口重试', 'warn'));
-  }, () => store.log('已阻止 Gemini 窗口中的非 Google 导航或外部应用协议', 'warn'));
+  }, hostname => store.log(`已阻止 Gemini 窗口中的导航或外部应用协议，主机：${hostname}`, 'warn'));
   return window;
 }
 

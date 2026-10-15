@@ -39,6 +39,28 @@ test('Gemini popup allowlist accepts only necessary HTTPS Google hosts', () => {
   for (const url of ['https://gemini.google.com/gem/test', 'https://accounts.google.com/signin', 'https://myaccount.google.com/', 'https://consent.google.com/', 'https://www.google.com/']) assert.equal(isGeminiPopupAllowed(url), true);
   for (const url of ['http://accounts.google.com/', 'https://accounts.google.com.evil.test/', 'https://evil.test@accounts.google.com/', 'https://accounts.google.com:444/', 'about:blank', 'file:///C:/file', 'bytedance://login', 'https://example.test']) assert.equal(isGeminiPopupAllowed(url), false);
 });
+
+test('YouTube account login is allowed while arbitrary hosts and lookalikes remain blocked', () => {
+  assert.equal(isGeminiPopupAllowed('https://accounts.youtube.com/SetSID?token=fixture'), true);
+  for (const url of ['https://youtube.com/', 'https://www.youtube.com/', 'https://accounts.youtube.com.evil.test/', 'https://other.test/', 'http://accounts.youtube.com/']) assert.equal(isGeminiPopupAllowed(url), false);
+  const contents = new Contents(), navigated = [], hosts = [];
+  protectGeminiNavigation(contents, url => navigated.push(url), host => hosts.push(host));
+  assert.equal(navigation(contents, 'will-redirect', 'https://accounts.youtube.com/SetSID?token=fixture'), false);
+  contents.open({ url: 'https://accounts.youtube.com/SetSID?token=fixture' });
+  assert.equal(navigated.length, 1); assert.deepEqual(hosts, []);
+});
+
+test('Gemini block logging receives hostname only for redirects, popups and native protocols', () => {
+  const contents = new Contents(), hosts = [];
+  protectGeminiNavigation(contents, () => {}, host => hosts.push(host));
+  const secretUrl = 'https://username:secret-password@blocked.test/private-signin?token=secret-token#secret-fragment';
+  navigation(contents, 'will-redirect', secretUrl);
+  contents.open({ url: secretUrl });
+  navigation(contents, 'will-frame-navigate', 'custom-app://native-host/private?token=secret-token', false);
+  contents.open({ url: 'data:text/html,secret-token' });
+  assert.deepEqual(hosts, ['blocked.test', 'blocked.test', 'native-host', '（无主机名）']);
+  assert.ok(hosts.every(host => !/[/?#:@]/.test(host) && !host.includes('secret')));
+});
 test('all three main navigation events are guarded and new windows are always denied', () => {
   const contents = new Contents(), external = [];
   protectMainNavigation(contents, () => context, url => external.push(url));

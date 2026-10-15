@@ -4,7 +4,7 @@
 
 自动桌面令牌只附加到主窗口发往本机站点或发布管理的请求。其他窗口、其他端口、其他 origin 不附加；重定向携带的同名头会先移除。本机地址在探测、同步 Bridge Key 和设置保存之前验证，探测与同步不跟随重定向。
 
-Gemini 弹窗只接纳 HTTPS、默认端口且不带用户信息的以下主机，并在原窗口内打开：`gemini.google.com`、`accounts.google.com`、`myaccount.google.com`、`consent.google.com`、`www.google.com`。主页面重定向同样受此限制；所有框架继续使用登录导航保护器拦截外部应用协议。真实 Google 登录如新增必要主机，应先核实再修改清单，不能放宽为所有 Google 子域名或所有 HTTPS。
+Gemini 弹窗只接纳 HTTPS、默认端口且不带用户信息的以下主机，并在原窗口内打开：`gemini.google.com`、`accounts.google.com`、`myaccount.google.com`、`consent.google.com`、`www.google.com`、`accounts.youtube.com`。主页面重定向同样受此限制；所有框架继续使用登录导航保护器拦截外部应用协议。拦截回调和日志只保留 hostname，路径、查询、片段和用户信息不进入日志。真实 Google 登录如新增必要主机，应先核实再修改清单，不能放宽为所有 Google 子域名或所有 HTTPS。
 
 业务 IPC 只接受当前主窗口的 webContents。Gemini IPC 只接受当前任务及上传监测器对应的执行窗口；结果还必须匹配该请求的 `contentsId`。新增 handler 通过 `bindIpc` 中的 `handle` 注册。
 

@@ -25,7 +25,7 @@
 
 ## 安装、运行、打包和验证
 
-使用 Windows 和 Node.js >=22.13.0，CI 使用 Node.js 22。在仓库根目录执行：
+使用 Windows 和 Node.js >=22.13.0，CI 使用 Node.js 22。完整验证和打包需要 PATH 中的 `ffmpeg`、`ffprobe`（或打包时设置 `FLOWCUT_FFMPEG_DIR`）；CI 会安装 FFmpeg。在仓库根目录执行：
 
 ```powershell
 npm ci

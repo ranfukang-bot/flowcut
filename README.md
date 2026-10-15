@@ -6,7 +6,7 @@ FlowCut 在本机整合商品图片、用户自建 Gem、Gemini 网页/API、See
 
 ## 安装、运行与打包
 
-Windows 开发环境需要 Node.js >=22.13.0、Chrome 和 Electron。仓库包含源码；GitHub Download ZIP 不是可双击运行的程序。
+Windows 开发环境需要 Node.js >=22.13.0、Chrome 和 Electron；完整测试与打包还需要 PATH 中的 FFmpeg/FFprobe。仓库包含源码；GitHub Download ZIP 不是可双击运行的程序。
 
 在仓库根目录安装依赖：
 

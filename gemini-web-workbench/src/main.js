@@ -16,6 +16,7 @@ const { createStateBroadcast } = require('./state-broadcast');
 const { desktopLaunchMode } = require('./launch-mode');
 const { BackupManager, scheduleBackups, confirmRestore } = require('./backup-manager');
 const { gemExportFiles } = require('../../lib/gem-export.ts');
+const { backupCompletionSummary } = require('../../lib/backup-storage.ts');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { SavedGems, createGemDriver, cleanGemUrl } = require("./saved-gems");
@@ -234,6 +235,7 @@ function publicState() {
       activeJobs: [],
     },
     persistence: [...persistenceProblems.values()],
+    backup: backupManager?.cachedStatus || null,
     edition: "personal",
     update: { status: "local", currentVersion: appVersion, availableVersion: "", percent: 0, message: "个人本机版" },
     seedance: seedanceRuntime?.state() || {
@@ -1129,6 +1131,13 @@ function bindIpc() {
     return response;
   };
   backupManager = new BackupManager({ userData: app.getPath('userData'), version: appVersion, directory: backupDirectory,
+    latest: store.state.settings.lastBackup,
+    onComplete: async (result, reason) => {
+      store.state.settings.lastBackup = { path: result.path, createdAt: result.createdAt, mediaCount: result.mediaCount };
+      store.save();
+      store.log(`${reason === 'automatic' ? '自动' : reason === 'before-restore' ? '恢复前' : '本机数据'}备份完成：${backupCompletionSummary(result)}；${result.path}`);
+      broadcast();
+    },
     site: {
       exportSnapshot: async () => (await siteFetch('/api/backup')).json(),
       downloadMedia: async (key, file) => {
@@ -1158,7 +1167,7 @@ function bindIpc() {
       seedanceRuntime?.store?.updateSettings({ running: false });
     },
   });
-  handle('workbench:backup-state', () => ({ directory: backupDirectory(), busy: backupManager.busy }));
+  handle('workbench:backup-state', () => backupManager.status());
   handle('workbench:export-gems', async () => {
     const chosen = await dialog.showOpenDialog(mainWindow, { title: '选择 Gem 导出位置', properties: ['openDirectory', 'createDirectory'] });
     if (chosen.canceled) return { canceled: true };
@@ -1169,13 +1178,13 @@ function bindIpc() {
     return { directory, count: workspace.gems.length };
   });
   handle('workbench:backup-directory', async () => {
+    if (backupManager.busy) throw new Error('请等待备份或恢复完成后再修改目录');
     const chosen = await dialog.showOpenDialog(mainWindow, { title: '选择 FlowCut 备份目录', defaultPath: backupDirectory(), properties: ['openDirectory', 'createDirectory'] });
+    if (backupManager.busy) throw new Error('备份正在执行，目录暂未更改，请稍后重试');
     if (!chosen.canceled && chosen.filePaths[0]) { store.state.settings.backupDirectory = chosen.filePaths[0]; if (!store.save()) throw new Error('备份目录未能保存'); }
-    return { directory: backupDirectory() };
+    return backupManager.status();
   });
-  handle('workbench:backup-now', async () => {
-    const result = await backupManager.backup(); store.log(`本机数据备份完成：${result.path}`); broadcast(); return result;
-  });
+  handle('workbench:backup-now', () => backupManager.backup());
   handle('workbench:backup-restore', async () => {
     const chosen = await dialog.showOpenDialog(mainWindow, { title: '选择 FlowCut 备份 ZIP', properties: ['openFile'], filters: [{ name: 'FlowCut 备份', extensions: ['zip'] }] });
     if (chosen.canceled) return { canceled: true };
@@ -1608,9 +1617,7 @@ async function activateWorkbench() {
     store.state.settings.personalEditionInitialized = true;
     store.save();
     workbenchStarted = true;
-    stopAutoBackup ||= scheduleBackups(async () => {
-      const result = await backupManager.backup('automatic'); store.log(`自动备份完成：${result.path}`); broadcast();
-    }, { onError: error => { store.log(`自动备份失败：${error.message}`, 'warn'); broadcast(); } });
+    stopAutoBackup ||= scheduleBackups(() => backupManager.backup('automatic'), { onError: error => { store.log(`自动备份失败：${error.message}`, 'warn'); broadcast(); } });
     await publisherRuntime.start().catch(error => store.log(`选品与发布连接暂不可用：${error.message}`, "warn"));
     startLocalSiteHealthMonitor();
   }
@@ -1704,7 +1711,11 @@ app.whenReady().then(async () => {
         savedGemEditorVerified = await probe.webContents.executeJavaScript(`document.querySelector('#gem-name-input').value === 'FlowCut 编译验证' && document.querySelector('.ql-editor').innerText.includes('第二行指令')`, true);
       } finally { probe.destroy(); }
     }
-    const backupVerified = smokeProfile ? Boolean((await backupManager.backup('smoke')).mediaCount >= 0) : null;
+    const backupResult = await backupManager.backup('smoke');
+    const backupStatus = await backupManager.status();
+    const backupVerified = backupResult.mediaCount >= 0 && backupResult.zipBytes > 0 && backupResult.totalBytes === backupResult.zipBytes && backupResult.backupCount === 1
+      && backupStatus.latest?.zipBytes === backupResult.zipBytes && backupStatus.latest?.mediaCount === backupResult.mediaCount
+      && store.state.settings.lastBackup?.path === backupResult.path;
     fs.writeFileSync(
       launchMode.smokeFile,
       JSON.stringify(
@@ -1716,6 +1727,7 @@ app.whenReady().then(async () => {
           nativeProtocolBlocked,
           savedGemEditorVerified,
           backupVerified,
+          backupStorage: { zipBytes: backupResult.zipBytes, totalBytes: backupResult.totalBytes, backupCount: backupResult.backupCount, mediaCount: backupResult.mediaCount },
           workbenchStarted,
           seedance: seedanceRuntime?.state() || null,
           siteUrl: store.state.settings.flowcutUrl,

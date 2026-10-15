@@ -66,8 +66,13 @@ test('real ZIP round trip restores table counts, media SHA256, settings; exclude
     restoreTables: tables => restoreTables(db, tables),
   };
   let restoreCalls = 0;
-  const manager = new BackupManager({ userData, directory: () => directory, version: '1.4.37', site, beforeRestore: async () => { restoreCalls++; } });
+  const completions = [];
+  const manager = new BackupManager({ userData, directory: () => directory, version: '1.4.37', site, beforeRestore: async () => { restoreCalls++; }, onComplete: (result, reason) => completions.push({ result, reason }) });
   const saved = await manager.backup();
+  assert.equal(saved.zipBytes, fs.statSync(saved.path).size); assert.equal(saved.totalBytes, saved.zipBytes); assert.equal(saved.mediaCount, 1); assert.equal(saved.backupCount, 1);
+  assert.equal(completions[0].reason, 'manual'); assert.equal(completions[0].result.zipBytes, saved.zipBytes);
+  const reopenedManager = new BackupManager({ userData, directory: () => directory });
+  assert.equal((await reopenedManager.status()).latest.mediaCount, 1, 'pre-existing ZIP metadata is available without stored desktop metadata');
   const inspect = path.join(root, 'inspect'); await zipDirectory(saved.path, inspect, { extract: true });
   const manifest = JSON.parse(fs.readFileSync(path.join(inspect, 'manifest.json')));
   assert.equal(manifest.version, '1.4.37'); assert.equal(manifest.tables.products, 1);
@@ -79,6 +84,8 @@ test('real ZIP round trip restores table counts, media SHA256, settings; exclude
   write(userData, 'seedance/submitted-tasks.jsonl', '{"taskId":"newer-task"}\n' + JSON.stringify({ type: 'resolved', intentId: 'later-intent', localTaskId: 'transient-failed', outcome: 'rate-limited', result: { status: 'queued', errorMessage: 'fetch failed' } }) + '\n' + JSON.stringify({ type: 'resolved', intentId: 'recovered-intent', localTaskId: 'recovered-after-backup', snapshot: { id: 'recovered-after-backup', status: 'queued' }, outcome: 'rate-limited', result: { status: 'queued' } }) + '\n');
   for (const name of BACKUP_TABLES) sqlite.exec(`DELETE FROM "${name}"`); media.clear();
   const restored = await manager.restore(saved.path);
+  assert.equal(completions.at(-1).reason, 'before-restore'); assert.equal(completions.at(-1).result.backupCount, 2);
+  assert.equal(completions.at(-1).result.totalBytes, fs.statSync(saved.path).size + fs.statSync(restored.previousBackup).size);
   assert.equal(restoreCalls, 1); assert.ok(fs.existsSync(restored.previousBackup));
   assert.ok(Object.values(restored.tables).every(count => count === 1));
   assert.ok(Object.values(await exportTables(db)).every(rows => rows.length === 1));

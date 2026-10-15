@@ -80,6 +80,8 @@ class Store {
         seedanceEmbedded: value?.settings?.seedanceEmbedded !== false,
         geminiModel: normalizeModelSettings(value?.settings?.geminiModel),
         backupDirectory: String(value?.settings?.backupDirectory || ''),
+        lastBackup: value?.settings?.lastBackup && typeof value.settings.lastBackup.path === 'string' && Number.isSafeInteger(value.settings.lastBackup.mediaCount) && value.settings.lastBackup.mediaCount >= 0
+          ? { path: value.settings.lastBackup.path, createdAt: String(value.settings.lastBackup.createdAt || ''), mediaCount: value.settings.lastBackup.mediaCount } : null,
       },
       defaultAccountId: String(value?.defaultAccountId || ""),
       accounts: Array.isArray(value?.accounts) ? value.accounts : [],

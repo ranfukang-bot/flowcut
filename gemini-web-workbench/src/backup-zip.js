@@ -35,4 +35,24 @@ async function zipDirectory(from, to, { extract = false } = {}) {
       env: { ...process.env, FLOWCUT_ZIP_FROM: path.resolve(from), FLOWCUT_ZIP_TO: path.resolve(to), FLOWCUT_ZIP_EXTRACT: extract ? '1' : '0' },
     });
 }
-module.exports = { zipDirectory };
+async function readZipMetadata(file) {
+  const script = String.raw`
+    $ErrorActionPreference = 'Stop'
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($env:FLOWCUT_ZIP_FROM)
+    try {
+      $entry = $archive.GetEntry('manifest.json')
+      if (!$entry -or $entry.Length -gt 16777216) { throw 'Invalid backup manifest' }
+      $reader = New-Object IO.StreamReader($entry.Open())
+      try { $manifest = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
+      if ($manifest.format -ne 'FlowCutBackup') { throw 'Invalid backup format' }
+      [PSCustomObject]@{ mediaCount = @($manifest.media).Count; createdAt = [string]$manifest.createdAt } | ConvertTo-Json -Compress
+    } finally { $archive.Dispose() }
+  `;
+  const result = await execute(path.join(process.env.SystemRoot || 'C:/Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+    ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 30000, maxBuffer: 65536, env: { ...process.env, FLOWCUT_ZIP_FROM: path.resolve(file) } });
+  const metadata = JSON.parse(result.stdout.replace(/^\uFEFF/, ''));
+  if (!Number.isSafeInteger(metadata.mediaCount) || metadata.mediaCount < 0) throw new Error('备份媒体数量格式错误');
+  return metadata;
+}
+module.exports = { zipDirectory, readZipMetadata };

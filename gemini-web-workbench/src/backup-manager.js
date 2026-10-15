@@ -2,9 +2,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { createHash, randomUUID } = require('node:crypto');
-const { zipDirectory } = require('./backup-zip');
+const { zipDirectory, readZipMetadata } = require('./backup-zip');
 const { writeTextDurable } = require('../../vendor/seedance-engine/durable-json');
 const { requireLocalSiteUrl } = require('./desktop-security');
+const { summarizeBackupStorage } = require('../../lib/backup-storage.ts');
 const LOCAL_FILES = ['workbench-state.json', 'seedance/workbench-state.json', 'seedance/submitted-tasks.jsonl', 'seedance/submitted-tasks-unmatched.jsonl', 'publisher/config/settings.json', 'publisher/config/accounts.json'];
 const BACKUP_NAME = /^FlowCut-backup-\d{8}T\d{9}Z-[a-f0-9-]{36}\.zip$/;
 const hash = file => new Promise((resolve, reject) => {
@@ -28,10 +29,10 @@ function regularFile(root, relative) {
 async function write(file, data) { await fs.promises.mkdir(path.dirname(file), { recursive: true }); await fs.promises.writeFile(file, data); }
 
 class BackupManager {
-  constructor(options) { Object.assign(this, { beforeSnapshot: async () => {}, beforeRestore: async () => {}, now: () => new Date(), ...options }); this.busy = false; }
+  constructor(options) { Object.assign(this, { beforeSnapshot: async () => {}, beforeRestore: async () => {}, onComplete: async () => {}, latest: null, now: () => new Date(), ...options }); this.busy = false; }
   async exclusive(action) {
     if (this.busy) throw new Error('正在备份或恢复，请稍后重试');
-    this.busy = true; try { return await action(); } finally { this.busy = false; }
+    this.busy = true; try { return await action(); } finally { this.busy = false; if (this.cachedStatus) this.cachedStatus.busy = false; }
   }
   backup(reason = 'manual') { return this.exclusive(() => this.createBackup(reason)); }
   async createBackup(reason) {
@@ -62,7 +63,11 @@ class BackupManager {
       const target = path.join(directory, file); partial = path.join(directory, `.flowcut-partial-${randomUUID()}.zip`);
       await zipDirectory(stage, partial); await fs.promises.rename(partial, target); partial = null;
       await this.retain(directory);
-      return { path: target, createdAt: manifest.createdAt, tables: manifest.tables, mediaCount: manifest.media.length };
+      this.latest = { path: target, createdAt: manifest.createdAt, mediaCount: manifest.media.length };
+      const status = await this.status();
+      const result = { ...this.latest, tables: manifest.tables, zipBytes: (await fs.promises.stat(target)).size, totalBytes: status.totalBytes, backupCount: status.backupCount, overLimit: status.overLimit };
+      await this.onComplete(result, reason);
+      return result;
     } finally { if (partial) await fs.promises.rm(partial, { force: true }); await fs.promises.rm(stage, { recursive: true, force: true }); }
   }
   async files(root, prefix = '') {
@@ -79,6 +84,32 @@ class BackupManager {
   async retain(directory) {
     const own = (await fs.promises.readdir(directory, { withFileTypes: true })).filter(entry => entry.isFile() && BACKUP_NAME.test(entry.name)).map(entry => entry.name).sort().reverse();
     for (const name of own.slice(7)) await fs.promises.unlink(path.join(directory, name));
+  }
+  async status() {
+    const directory = this.directory();
+    let entries;
+    try { entries = await fs.promises.readdir(directory, { withFileTypes: true }); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; entries = []; }
+    const files = [];
+    for (const entry of entries) {
+      if (!entry.isFile() || !BACKUP_NAME.test(entry.name)) continue;
+      const file = path.join(directory, entry.name);
+      try {
+        const stat = await fs.promises.lstat(file);
+        if (stat.isFile() && !stat.isSymbolicLink()) files.push({ path: file, name: entry.name, bytes: stat.size });
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    let summary = summarizeBackupStorage(files, this.latest);
+    // Older backups already contain media counts in their manifest. Read just
+    // that entry once; never extract media merely to display occupied space.
+    if (summary.latest && summary.latest.mediaCount === null && process.platform === 'win32') {
+      try {
+        this.latest = { path: summary.latest.path, ...await readZipMetadata(summary.latest.path) };
+        summary = summarizeBackupStorage(files, this.latest);
+      } catch { /* Sizes are still known; invalid/foreign archives have no media count. */ }
+    }
+    this.cachedStatus = { directory, busy: this.busy, ...summary };
+    return this.cachedStatus;
   }
   restore(zip) { return this.exclusive(() => this.restoreBackup(zip)); }
   async restoreBackup(zip) {
@@ -134,7 +165,10 @@ class BackupManager {
           fs.mkdirSync(path.dirname(destination), { recursive: true });
           writeTextDurable(destination, lines.join('\n') + '\n');
         } else {
-          if (relative === 'workbench-state.json') value.settings.queueRunning = false;
+          if (relative === 'workbench-state.json') {
+            value.settings.queueRunning = false;
+            value.settings.lastBackup = { path: previous.path, createdAt: previous.createdAt, mediaCount: previous.mediaCount };
+          }
           if (relative === 'seedance/workbench-state.json') {
             value.settings.running = false;
             value.restoringBackup = true;

@@ -27,7 +27,9 @@ try {
   for (const key of ['workbenchStarted', 'publisherReady', 'geminiPageRuntimeReady', 'backupVerified', 'clearAllVerified', 'modelPolicyVerified', 'nativeProtocolBlocked', 'savedGemEditorVerified']) assert.equal(result[key], true, key);
   assert.equal(result.sandbox.main, true); assert.equal(result.sandbox.gemini, true); assert.equal(result.sandbox.geminiBridge, true);
   assert.ok(result.sandbox.seedance.length > 0 && result.sandbox.seedance.every(Boolean));
-  const evidence = { passed: true, version: result.version, edition: result.edition, sandbox: result.sandbox, backupVerified: true, isolatedProfile: profile };
+  assert.ok(result.backupStorage.zipBytes > 0); assert.equal(result.backupStorage.totalBytes, result.backupStorage.zipBytes);
+  assert.equal(result.backupStorage.backupCount, 1); assert.ok(result.backupStorage.mediaCount >= 0);
+  const evidence = { passed: true, version: result.version, edition: result.edition, sandbox: result.sandbox, backupVerified: true, backupStorage: result.backupStorage, isolatedProfile: profile };
   if (process.env.FLOWCUT_PACKAGED_SMOKE_EVIDENCE) fs.writeFileSync(process.env.FLOWCUT_PACKAGED_SMOKE_EVIDENCE, JSON.stringify(evidence, null, 2));
   console.log(JSON.stringify(evidence));
   const exitDeadline = Date.now() + 10000;

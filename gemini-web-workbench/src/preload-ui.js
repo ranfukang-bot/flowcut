@@ -1,6 +1,11 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 const desktopApi = {
+  exportAllGems: () => ipcRenderer.invoke('workbench:export-gems'),
+  backupState: () => ipcRenderer.invoke('workbench:backup-state'),
+  backupNow: () => ipcRenderer.invoke('workbench:backup-now'),
+  backupChooseDirectory: () => ipcRenderer.invoke('workbench:backup-directory'),
+  backupRestore: () => ipcRenderer.invoke('workbench:backup-restore'),
   readGeminiModels: () => ipcRenderer.invoke('workbench:read-gemini-models'),
   saveGeminiModel: settings => ipcRenderer.invoke('workbench:save-gemini-model', settings),
   listGemBindings: (gem) => ipcRenderer.invoke("gem:list-bindings", gem),

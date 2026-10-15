@@ -25,6 +25,8 @@ import { ApprovalStats } from './approval-stats';
 import { GeminiModelSettingsPanel, GeminiModelInfo, type GeminiModelSettings, type ModelState } from './gemini-model-settings';
 import { useTaskPage } from './use-task-page';
 import { SeedanceTaskDetail } from './seedance-task-detail';
+import { LocalBackups } from './local-backups';
+import { exportAllGems } from './export-gems';
 import type { TaskCounts } from '../lib/task-list';
 
 type Gem = {
@@ -2693,9 +2695,12 @@ function GemsPage({
   onDelete: (id: string) => void;
 }) {
   const [webGem, setWebGem] = useState<Gem | null>(null);
+  const [exportMessage, setExportMessage] = useState('');
   return (
     <div className="page-body">
       <PageIntro title="Gem 模板中心" text="商品图任务首次使用时，会在执行账号内自动创建并保存真正的 Gem；之后只发送图片和本次要求。也可手动绑定已有 Gem 链接。" action="新建 Gem" onAction={onAdd} />
+      <button type="button" className="secondary" onClick={() => void exportAllGems(gems).then(result => setExportMessage(result && typeof result === 'object' && 'directory' in result ? `Gem 已导出：${result.directory}` : '导出已处理')).catch(error => setExportMessage(error instanceof Error ? error.message : '导出失败'))}>导出全部 Gem</button>
+      {exportMessage && <p role="status">{exportMessage}</p>}
       {webGem && <WebGemModal gem={webGem} onClose={() => setWebGem(null)} />}
       <div className="gem-grid">
         {gems.map((gem, index) => (
@@ -3358,6 +3363,7 @@ function SettingsPage({
         text="只有真实连接验证通过后才会运行任务；系统不会再用演示提示词冒充商品图识别结果。"
       />
       {message && <div className="settings-message">{message}</div>}
+      <LocalBackups />
       <div className="provider-settings">
         <form
           className="connection-card"

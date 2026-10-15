@@ -13,6 +13,10 @@ const { pathToFileURL } = require('node:url');
 const { createHash, randomBytes, randomUUID } = require("node:crypto");
 const { Store } = require("./store");
 const { createStateBroadcast } = require('./state-broadcast');
+const { BackupManager, scheduleBackups, confirmRestore } = require('./backup-manager');
+const { gemExportFiles } = require('../../lib/gem-export.ts');
+const { Readable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 const { SavedGems, createGemDriver, cleanGemUrl } = require("./saved-gems");
 const { BridgeEngine } = require("./bridge-engine");
 const { watchGeminiJob } = require("./gemini-job-watchdog");
@@ -70,6 +74,7 @@ let localSiteRestartFailures = 0;
 let localSiteHealthTimer = null;
 let localSiteHealthFailures = 0;
 let workbenchStarted = false;
+let backupManager, stopAutoBackup;
 let shutdownStarted = false;
 let stopRuntimeLogMaintenance = null;
 const loginWindows = new Map();
@@ -1109,6 +1114,73 @@ ipcMain.on("gemini:job-diagnostic", (event, diagnostic) => {
 
 function bindIpc() {
   const handle = securedIpcHandle(ipcMain, ipcContext);
+  const backupDirectory = () => store.state.settings.backupDirectory || path.join(app.getPath('documents'), 'FlowCut备份');
+  const siteFetch = async (route, init = {}) => {
+    const origin = requireLocalSiteUrl(store.state.settings.flowcutUrl).href.replace(/\/+$/, '');
+    const response = await fetch(origin + route, { ...init, redirect: 'error', headers: desktopRuntimeHeaders(init.headers || {}), signal: AbortSignal.timeout(15 * 60_000) });
+    if (!response.ok) throw new Error(`备份接口失败 ${response.status}：${(await response.text()).slice(0, 300)}`);
+    return response;
+  };
+  backupManager = new BackupManager({ userData: app.getPath('userData'), version: appVersion, directory: backupDirectory,
+    site: {
+      exportSnapshot: async () => (await siteFetch('/api/backup')).json(),
+      downloadMedia: async (key, file) => {
+        const response = await siteFetch('/api/media?key=' + encodeURIComponent(key));
+        await fs.promises.mkdir(path.dirname(file), { recursive: true });
+        await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(file));
+      },
+      uploadMedia: async (media, file) => siteFetch('/api/backup?key=' + encodeURIComponent(media.key), { method: 'PUT', body: fs.createReadStream(file), duplex: 'half', headers: { 'x-flowcut-media-metadata': encodeURIComponent(JSON.stringify({ httpMetadata: media.httpMetadata, customMetadata: media.customMetadata })) } }),
+      restoreTables: async tables => siteFetch('/api/backup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tables }) }),
+    },
+    beforeSnapshot: async () => {
+      if (!store.save() || seedanceRuntime?.store?.flushPendingSave() === false) throw new Error('当前配置无法持久化，备份已停止');
+    },
+    beforeRestore: async () => {
+      if (store.state.settings.queueRunning || seedanceRuntime?.store?.settings.running) throw new Error('请先暂停 Gemini 和 Seedance 队列，再恢复备份');
+      if (publisherRuntime?.child) {
+        const status = await publisherRuntime.request('/api/status');
+        if (status.running || status.accounts?.some(account => account.processing)) throw new Error('请先停止发布管理并等待发布结束，再恢复备份');
+      }
+      if (pendingJobs.size || bridge?.active.size || bridge?.polling || seedanceRuntime?.flowcutBridge?.busy || seedanceRuntime?.engine?.tickBusy || seedanceRuntime?.engine?.activeUploads.size || seedanceRuntime?.activeDownloads.size) throw new Error('请等待当前上传、提交和下载完成，再恢复备份');
+      bridge?.stop(); seedanceRuntime?.stop();
+      if (publisherRuntime?.child) {
+        const child = publisherRuntime.child;
+        await new Promise(resolve => { child.once('exit', resolve); publisherRuntime.stop(); });
+      }
+      store.state.settings.queueRunning = false; store.save();
+      seedanceRuntime?.store?.updateSettings({ running: false });
+    },
+  });
+  handle('workbench:backup-state', () => ({ directory: backupDirectory(), busy: backupManager.busy }));
+  handle('workbench:export-gems', async () => {
+    const chosen = await dialog.showOpenDialog(mainWindow, { title: '选择 Gem 导出位置', properties: ['openDirectory', 'createDirectory'] });
+    if (chosen.canceled) return { canceled: true };
+    const workspace = await (await siteFetch('/api/workspace')).json();
+    const directory = path.join(chosen.filePaths[0], `FlowCut-Gems-${Date.now()}-${randomUUID().slice(0, 8)}`);
+    await fs.promises.mkdir(directory);
+    for (const file of gemExportFiles(workspace.gems)) await fs.promises.writeFile(path.join(directory, file.name), file.content, { flag: 'wx' });
+    return { directory, count: workspace.gems.length };
+  });
+  handle('workbench:backup-directory', async () => {
+    const chosen = await dialog.showOpenDialog(mainWindow, { title: '选择 FlowCut 备份目录', defaultPath: backupDirectory(), properties: ['openDirectory', 'createDirectory'] });
+    if (!chosen.canceled && chosen.filePaths[0]) { store.state.settings.backupDirectory = chosen.filePaths[0]; if (!store.save()) throw new Error('备份目录未能保存'); }
+    return { directory: backupDirectory() };
+  });
+  handle('workbench:backup-now', async () => {
+    const result = await backupManager.backup(); store.log(`本机数据备份完成：${result.path}`); broadcast(); return result;
+  });
+  handle('workbench:backup-restore', async () => {
+    const chosen = await dialog.showOpenDialog(mainWindow, { title: '选择 FlowCut 备份 ZIP', properties: ['openFile'], filters: [{ name: 'FlowCut 备份', extensions: ['zip'] }] });
+    if (chosen.canceled) return { canceled: true };
+    if (!await confirmRestore(async message => {
+      const answer = await dialog.showMessageBox(mainWindow, { type: 'warning', message, detail: chosen.filePaths[0], buttons: ['取消', '确认恢复'], defaultId: 0, cancelId: 0 });
+      return answer.response === 1;
+    })) return { canceled: true };
+    const result = await backupManager.restore(chosen.filePaths[0]);
+    // stop() already flushed Seedance; never overwrite restored files on quit.
+    seedanceRuntime = null;
+    app.relaunch(); app.quit(); return result;
+  });
   handle('gemini:select-model', async event => {
     try { return { ok: true, ...await selectJobModel(event) }; }
     catch (error) { return { ok: false, code: error.code || 'GEMINI_PAGE_ERROR', error: error.message }; }
@@ -1517,6 +1589,9 @@ async function activateWorkbench() {
     store.state.settings.personalEditionInitialized = true;
     store.save();
     workbenchStarted = true;
+    stopAutoBackup ||= scheduleBackups(async () => {
+      const result = await backupManager.backup('automatic'); store.log(`自动备份完成：${result.path}`); broadcast();
+    }, { onError: error => { store.log(`自动备份失败：${error.message}`, 'warn'); broadcast(); } });
     await publisherRuntime.start().catch(error => store.log(`选品与发布连接暂不可用：${error.message}`, "warn"));
     startLocalSiteHealthMonitor();
   }
@@ -1552,7 +1627,10 @@ app.whenReady().then(async () => {
       preserved: store.loadResult.preserved,
     });
   }
-  if (smokeProfile) store.state.settings.flowcutUrl = "http://127.0.0.1:4198";
+  if (smokeProfile) {
+    store.state.settings.flowcutUrl = 'http://127.0.0.1:4198';
+    store.state.settings.backupDirectory = path.join(smokeProfile, 'backups');
+  }
   if (!store.state.settings.personalEditionInitialized) {
     store.state.settings.queueRunning = false;
     store.log("已切换为个人本机版。历史任务已保留，队列已暂停，请检查后继续。", "info");
@@ -1607,6 +1685,7 @@ app.whenReady().then(async () => {
         savedGemEditorVerified = await probe.webContents.executeJavaScript(`document.querySelector('#gem-name-input').value === 'FlowCut 编译验证' && document.querySelector('.ql-editor').innerText.includes('第二行指令')`, true);
       } finally { probe.destroy(); }
     }
+    const backupVerified = smokeProfile ? Boolean((await backupManager.backup('smoke')).mediaCount >= 0) : null;
     fs.writeFileSync(
       process.env.FLOWCUT_DESKTOP_SMOKE_FILE,
       JSON.stringify(
@@ -1617,6 +1696,7 @@ app.whenReady().then(async () => {
           modelPolicyVerified,
           nativeProtocolBlocked,
           savedGemEditorVerified,
+          backupVerified,
           workbenchStarted,
           seedance: seedanceRuntime?.state() || null,
           siteUrl: store.state.settings.flowcutUrl,
@@ -1647,6 +1727,7 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   shutdownStarted = true;
   broadcast.stop();
+  stopAutoBackup?.();
   stopRuntimeLogMaintenance?.();
   stopRuntimeLogMaintenance = null;
   bridge?.stop();

@@ -394,6 +394,18 @@ async function main() {
   await page.getByRole("dialog", { name: "确认操作" }).getByRole("button", { name: "确认", exact: true }).click();
   assert.equal((await page.evaluate(() => window.modelDecisions))[1].choice, "standard");
   assert.deepEqual(errors, []);
+  const snapshot = await api('/api/backup');
+  assert.equal(Object.keys(snapshot.tables).length, 14);
+  assert.ok(snapshot.tables.gems.some(gem => gem.name === 'Keyboard Gem'));
+  assert.ok(snapshot.media.length > 0);
+  const mediaKey = 'backup-smoke/fixture.bin', mediaBytes = Buffer.from('isolated backup media');
+  await api('/api/backup?key=' + encodeURIComponent(mediaKey), { method: 'PUT', headers: { 'content-type': 'application/octet-stream', 'x-flowcut-media-metadata': encodeURIComponent(JSON.stringify({ httpMetadata: { contentType: 'application/octet-stream' } })) }, body: mediaBytes });
+  const fetchedMedia = await fetch(base + '/api/media?key=' + encodeURIComponent(mediaKey), { headers });
+  assert.deepEqual(Buffer.from(await fetchedMedia.arrayBuffer()), mediaBytes);
+  const restored = await api('/api/backup', { method: 'POST', body: JSON.stringify({ tables: snapshot.tables }) });
+  assert.equal(restored.counts.gems, snapshot.tables.gems.length);
+  assert.equal((await api('/api/workspace')).gems.length, snapshot.tables.gems.length);
+  console.log('Backup HTTP: fourteen-table transactional export/restore and media bytes PASS');
   fs.writeFileSync(path.join(evidence, "runtime-smoke.json"), JSON.stringify({ passed: true, runtimeSource: process.env.FLOWCUT_SMOKE_SITE_ROOT ? 'source' : 'packaged', version: packageVersion, checks: [process.env.FLOWCUT_SMOKE_SITE_ROOT ? 'source runtime startup' : 'packaged runtime startup', "desktop HTTP authentication", "Gemini progress round trip", "paused authenticated accounts can create tasks", "connection test never starts queues", "queue resume cancellation", "compact navigation", "task filtering", "product ID search", "first-image filename product ID", "append/manual-edit/reset behavior", "product ID multipart save", "no renderer errors"] }, null, 2));
   console.log((process.env.FLOWCUT_SMOKE_SITE_ROOT ? 'Source' : 'Packaged') + ' runtime and UI smoke: PASS (including TK account add/rename/delete, cancellation, failure, task retention and reload)');
 }

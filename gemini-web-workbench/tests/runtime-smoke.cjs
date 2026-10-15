@@ -7,7 +7,7 @@ const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const packageRoot = path.resolve(process.argv[2] || path.join(__dirname, "../release/win-unpacked"));
 const packageVersion = JSON.parse(require("@electron/asar").extractFile(path.join(packageRoot, "resources/app.asar"), "package.json")).version;
-const site = path.join(packageRoot, "resources/flowcut-site");
+const site = process.env.FLOWCUT_SMOKE_SITE_ROOT ? path.resolve(process.env.FLOWCUT_SMOKE_SITE_ROOT) : path.join(packageRoot, "resources/flowcut-site");
 process.env.CLOUDFLARE_CF_FETCH_ENABLED = "false";
 const { unstable_dev } = require(path.join(site, "node_modules/wrangler/wrangler-dist/cli.js"));
 const { chromium } = require(process.env.FLOWCUT_PLAYWRIGHT_PATH || "playwright-core");
@@ -68,6 +68,17 @@ async function main() {
   await require('./gemini-queue-smoke.cjs')({ api, productId: created.id, gemId: testGem.id });
   for (let i = 0; i < 65; i++) await api("/api/tasks", { method: "POST", body: JSON.stringify({ productId: created.id, gemId: testGem.id, tiktokAccountName: "clear-test" }) });
   assert.equal((await api("/api/workspace")).tasks.length, 60);
+  assert.equal((await api('/api/workspace')).taskCounts.total, 65);
+  const firstPage = await api('/api/tasks');
+  assert.equal(firstPage.tasks.length, 50); assert.ok(firstPage.nextCursor);
+  const nextPage = await api('/api/tasks?cursor=' + firstPage.nextCursor);
+  assert.equal(nextPage.tasks.length, 15);
+  assert.equal(new Set([...firstPage.tasks, ...nextPage.tasks].map(task => task.id)).size, 65);
+  for (const task of (await api('/api/workspace')).tasks) {
+    assert.equal(Object.hasOwn(task, 'gem_content_snapshot'), false);
+    assert.equal(Object.hasOwn(task, 'gemini_request_text'), false);
+    assert.equal(Object.hasOwn(task, 'prompt'), false);
+  }
   const cleared = await api("/api/tasks?all=1", { method: "DELETE" });
   assert.equal(cleared.deleted, 65); assert.equal(cleared.ids.length, 65);
   const retained = await api("/api/workspace");
@@ -143,12 +154,20 @@ async function main() {
     { ...task, id: "test-failed", title: "待恢复任务", product_name: "待恢复商品", status: "failed", progress: 12, error: "Gemini 连续 3 分钟没有新输出，任务将自动恢复" },
     { ...task, id: "test-ready", product_name: "已完成商品", status: "video_ready", review_status:'pending', download_path:'C:/review-videos/test/product.mp4', output_url:'https://example.test/video.mp4', progress: 100, product_image_key: "missing-test-image" },
   ];
+  workspace.taskCounts = { total: 3, active: 1, review: 1, completed: 0, attention: 1 };
   browser = await chromium.launch({ executablePath: "C:/Program Files/Google/Chrome/Application/chrome.exe", headless: true });
   // Browser supplies the correct multipart boundary for image uploads.
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, extraHTTPHeaders: { "x-flowcut-desktop-token": token } });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.route("**/api/workspace", route => route.fulfill({ json: workspace }));
+  await page.route('**/api/tasks?**', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const params = new URL(route.request().url()).searchParams;
+    if (params.has('id')) return route.fulfill({ json: workspace.tasks.find(task => task.id === params.get('id')) });
+    const rows = workspace.tasks.filter(task => (params.get('status') !== 'attention' || task.status === 'failed') && `${task.product_name} ${task.product_external_id} ${task.tiktok_account_name}`.includes(params.get('q') || ''));
+    return route.fulfill({ json: { tasks: rows, nextCursor: null } });
+  });
   await page.goto(base, { waitUntil: "networkidle" });
   await page.getByLabel('Gemini 账号分配', { exact: true }).waitFor();
   assert.equal(await page.getByLabel('Gemini 账号分配', { exact: true }).inputValue(), '自动分配空闲账号');
@@ -227,10 +246,12 @@ async function main() {
   assert.equal(await page.locator(".nav-list button.active").innerText(), "↗\n任务队列\n3");
   await page.screenshot({ path: path.join(evidence, "任务进度.png"), fullPage: true, animations: "disabled" });
   await page.getByRole("button", { name: "需处理", exact: true }).click();
+  await page.waitForFunction(() => document.querySelectorAll('.table-row').length === 1);
   assert.equal(await page.locator(".table-row").count(), 1);
   await page.getByRole("button", { name: "查看 / 继续" }).waitFor();
   await page.getByRole("button", { name: "全部", exact: true }).click();
   await page.getByRole("textbox", { name: "搜索任务" }).fill("1735360337668113923");
+  await page.waitForFunction(() => document.querySelectorAll('.table-row').length === 3);
   assert.equal(await page.locator(".table-row").count(), 3);
   await page.getByRole("textbox", { name: "搜索任务" }).fill("does-not-exist");
   await page.getByText("没有匹配的任务").waitFor();
@@ -244,6 +265,7 @@ async function main() {
   await page.screenshot({ path: path.join(evidence, "商品按日期.png"), fullPage: true });
   // Exercise the actual template API and keyboard input after a confirmation.
   await page.unroute("**/api/workspace");
+  await page.unroute('**/api/tasks?**');
   await page.addInitScript(() => {
     window.queueStartCalls = [];
     window.modelDecisions = [];
@@ -304,8 +326,9 @@ async function main() {
   await page.getByRole("button", { name: /加入并发任务/ }).click();
   await page.getByText("任务已创建，将按所选模板生成并保存到归档文件夹", { exact: true }).waitFor();
   assert.deepEqual(await page.evaluate(() => window.queueStartCalls), [["gemini", true], ["seedance", true]]);
-  assert.equal((await api("/api/workspace")).tasks[0].archive_directory, "D:\\Chosen Videos\\中文归档");
-  assert.equal((await api('/api/workspace')).tasks[0].gemini_request_text, '只写文字提示词。\n地区：印尼，时长：15秒。');
+  const latestCreated = (await api('/api/workspace')).tasks[0];
+  assert.equal(latestCreated.archive_directory, "D:\\Chosen Videos\\中文归档");
+  assert.equal((await api('/api/tasks?id=' + latestCreated.id)).gemini_request_text, '只写文字提示词。\n地区：印尼，时长：15秒。');
   await page.reload({ waitUntil: 'networkidle' });
   assert.equal(await page.getByLabel('发送给 Gem 的文字', { exact: true }).inputValue(), '只写文字提示词。\n地区：{地区}，时长：{时长}秒。');
   await page.getByRole('combobox', { name: 'TK 归档账号', exact: true }).selectOption('界面归档测试');
@@ -371,8 +394,8 @@ async function main() {
   await page.getByRole("dialog", { name: "确认操作" }).getByRole("button", { name: "确认", exact: true }).click();
   assert.equal((await page.evaluate(() => window.modelDecisions))[1].choice, "standard");
   assert.deepEqual(errors, []);
-  fs.writeFileSync(path.join(evidence, "runtime-smoke.json"), JSON.stringify({ passed: true, version: packageVersion, checks: ["packaged runtime startup", "desktop HTTP authentication", "Gemini progress round trip", "paused authenticated accounts can create tasks", "connection test never starts queues", "queue resume cancellation", "compact navigation", "task filtering", "product ID search", "first-image filename product ID", "append/manual-edit/reset behavior", "product ID multipart save", "no renderer errors"] }, null, 2));
-  console.log("Packaged runtime and UI smoke: PASS (including TK account add/rename/delete, cancellation, failure, task retention and reload)");
+  fs.writeFileSync(path.join(evidence, "runtime-smoke.json"), JSON.stringify({ passed: true, runtimeSource: process.env.FLOWCUT_SMOKE_SITE_ROOT ? 'source' : 'packaged', version: packageVersion, checks: [process.env.FLOWCUT_SMOKE_SITE_ROOT ? 'source runtime startup' : 'packaged runtime startup', "desktop HTTP authentication", "Gemini progress round trip", "paused authenticated accounts can create tasks", "connection test never starts queues", "queue resume cancellation", "compact navigation", "task filtering", "product ID search", "first-image filename product ID", "append/manual-edit/reset behavior", "product ID multipart save", "no renderer errors"] }, null, 2));
+  console.log((process.env.FLOWCUT_SMOKE_SITE_ROOT ? 'Source' : 'Packaged') + ' runtime and UI smoke: PASS (including TK account add/rename/delete, cancellation, failure, task retention and reload)');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {
   await browser?.close(); await worker?.stop();

@@ -9,6 +9,22 @@ import {
   normalizeTaskRegion,
 } from "../../../lib/task-config";
 import { validateTikTokAccountName } from "../../../lib/tiktok-accounts";
+import { listTasks, taskDetail } from '../../../lib/task-list';
+
+export async function GET(request: Request) {
+  try {
+    await ensureWorkspace();
+    const params = new URL(request.url).searchParams;
+    if (params.has('id')) {
+      const id = params.get('id')?.trim();
+      if (!id) return Response.json({ error: '缺少任务 ID' }, { status: 400 });
+      const task = await taskDetail(getDb(), id);
+      return task ? Response.json(task, { headers: { 'cache-control': 'no-store' } }) : Response.json({ error: '任务不存在' }, { status: 404 });
+    }
+    const result = await listTasks(getDb(), { status: params.get('status') || 'all', q: params.get('q') || '', cursor: params.get('cursor') || '', limit: params.has('limit') ? Number(params.get('limit')) : undefined });
+    return Response.json(result, { headers: { 'cache-control': 'no-store' } });
+  } catch (error) { return jsonError(error, error instanceof Error && /筛选状态|分页/.test(error.message) ? 400 : 500); }
+}
 
 async function taskImages(productId: string, requestUrl: string, snapshot?: string[]) {
   const images = snapshot ? {results:snapshot.map(object_key=>({object_key}))} : await getDb()

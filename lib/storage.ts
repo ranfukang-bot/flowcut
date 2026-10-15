@@ -168,6 +168,7 @@ async function initializeWorkspace() {
   await ensureColumn("tasks", "bridge_worker_id", "TEXT");
   await ensureColumn("tasks", "gemini_failures", "INTEGER NOT NULL DEFAULT 0");
   await ensureColumn("tasks", "gemini_retry_at", "TEXT");
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_tasks_created_id ON tasks(created_at DESC,id DESC)').run();
   for (const table of ['tasks', 'reference_remix_tasks', 'script_pipeline_tasks']) {
     await ensureColumn(table, 'gemini_model_info', 'TEXT');
     await ensureColumn(table, 'gemini_error_code', 'TEXT');

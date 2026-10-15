@@ -23,6 +23,8 @@ import { useImageProductId } from "./use-image-product-id";
 import { DEFAULT_GEM_REQUEST, renderGemRequest, validateGemRequest } from "../lib/gem-request";
 import { ApprovalStats } from './approval-stats';
 import { GeminiModelSettingsPanel, GeminiModelInfo, type GeminiModelSettings, type ModelState } from './gemini-model-settings';
+import { useTaskPage } from './use-task-page';
+import type { TaskCounts } from '../lib/task-list';
 
 type Gem = {
   id: string;
@@ -51,6 +53,8 @@ type Product = {
 };
 
 type Task = {
+  has_prompt?: number;
+  updated_at?: string;
   gemini_model_info?: string | null;
   id: string;
   product_id: string;
@@ -59,7 +63,7 @@ type Task = {
   gem_id: string;
   title: string;
   status: string;
-  prompt: string;
+  prompt?: string;
   provider: string;
   duration: number;
   region: string;
@@ -165,6 +169,7 @@ type ScriptPipelineTask = {
 };
 
 type Workspace = {
+  taskCounts?: TaskCounts;
   gems: Gem[];
   products: Product[];
   tasks: Task[];
@@ -265,7 +270,7 @@ type TaskStage = {
 
 function taskStages(task: Task): TaskStage[] {
   const isDemo = task.provider === "demo-engine";
-  const hasRealPrompt = Boolean(task.prompt?.trim()) && !isDemo;
+  const hasRealPrompt = Boolean(task.has_prompt ?? task.prompt?.trim()) && !isDemo;
   const seedanceStarted = [
     "video_queued",
     "video_generating",
@@ -514,6 +519,14 @@ export function StudioApp() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editingGem, setEditingGem] = useState<Gem | null>(null);
   const [previewTask, setPreviewTask] = useState<Task | null>(null);
+  const taskDetailRequest = useRef(0);
+  async function openTask(task: Task) {
+    const request = ++taskDetailRequest.current;
+    try {
+      const detail = await api('/api/tasks?id=' + encodeURIComponent(task.id)) as unknown as Task;
+      if (request === taskDetailRequest.current) setPreviewTask(detail);
+    } catch (error) { if (request === taskDetailRequest.current) setNotice(error instanceof Error ? error.message : '任务详情加载失败'); }
+  }
   const [selectedProduct, setSelectedProduct] = useState("");
   const [productMode, setProductMode] = useState<"new" | "library">("new");
   const [productChoiceLoaded, setProductChoiceLoaded] = useState(false);
@@ -960,8 +973,8 @@ export function StudioApp() {
             >
               <span>{item.icon}</span>
               {item.label}
-              {item.id === "tasks" && data.tasks.length > 0 && (
-                <em>{data.tasks.length}</em>
+              {item.id === "tasks" && (data.taskCounts?.total ?? data.tasks.length) > 0 && (
+                <em>{data.taskCounts?.total ?? data.tasks.length}</em>
               )}
             </button>
           ))}
@@ -1055,7 +1068,7 @@ export function StudioApp() {
               setEditingGem(null);
               setGemOpen(true);
             }}
-            onPreview={setPreviewTask}
+            onPreview={openTask}
             onNavigate={setPage}
             seedanceRuntime={seedanceRuntime}
           />
@@ -1112,7 +1125,7 @@ export function StudioApp() {
           <TasksPage
             tasks={data.tasks}
             geminiRuntime={data.integrations.geminiRuntime}
-            onPreview={setPreviewTask}
+            onPreview={openTask}
             onDelete={(id) => deleteRecord("/api/tasks", id, "确认删除这个任务？")}
             onClearCompleted={clearCompletedTasks}
             onClearAll={clearAllTasks}
@@ -1926,10 +1939,11 @@ function Dashboard({
       </section>
 
       <section className="workflow-summary" aria-label="任务概况">
-        <span>共 <b>{data.tasks.length}</b> 条任务</span>
-        <span>处理中 <b>{data.tasks.filter((task) => !["video_ready", "scheduled", "failed", "seedance_blocked"].includes(task.status)).length}</b></span>
-        <span>已完成 <b>{data.tasks.filter((task) => ["video_ready", "scheduled"].includes(task.status)).length}</b></span>
-        <button onClick={() => onNavigate("tasks")}>需处理 <b>{data.tasks.filter((task) => ["failed", "seedance_blocked"].includes(task.status)).length}</b> →</button>
+        <span>共 <b>{data.taskCounts?.total ?? data.tasks.length}</b> 条任务</span>
+        <span>处理中 <b>{data.taskCounts?.active ?? data.tasks.filter((task) => !["video_ready", "scheduled", "failed", "seedance_blocked"].includes(task.status)).length}</b></span>
+        <span>待检查 <b>{data.taskCounts?.review ?? data.tasks.filter(task => ['video_ready','scheduled'].includes(task.status) && !['approved','replaced'].includes(task.review_status || '')).length}</b></span>
+        <span>已完成 <b>{data.taskCounts?.completed ?? data.tasks.filter((task) => ["video_ready", "scheduled"].includes(task.status) && ['approved','replaced'].includes(task.review_status || '')).length}</b></span>
+        <button onClick={() => onNavigate("tasks")}>需处理 <b>{data.taskCounts?.attention ?? data.tasks.filter((task) => ["failed", "seedance_blocked"].includes(task.status)).length}</b> →</button>
       </section>
 
       <section className="content-grid">
@@ -2790,6 +2804,8 @@ function TasksPage({
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [videoError, setVideoError] = useState("");
+  const refreshKey = tasks.map(task => `${task.id}:${task.updated_at}:${task.status}:${task.review_status}`).join('|');
+  const { tasks: visibleTasks, hasMore, loading, error: listError, resetPages, loadMore } = useTaskPage(tasks, filter, query, refreshKey);
   async function openVideo(task: Task) {
     setVideoError("");
     try {
@@ -2801,9 +2817,6 @@ function TasksPage({
   const completed = (task: Task) => ["video_ready", "scheduled"].includes(task.status) && ['approved','replaced'].includes(task.review_status || '');
   const pendingReview = (task: Task) => ["video_ready", "scheduled"].includes(task.status) && !completed(task);
   const failed = (task: Task) => ["failed", "seedance_blocked"].includes(task.status);
-  const visibleTasks = tasks.filter((task) => (
-    filter === "all" || (filter === "review" ? pendingReview(task) : filter === "completed" ? completed(task) : filter === "attention" ? failed(task) : !completed(task) && !failed(task) && !pendingReview(task))
-  ) && `${task.product_name || task.title} ${task.tiktok_account_name || ""} ${task.product_external_id || ""}`.toLowerCase().includes(query.toLowerCase()));
   const progressText = (task: Task) => {
     if (["prompt_queued", "prompt_generating"].includes(task.status)) {
       if (!geminiRuntime?.online) return "Gemini 执行器离线，请在账号与设置中检查";
@@ -2836,13 +2849,14 @@ function TasksPage({
         } catch (error) { setVideoError(error instanceof Error ? error.message : '文件夹打开失败'); }
       }}>打开待检查文件夹</button>
       {videoError && <div role="alert" className="form-error">{videoError}</div>}
+      {listError && <div role="alert" className="form-error">{listError}</div>}
       <div className="task-toolbar">
         <div role="group" aria-label="筛选任务">
           {[["all", "全部"], ["active", "进行中"], ["review", "待检查"], ["attention", "需处理"], ["completed", "已完成"]].map(([value, label]) => (
-            <button key={value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)} aria-pressed={filter === value}>{label}</button>
+            <button key={value} className={filter === value ? "active" : ""} onClick={() => { setFilter(value); resetPages(); }} aria-pressed={filter === value}>{label}</button>
           ))}
         </div>
-        <input aria-label="搜索任务" placeholder="搜索商品、商品 ID 或 TK 账号" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <input aria-label="搜索任务" placeholder="搜索商品、商品 ID 或 TK 账号" value={query} onChange={(event) => { setQuery(event.target.value); resetPages(); }} />
       </div>
       <div className="table-panel tasks-table">
         <div className="table-head"><span>商品与账号</span><span>制作进度</span><span>当前状态</span><span>操作</span></div>
@@ -2869,9 +2883,10 @@ function TasksPage({
             <div className="row-actions">{task.download_path && task.review_status === 'approved' && <button onClick={() => void openVideo(task)}>查看视频</button>}<button onClick={() => onPreview(task)}>{failed(task) ? "查看 / 继续" : pendingReview(task) ? "审核" : "查看"}</button><button onClick={() => onDelete(task.id)}>×</button></div>
           </div>
         ))}
-        {!!tasks.length && !visibleTasks.length && <EmptyState icon="↗" title="没有匹配的任务" text="换一个筛选条件或搜索词。" />}
-        {!tasks.length && <EmptyState icon="↗" title="任务队列为空" text="从创作中心选择商品和 Gem 后启动第一条任务。" />}
+        {!loading && !visibleTasks.length && (filter !== 'all' || query ? <EmptyState icon="↗" title="没有匹配的任务" text="换一个筛选条件或搜索词。" /> : <EmptyState icon="↗" title="任务队列为空" text="从创作中心选择商品和 Gem 后启动第一条任务。" />)}
       </div>
+      <p aria-live="polite">已加载 {visibleTasks.length} 条任务{loading ? '，正在加载…' : ''}</p>
+      {hasMore && <button className="secondary" disabled={loading} onClick={loadMore}>{loading ? '加载中…' : '加载更多'}</button>}
     </div>
   );
 }
@@ -4276,7 +4291,7 @@ function PromptDrawer({
     }
   }
   async function copy() {
-    await navigator.clipboard.writeText(task.prompt);
+    await navigator.clipboard.writeText(task.prompt || '');
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
   }
@@ -4489,7 +4504,7 @@ function PromptDrawer({
 function LegacyPromptDrawer({ task, onClose }: { task: Task; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
   async function copy() {
-    await navigator.clipboard.writeText(task.prompt);
+    await navigator.clipboard.writeText(task.prompt || '');
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
   }

@@ -9,7 +9,7 @@ module.exports = async function ({ api, base, headers, sourceId }) {
   await api('/api/tasks', { method: 'PATCH', body: JSON.stringify({ id: sourceId, action: 'local-status', providerStatus: 'success', outputUrl: 'https://example.com/original.mp4' }) });
   assert.equal((await recreate()).status, 409, 'deleted archive account produces an actionable error');
   await api('/api/tiktok-accounts', { method: 'POST', body: JSON.stringify({ name: 'archive-test', archiveDirectory: 'E:\\NewDefault' }) });
-  const before = (await api('/api/workspace')).tasks.find(row => row.id === sourceId);
+  const before = await api('/api/tasks?id=' + sourceId);
   const responses = await Promise.all(Array.from({ length: 5 }, () => recreate()));
   assert.ok(responses.every(response => response.ok));
   const results = await Promise.all(responses.map(response => response.json()));
@@ -19,8 +19,8 @@ module.exports = async function ({ api, base, headers, sourceId }) {
   assert.notEqual(taskId, sourceId);
   const after = await api('/api/workspace');
   assert.equal(after.tasks.length, 2);
-  assert.deepEqual(after.tasks.find(row => row.id === sourceId), {...before,review_status:'replaced'}, 'old task is replaced; other history stays unchanged');
-  const copy = after.tasks.find(row => row.id === taskId);
+  assert.deepEqual(await api('/api/tasks?id=' + sourceId), {...before,review_status:'replaced'}, 'old task is replaced; other history stays unchanged');
+  const copy = await api('/api/tasks?id=' + taskId);
   assert.ok(before.gemini_request_text, 'fixture must have a saved custom request');
   for (const field of ['product_id', 'gem_id', 'gem_content_snapshot', 'gemini_request_text', 'product_external_id', 'duration', 'region', 'shooting_style', 'tiktok_account_name', 'archive_directory', 'product_image_key', 'image_count']) {
     assert.equal(copy[field], before[field], `preserves ${field}`);
@@ -68,7 +68,7 @@ module.exports = async function ({ api, base, headers, sourceId }) {
   const switchedResponse = await recreate(taskId,crypto.randomUUID(),alternate.id);
   assert.equal(switchedResponse.status,201);
   const switchedId=(await switchedResponse.json()).id;
-  const switched=(await api('/api/workspace')).tasks.find(t=>t.id===switchedId);
+  const switched=await api('/api/tasks?id=' + switchedId);
   assert.equal(switched.gem_id,alternate.id);
   assert.equal(switched.gem_content_snapshot,'换一个 Gem 的新指令');
   assert.match(switched.title,/重做切换测试/);

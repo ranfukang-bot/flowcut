@@ -9,6 +9,8 @@ import { BACKUP_TABLES, exportTables, restoreTables } from '../lib/backup-data.t
 import backup from '../gemini-web-workbench/src/backup-manager.js';
 import zip from '../gemini-web-workbench/src/backup-zip.js';
 import { gemExportFiles } from '../lib/gem-export.ts';
+import seedanceStore from '../vendor/seedance-engine/store.js';
+import queueEngine from '../vendor/seedance-engine/queue-engine.js';
 const { BackupManager, scheduleBackups, hash } = backup;
 const { zipDirectory } = zip;
 
@@ -50,7 +52,7 @@ test('table export/restore includes all business rows and rolls back a constrain
 test('real ZIP round trip restores table counts, media SHA256, settings; excludes Partitions and makes pre-restore backup', { skip: process.platform !== 'win32' }, async t => {
   const root = fixture(t), userData = path.join(root, 'profile'), directory = path.join(root, 'backups');
   write(userData, 'workbench-state.json', JSON.stringify({ settings: { bridgeKey: 'fixture-key', credentialsMasterKey: 'fixture-secret', flowcutUrl: 'http://127.0.0.1:4173', queueRunning: true }, accounts: [] }));
-  write(userData, 'seedance/workbench-state.json', JSON.stringify({ settings: { running: true }, accounts: [], tasks: [{ id: 'queued', status: 'queued' }, { id: 'done', status: 'success' }] }));
+  write(userData, 'seedance/workbench-state.json', JSON.stringify({ settings: { running: true }, accounts: [], tasks: [{ id: 'queued', status: 'queued' }, { id: 'done', status: 'success' }, { id: 'transient-failed', status: 'failed', imageItems: [{ uploadedUrl: '' }], errorMessage: 'fetch failed' }] }));
   write(userData, 'seedance/submitted-tasks.jsonl', '{"taskId":"old-task"}\n');
   write(userData, 'publisher/config/settings.json', '{"enabled":false}');
   write(userData, 'publisher/config/accounts.json', '[]');
@@ -74,7 +76,7 @@ test('real ZIP round trip restores table counts, media SHA256, settings; exclude
   // Remove only this test's temporary data, then restore through the same API.
   fs.rmSync(userData, { recursive: true, force: true }); fs.mkdirSync(userData);
   write(userData, 'workbench-state.json', JSON.stringify({ settings: { bridgeKey: 'replacement', flowcutUrl: 'http://127.0.0.1:4173' }, accounts: [] }));
-  write(userData, 'seedance/submitted-tasks.jsonl', '{"taskId":"newer-task"}\n');
+  write(userData, 'seedance/submitted-tasks.jsonl', '{"taskId":"newer-task"}\n' + JSON.stringify({ type: 'resolved', intentId: 'later-intent', localTaskId: 'transient-failed', outcome: 'rate-limited', result: { status: 'queued', errorMessage: 'fetch failed' } }) + '\n' + JSON.stringify({ type: 'resolved', intentId: 'recovered-intent', localTaskId: 'recovered-after-backup', snapshot: { id: 'recovered-after-backup', status: 'queued' }, outcome: 'rate-limited', result: { status: 'queued' } }) + '\n');
   for (const name of BACKUP_TABLES) sqlite.exec(`DELETE FROM "${name}"`); media.clear();
   const restored = await manager.restore(saved.path);
   assert.equal(restoreCalls, 1); assert.ok(fs.existsSync(restored.previousBackup));
@@ -84,8 +86,16 @@ test('real ZIP round trip restores table counts, media SHA256, settings; exclude
   assert.equal(JSON.parse(fs.readFileSync(path.join(userData, 'workbench-state.json'))).settings.queueRunning, false);
   const tasks = JSON.parse(fs.readFileSync(path.join(userData, 'seedance/workbench-state.json'))).tasks;
   assert.equal(tasks[0].status, 'submit_unconfirmed'); assert.equal(tasks[1].status, 'success');
+  assert.equal(tasks[2].status, 'submit_unconfirmed', 'an old failure may have been retried after the backup');
   const journal = fs.readFileSync(path.join(userData, 'seedance/submitted-tasks.jsonl'), 'utf8');
   assert.ok(journal.includes('old-task') && journal.includes('newer-task'));
+  const reopened = new seedanceStore.WorkbenchStore(path.join(userData, 'seedance'));
+  const engine = new queueEngine.QueueEngine(reopened, {}, () => {});
+  assert.equal(engine.recoverInterruptedTasks(), 0, 'restart must not recover a historical failure into the upload queue');
+  assert.equal(reopened.getTask('transient-failed').status, 'submit_unconfirmed');
+  assert.equal(reopened.getTask('recovered-after-backup').status, 'submit_unconfirmed', 'journal-recovered rows also require historical inspection');
+  const secondRestart = new seedanceStore.WorkbenchStore(path.join(userData, 'seedance'));
+  assert.equal(secondRestart.getTask('transient-failed').status, 'submit_unconfirmed', 'hold survives another restart after journal pruning');
   // Tampering must fail before pre-backup, upload or database writes.
   fs.appendFileSync(path.join(inspect, 'tables/gems.json'), ' ');
   const damaged = path.join(root, 'damaged.zip'); await zipDirectory(inspect, damaged);

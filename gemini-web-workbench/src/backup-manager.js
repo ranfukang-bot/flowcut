@@ -137,7 +137,9 @@ class BackupManager {
           if (relative === 'workbench-state.json') value.settings.queueRunning = false;
           if (relative === 'seedance/workbench-state.json') {
             value.settings.running = false;
-            for (const task of value.tasks || []) if (!['success', 'failed'].includes(task.status)) {
+            value.restoringBackup = true;
+            for (const task of value.tasks || []) if (task.status !== 'success') {
+              task.backupRestoreHold = true;
               task.status = 'submit_unconfirmed'; task.nextRetryAt = 0;
               task.errorMessage = '从历史备份恢复；无法确认备份之后的平台提交情况。请先核对平台历史，禁止自动重发。';
             }

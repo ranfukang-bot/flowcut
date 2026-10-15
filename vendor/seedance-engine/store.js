@@ -126,6 +126,7 @@ class WorkbenchStore {
             ? parsed.accounts
             : [{ ...DEFAULT_ACCOUNT, createdAt: Date.now() }],
         clearedFlowcutTaskIds: Array.isArray(parsed.clearedFlowcutTaskIds) ? parsed.clearedFlowcutTaskIds : [],
+        restoringBackup: parsed.restoringBackup === true,
         tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
         logs: Array.isArray(parsed.logs) ? parsed.logs.slice(0, 200) : [],
       };
@@ -183,7 +184,17 @@ class WorkbenchStore {
     this.journalEntries = journal.entries;
     this.replaySubmissionJournal();
     for (const task of this.data.tasks) {
-      if (task.status === 'uploading') {
+      // A historical failed task may have been retried after the backup. Apply
+      // the restore hold after journal replay as well, including recovered rows.
+      if (this.data.restoringBackup && task.status !== 'success') task.backupRestoreHold = true;
+      if (task.backupRestoreHold === true && task.status !== 'success') {
+        task.status = 'submit_unconfirmed';
+        task.errorCode = 'SUBMIT_UNCONFIRMED';
+        task.errorMessage = '从历史备份恢复；请先核对平台历史，禁止自动重发。需要重新生成时请创建新任务。';
+        task.activity = task.errorMessage;
+        task.activityLevel = 'error';
+        task.activityAt = Date.now();
+      } else if (task.status === 'uploading') {
         task.status = 'upload_wait';
         task.activity = '软件重新启动，等待恢复图片上传';
       } else if (task.status === 'submitting') {
@@ -196,6 +207,7 @@ class WorkbenchStore {
         task.activityAt = Date.now();
       }
     }
+    delete this.data.restoringBackup;
     // Saving prunes the journal records this task list now contains.
     this.save();
   }

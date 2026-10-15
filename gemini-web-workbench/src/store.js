@@ -20,6 +20,7 @@ function validateState(value) {
   if (value.pendingResults !== undefined && !Array.isArray(value.pendingResults)) {
     return "pendingResults 格式错误";
   }
+  if (value.pendingErrors !== undefined && (!Array.isArray(value.pendingErrors) || value.pendingErrors.some(item => !item || typeof item.taskId !== 'string' || typeof item.error !== 'string'))) return 'pendingErrors 格式错误';
   return "";
 }
 
@@ -87,6 +88,7 @@ class Store {
             )
             .slice(-50)
         : [],
+      pendingErrors: Array.isArray(value?.pendingErrors) ? value.pendingErrors : [],
       logs: Array.isArray(value?.logs) ? value.logs.slice(-300) : [],
     };
   }
@@ -206,6 +208,25 @@ class Store {
       (item) => item.taskId !== taskId
     );
     if (this.state.pendingResults.length !== before) this.save();
+  }
+
+  movePendingResultToError(pending, error) {
+    const priorResults = this.state.pendingResults, priorErrors = this.state.pendingErrors;
+    this.state.pendingResults = priorResults.filter(item => item.taskId !== pending.taskId);
+    this.state.pendingErrors = [...priorErrors.filter(item => item.taskId !== pending.taskId), {
+      taskId: pending.taskId, kind: pending.kind || 'standard', workerId: pending.workerId,
+      error, createdAt: new Date().toISOString(), nextRetryAt: Date.now() + 5000,
+    }];
+    if (!this.save()) {
+      this.state.pendingResults = priorResults; this.state.pendingErrors = priorErrors;
+      throw new Error('无法保存失败状态写回记录，原提示词仍保留在待写回队列');
+    }
+  }
+
+  removePendingError(taskId) {
+    const before = this.state.pendingErrors.length;
+    this.state.pendingErrors = this.state.pendingErrors.filter(item => item.taskId !== taskId);
+    if (this.state.pendingErrors.length !== before) this.save();
   }
 
   log(message, level = "info") {

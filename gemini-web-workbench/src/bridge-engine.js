@@ -90,6 +90,8 @@ class BridgeEngine {
     this.cooldownUntil = new Map();
     this.failureStreak = new Map();
     this.flushingResults = false;
+    this.flushingErrors = false;
+    this.warningTimes = new Map();
   }
 
   start() {
@@ -99,7 +101,7 @@ class BridgeEngine {
   }
 
   cancelTasks(ids) {
-    for (const id of ids) { this.cancelledTasks.add(id); this.store.removePendingResult(id); }
+    for (const id of ids) { this.cancelledTasks.add(id); this.store.removePendingResult(id); this.store.removePendingError?.(id); }
   }
 
   assertTaskActive(id) {
@@ -203,6 +205,7 @@ class BridgeEngine {
       this.lastError = "";
 
       await this.flushPendingResults();
+      await this.flushPendingErrors();
       if ((this.store.state.pendingResults || []).length) return;
 
       if (!this.store.state.settings.queueRunning) return;
@@ -272,6 +275,31 @@ class BridgeEngine {
     }, options);
   }
 
+  warnOnce(key, message) {
+    const now = Date.now();
+    if (this.warningTimes.has(key) && now - this.warningTimes.get(key) < 60_000) return;
+    for (const [entry, at] of this.warningTimes) if (now - at >= 60_000) this.warningTimes.delete(entry);
+    this.warningTimes.set(key, now);
+    this.store.log(message, 'warn');
+  }
+
+  async flushPendingErrors() {
+    if (this.flushingErrors) return;
+    this.flushingErrors = true;
+    try {
+      for (const pending of [...(this.store.state.pendingErrors || [])]) {
+        if (Number(pending.nextRetryAt || 0) > Date.now()) continue;
+        try {
+          await this.report(pending.taskId, 'error', { kind: pending.kind, workerId: pending.workerId, error: pending.error });
+          this.store.removePendingError(pending.taskId);
+        } catch (error) {
+          if (error.ignorable || Number(error.status) === 409) this.store.removePendingError(pending.taskId);
+          else this.warnOnce(`error-report:${error.status || 0}:${error.message}`, `任务 ${pending.taskId} 的失败状态已保存在本机，等待写回：${error.message}`);
+        }
+      }
+    } finally { this.flushingErrors = false; }
+  }
+
   async flushPendingResults() {
     if (this.flushingResults) return false;
     this.flushingResults = true;
@@ -299,9 +327,8 @@ class BridgeEngine {
         } catch (error) {
           if (error?.ignorable || Number(error?.status || 0) === 409) {
             this.store.removePendingResult(pending.taskId);
-            this.store.log(
+            this.warnOnce('duplicate-result',
               `任务 ${pending.taskId} 已进入后续阶段，忽略重复的 Gemini 写回`,
-              "warn"
             );
             continue;
           }
@@ -317,16 +344,28 @@ class BridgeEngine {
               kind: "script-pipeline",
               error: "旧版桌面端回写缺少结构化结果，已保留前四步并自动重试 Gem 优化",
             }).catch(() => {});
-            this.store.log(
+            this.warnOnce('legacy-script-result',
               `任务 ${pending.taskId} 已清理旧版无效回写，将从 Gem 优化阶段继续`,
-              "warn"
             );
             continue;
           }
+          const status = Number(error?.status || 0);
+          if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
+            const reason = `Gemini 结果被服务端拒绝（HTTP ${status}）：${message}`;
+            try {
+              await this.report(pending.taskId, 'error', { kind: pending.kind || 'standard', workerId: pending.workerId, error: reason });
+              this.store.removePendingResult(pending.taskId);
+            } catch {
+              // Failure reporting has its own durable outbox, so a temporary
+              // outage cannot lose the failure or block all other accounts.
+              this.store.movePendingResultToError(pending, reason);
+            }
+            this.warnOnce(`rejected-result:${status}:${message}`, `任务 ${pending.taskId} 的结果无法写回，已转为失败处理：${reason}`);
+            continue;
+          }
           this.lastError = message;
-          this.store.log(
+          this.warnOnce(`pending-result:${error?.status || 0}:${message}`,
             `任务 ${pending.taskId} 的提示词已保存在本机，等待服务恢复后写回：${message}`,
-            "warn"
           );
           return false;
         }

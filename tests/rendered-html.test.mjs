@@ -156,12 +156,11 @@ test("duration, region and shooting style travel through the real task chain", a
   assert.doesNotMatch(tiktokClient, /duration: 15,/);
 });
 
-test("Gemini web preserves the selected web model and API has no fixed model", async () => {
-  const [gemini, settings, providerConfig, preload] = await Promise.all([
+test("Gemini API has no fixed model or forced thinking configuration", async () => {
+  const [gemini, settings, providerConfig] = await Promise.all([
     source("lib/gemini.ts"),
     source("app/api/settings/route.ts"),
     source("lib/provider-config.ts"),
-    source("gemini-web-workbench/src/gemini-preload.js"),
   ]);
 
   assert.match(gemini, /resolveGeminiApiModel/);
@@ -169,6 +168,4 @@ test("Gemini web preserves the selected web model and API has no fixed model", a
   assert.doesNotMatch(gemini, /thinkingConfig/);
   assert.doesNotMatch(settings, /thinkingConfig/);
   assert.match(providerConfig, /model: ""/);
-  assert.doesNotMatch(preload, /ensureProModel/);
-  assert.doesNotMatch(preload, /MODEL_SELECTION_FAILED/);
 });

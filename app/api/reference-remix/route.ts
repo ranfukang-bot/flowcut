@@ -41,7 +41,7 @@ export async function POST(request: Request) {
     const gemini = await getProviderConfig("gemini");
     if (gemini.config.mode !== "web") {
       return Response.json(
-        { error: "爆款复刻需要 Gemini 网页 Pro，请先在接口设置中切换到网页工作台" },
+        { error: "爆款复刻需要 Gemini 网页版，请先在接口设置中切换到网页工作台" },
         { status: 409 }
       );
     }

@@ -67,6 +67,23 @@ test('Gem setup failure persists a version-specific hold and releases rather tha
   await restarted.tick();assert.deepEqual(advertised,{a:[]},'verified binding restores this account without clearing another Gem hold');
 });
 
+test('model selection failure releases the task and holds the account until settings change', async () => {
+  const { engine, reports, store } = fixture(async () => { throw Object.assign(Error('找不到模型'), { code: 'MODEL_SELECTION_FAILED' }); });
+  const account = { id: 'model-account', name: '模型测试账号' };
+  store.state.accounts = [account]; store.state.settings.queueRunning = true;
+  store.updateAccount = (_id, patch) => Object.assign(account, patch);
+  engine.active.set(account.id, { taskId: 'model-task' });
+  await engine.execute(account, { id: 'model-task', imageUrls: [] });
+  assert.deepEqual(reports.map(row => row.action), ['release']);
+  assert.equal(reports[0].errorCode, 'MODEL_SELECTION_FAILED');
+  const restarted = new BridgeEngine({ store, getAuthenticatedAccounts: () => [JSON.parse(JSON.stringify(account))], onChange() {} });
+  let claims = 0;
+  restarted.request = async route => { if (route.startsWith('?')) claims++; return { jobs: [] }; };
+  await restarted.tick(); assert.equal(claims, 0, 'persistent hold survives a restart');
+  store.state.settings.geminiModel = { mode: 'preserve' };
+  await restarted.tick(); assert.equal(claims, 1, 'new global settings allow work again');
+});
+
 test("Electron connection loss defers a task and the next claim can succeed", async () => {
   let attempts = 0;
   const { engine, reports } = fixture(async () => {

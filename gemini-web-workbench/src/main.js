@@ -32,11 +32,13 @@ const { PublisherRuntime } = require("./publisher-runtime");
 const { VideoReview } = require("./video-review");
 const { startRuntimeLogMaintenance } = require("./runtime-log-maintenance");
 const { version: appVersion } = require("../package.json");
+const { normalizeModelSettings, modelSettingsKey, needsThinkingCheck, modelRuntimeSource } = require('./gemini-model-selection');
+const modelSessionChecks = new Map();
 
 app.commandLine.appendSwitch("disable-blink-features", "AutomationControlled");
 app.setName("FlowCut全自动AI视频工作台");
 // The explicit smoke-test profile never reads or submits the user's old queue.
-const smokeProfile = process.env.FLOWCUT_DESKTOP_SMOKE_FILE && process.env.FLOWCUT_SMOKE_USER_DATA;
+const smokeProfile = process.env.FLOWCUT_SMOKE_USER_DATA;
 if (smokeProfile) {
   fs.mkdirSync(path.resolve(smokeProfile), { recursive: true });
   app.setPath("userData", path.resolve(smokeProfile));
@@ -199,7 +201,7 @@ async function refreshAccount(account) {
   store.updateAccount(account.id, {
     authenticated,
     lastCheckedAt: new Date().toISOString(),
-    error: authenticated ? "" : "尚未登录 Gemini",
+    error: authenticated ? (account.modelSelectionHold?.settingsKey === modelSettingsKey(store.state.settings.geminiModel) ? account.modelSelectionHold.message : '') : "尚未登录 Gemini",
   });
   return authenticated;
 }
@@ -210,6 +212,7 @@ function publicState() {
       flowcutUrl: store.state.settings.flowcutUrl,
       queueRunning: store.state.settings.queueRunning,
       hasBridgeKey: Boolean(store.state.settings.bridgeKey),
+      geminiModel: normalizeModelSettings(store.state.settings.geminiModel),
     },
     defaultAccountId: store.state.defaultAccountId,
     accounts: store.state.accounts,
@@ -851,6 +854,7 @@ async function runGeminiJob(account, job) {
       accountId: account.id,
       taskId: job.id,
       kind: job.kind || "standard",
+      modelSettings: normalizeModelSettings(store.state.settings.geminiModel),
     });
   });
   const pageJob = {
@@ -952,6 +956,7 @@ async function smokeProtectedGeminiRuntime() {
         editor.innerText='';document.querySelectorAll('[aria-label="Remove attachment"]').forEach(chip=>chip.remove());
       };</script>`;
     await window.loadURL('data:text/html;charset=utf-8,'+encodeURIComponent(fixture));
+    await modelPageCall(window, 'inspect', [{ mode: 'preserve', thinking: '' }, {}, false]);
     await window.webContents.executeJavaScript(
       protectedGeminiPageRuntime.replace('globalThis.__flowcutRunGeminiJob =', 'globalThis.__flowcutUploadSmoke = uploadFiles; globalThis.__flowcutTypeSmoke = typePrompt; globalThis.__flowcutSubmitSmoke = submitPrompt; globalThis.__flowcutRunGeminiJob ='),
       true,
@@ -977,6 +982,39 @@ async function smokeProtectedGeminiRuntime() {
   }
 }
 
+async function modelPageCall(window, method, args = []) {
+  try {
+    return await window.webContents.executeJavaScript(`${modelRuntimeSource}\nglobalThis.__flowcutModelPicker.${method}(...${JSON.stringify(args)})`, true);
+  } catch (error) {
+    throw Object.assign(new Error(error.message || '模型菜单读取失败'), { code: 'MODEL_SELECTION_FAILED' });
+  }
+}
+
+async function selectJobModel(event) {
+  const pending = [...pendingJobs.values()].find(item => item.contentsId === event.sender.id);
+  const window = pending && workerWindows.get(pending.accountId);
+  if (!pending || !window || window.webContents !== event.sender) throw new Error('Gemini 模型调用来源无效');
+  const account = accountById(pending.accountId);
+  const settings = pending.modelSettings;
+  const settingsKey = modelSettingsKey(settings);
+  const prior = modelSessionChecks.get(account.id);
+  const checkThinking = needsThinkingCheck(prior, settings);
+  const startedAt = performance.now();
+  const inspected = await modelPageCall(window, 'inspect', [settings, account.modelCatalog, checkThinking]);
+  const selected = inspected.needsMenu
+    ? await runWithActivatedGeminiWorker({ workerWindow: window, ownerWindow: mainWindow, debugVisible: showGeminiWorkerForDebug,
+        action: () => modelPageCall(window, 'ensure', [settings, { checkThinking, previousThinking: prior?.thinking || null }]) })
+    : { model: inspected.model, thinking: prior?.settingsKey === settingsKey ? prior.thinking : null, thinkingChecked: false, changed: false };
+  const elapsedMs = Math.round(performance.now() - startedAt);
+  if (selected.models) store.updateAccount(account.id, { modelCatalog: { ...account.modelCatalog, models: selected.models, thinking: selected.thinkingOptions || account.modelCatalog?.thinking || [], readAt: new Date().toISOString(), error: '' } });
+  if (selected.thinkingChecked) modelSessionChecks.set(account.id, { settingsKey, thinking: selected.thinking, checkedAt: Date.now() });
+  const info = { model: selected.model || '网页当前选择（无法读取名称）', thinking: selected.thinking, checkedAt: new Date().toISOString(), elapsedMs };
+  // Persist the actual selection before any prompt or image is sent, for all job kinds.
+  await bridge.report(pending.taskId, 'model', { kind: pending.kind, modelInfo: info });
+  store.log(`任务 ${pending.taskId} · ${account.name} · Gemini ${info.model} · 思考等级 ${info.thinking || '未读取（沿用网页）'} · 模型检查 ${elapsedMs}ms`);
+  return info;
+}
+
 function completeGeminiJob(result) {
   const pending = pendingJobs.get(result.requestId);
   if (!pending) return;
@@ -995,6 +1033,7 @@ function completeGeminiJob(result) {
   }
   const error = new Error(result.error || "Gemini 网页执行失败");
   error.code = result.code || "";
+  if (error.code === 'MODEL_SELECTION_FAILED') error.modelSettingsKey = modelSettingsKey(pending.modelSettings);
   if (error.code === "NEEDS_LOGIN") {
     void openLoginWindow(pending.accountId);
   }
@@ -1051,6 +1090,49 @@ ipcMain.on("gemini:job-diagnostic", (event, diagnostic) => {
 });
 
 function bindIpc() {
+  ipcMain.handle('gemini:select-model', async event => {
+    try { return { ok: true, ...await selectJobModel(event) }; }
+    catch (error) { return { ok: false, code: error.code || 'GEMINI_PAGE_ERROR', error: error.message }; }
+  });
+  ipcMain.handle('workbench:save-gemini-model', (_event, input) => {
+    const previous = store.state.settings.geminiModel;
+    store.state.settings.geminiModel = normalizeModelSettings(input);
+    if (!store.save()) { store.state.settings.geminiModel = previous; throw new Error('无法保存 Gemini 模型设置，请检查磁盘后重试'); }
+    modelSessionChecks.clear();
+    for (const account of store.state.accounts) {
+      if (account.modelSelectionHold?.settingsKey !== modelSettingsKey(store.state.settings.geminiModel) && account.error?.includes('MODEL_SELECTION_FAILED')) {
+        store.updateAccount(account.id, { error: '', modelSelectionHold: null });
+      }
+    }
+    store.log('Gemini 生成模型设置已保存，后续任务和重试使用新设置');
+    broadcast(); tickBridgeSoon();
+    return publicState();
+  });
+  ipcMain.handle('workbench:read-gemini-models', async () => {
+    if (store.state.settings.queueRunning || bridge?.active.size || bridge?.polling || gemSetupAccounts.size) throw new Error('请先暂停 Gemini 队列并等待正在执行的任务结束，再读取模型列表');
+    const accounts = store.state.accounts.filter(account => account.authenticated);
+    if (!accounts.length) throw new Error('请先登录 Gemini 账号');
+    for (const account of accounts) {
+      gemSetupAccounts.add(account.id);
+      const window = createGeminiWindow(account, false);
+      try {
+        await loadGeminiPage(account, window);
+        const catalog = await runWithActivatedGeminiWorker({ workerWindow: window, ownerWindow: mainWindow, debugVisible: showGeminiWorkerForDebug,
+          action: () => modelPageCall(window, 'readCatalog') });
+        store.updateAccount(account.id, { modelCatalog: { ...catalog, readAt: new Date().toISOString(), error: '' }, modelSelectionHold: null, error: '' });
+        modelSessionChecks.delete(account.id);
+        store.log(`${account.name} 已读取模型：${catalog.models.join('、')}；思考等级：${catalog.thinking.join('、') || '未提供子菜单'}`);
+      } catch (error) {
+        store.updateAccount(account.id, { modelCatalog: { ...account.modelCatalog, error: error.message, attemptedAt: new Date().toISOString() } });
+        store.log(`${account.name} 读取模型列表失败：${error.message}`, 'warn');
+      } finally {
+        if (!window.isDestroyed()) window.destroy();
+        gemSetupAccounts.delete(account.id);
+      }
+    }
+    broadcast();
+    return publicState();
+  });
   ipcMain.handle('gemini:upload-status', (event, action) => {
     const monitor = uploadMonitors.get(event.sender.id);
     if (!monitor) return { available:false, observed:0, pending:0, completed:0, failed:[], quietMs:0 };

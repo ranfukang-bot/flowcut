@@ -345,6 +345,11 @@ async function ensureFreshConversation(gemUrl) {
   await sleep(800);
 }
 
+async function ensureJobModel() {
+  const result = await ipcRenderer.invoke('gemini:select-model');
+  if (result?.ok === false) throw codedError(result.error || '无法确认 Gemini 生成模型', result.code || 'MODEL_SELECTION_FAILED');
+}
+
 function uploadProcessingVisible() {
   const candidates = composerMatches(
     'rich-textarea mat-progress-spinner, rich-textarea [role="progressbar"], rich-textarea [class*="progress" i], rich-textarea [class*="loading" i], rich-textarea [aria-busy="true"], rich-textarea [aria-label*="上传中" i], rich-textarea [aria-label*="uploading" i], rich-textarea [aria-label*="processing" i], [class*="attachment" i] mat-progress-spinner, [class*="attachment" i] [role="progressbar"], [class*="attachment" i] [class*="progress" i], [class*="attachment" i] [class*="loading" i], [class*="attachment" i] [aria-busy="true"], [class*="upload" i] mat-progress-spinner, [class*="upload" i] [role="progressbar"], [class*="upload" i] [aria-busy="true"]'
@@ -897,6 +902,7 @@ async function runJob(job) {
   await sleep(500);
   if (!job.gemUrl) throw codedError("任务缺少已保存的 Gem 链接，请更新桌面端并检查模板", "GEM_SETUP_REQUIRED");
   await ensureFreshConversation(job.gemUrl);
+  await ensureJobModel();
   await clearExistingAttachments();
   geminiProgress = "正在上传商品图片";
   await uploadFiles(job.files || [], job.filePaths || []);
@@ -924,6 +930,7 @@ async function runReferenceRemixJob(job) {
   // 整个复刻任务只在这里新建一次对话。第二轮严禁再次调用此函数，
   // 从而让 Gemini 保留第一轮对对标视频的理解。
   await ensureFreshConversation();
+  await ensureJobModel();
   await clearExistingAttachments();
   await uploadFiles(job.referenceFiles || [], job.referenceFilePaths || []);
   await typePrompt(job.analysisPrompt);
@@ -1208,6 +1215,7 @@ async function runScriptPipelineJob(job) {
     }
   } else {
     await ensureFreshConversation();
+    await ensureJobModel();
     await clearExistingAttachments();
 
     if (!rewrittenScript) {
@@ -1270,6 +1278,7 @@ async function runScriptPipelineJob(job) {
       try {
         // 每组使用全新对话，避免上一组或完整分镜污染当前视频提示词。
         await ensureFreshConversation();
+        await ensureJobModel();
         await sleep(500);
         const optimizedValue = await runJsonRound(
           optimizationPrompt(group),

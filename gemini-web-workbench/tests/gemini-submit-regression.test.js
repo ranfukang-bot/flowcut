@@ -55,15 +55,11 @@ test("Gemini upload can use hidden file inputs and waits for delayed previews", 
   assert.match(preload, /商品图片在 Gemini 中处理超时/);
 });
 
-test("Gemini web jobs keep the account model unchanged and reject unusable short responses", () => {
+test("Gemini web jobs reject unusable short responses", () => {
   const preload = fs.readFileSync(
     path.join(sourceRoot, "gemini-preload.js"),
     "utf8"
   );
-  assert.doesNotMatch(preload, /ensureProModel/);
-  assert.doesNotMatch(preload, /ensureGeminiWebModel/);
-  assert.doesNotMatch(preload, /bard-mode-menu-button|model-picker|model-select|model-switcher|model-choice-item/);
-  assert.doesNotMatch(preload, /MODEL_SELECTION_FAILED/);
   assert.match(preload, /GEMINI_MEDIA_UNREADABLE/);
   assert.match(preload, /GEMINI_REFUSED_RESPONSE/);
   assert.match(preload, /all\(SELECTORS\.pageError\)\.filter\(visible\)/);

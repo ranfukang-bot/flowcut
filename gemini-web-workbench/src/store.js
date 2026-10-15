@@ -1,5 +1,6 @@
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { normalizeModelSettings } = require('./gemini-model-selection');
 const {
   QUICK_RETRY_DELAYS_MS,
   describeBlockedState,
@@ -71,6 +72,7 @@ class Store {
         personalEditionInitialized: value?.settings?.personalEditionInitialized === true,
         maxConcurrent: Math.max(1, Math.min(32, Number(value?.settings?.maxConcurrent) || 5)),
         seedanceEmbedded: value?.settings?.seedanceEmbedded !== false,
+        geminiModel: normalizeModelSettings(value?.settings?.geminiModel),
       },
       defaultAccountId: String(value?.defaultAccountId || ""),
       accounts: Array.isArray(value?.accounts) ? value.accounts : [],

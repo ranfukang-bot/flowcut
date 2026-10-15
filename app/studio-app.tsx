@@ -22,6 +22,7 @@ import { confirmAction } from "./confirm-action";
 import { useImageProductId } from "./use-image-product-id";
 import { DEFAULT_GEM_REQUEST, renderGemRequest, validateGemRequest } from "../lib/gem-request";
 import { ApprovalStats } from './approval-stats';
+import { GeminiModelSettingsPanel, GeminiModelInfo, type GeminiModelSettings, type ModelState } from './gemini-model-settings';
 
 type Gem = {
   id: string;
@@ -50,6 +51,7 @@ type Product = {
 };
 
 type Task = {
+  gemini_model_info?: string | null;
   id: string;
   product_id: string;
   product_external_id?: string;
@@ -109,6 +111,7 @@ type ReferenceRemixAsset = {
 };
 
 type ReferenceRemixTask = {
+  gemini_model_info?: string | null;
   id: string;
   title: string;
   status: string;
@@ -144,6 +147,7 @@ type ScriptPromptGroup = {
 };
 
 type ScriptPipelineTask = {
+  gemini_model_info?: string | null;
   id: string;
   title: string;
   status: string;
@@ -404,6 +408,8 @@ async function api(path: string, init?: RequestInit) {
 }
 
 type FlowCutDesktopBridge = {
+  readGeminiModels?: () => Promise<ModelState>;
+  saveGeminiModel?: (settings: GeminiModelSettings) => Promise<ModelState>;
   openReviewVideo?: (id: string) => Promise<boolean>;
   openReviewFolder?: (id?: string) => Promise<boolean>;
   deletePendingReviewVideo?: (id: string, confirmed: boolean) => Promise<boolean>;
@@ -2002,7 +2008,7 @@ function ScriptPipelinePage({
     if (sourceScript.trim().length < 30) return onNotice("请先粘贴完整剧本");
     if (!geminiAccountId) return onNotice("请选择一个已登录的 Gemini 网页账号");
     if (!integrations.gemini || integrations.geminiMode !== "web") {
-      return onNotice("剧本提示词流水线需要在线的 Gemini 网页 Pro 执行器");
+      return onNotice("剧本提示词流水线需要在线的 Gemini 网页执行器");
     }
     setBusy(true);
     try {
@@ -2173,6 +2179,7 @@ function ScriptPipelinePage({
               )}
               {isExpanded && (
                 <div className="script-task-detail">
+                  <GeminiModelInfo value={task.gemini_model_info} />
                   <details><summary>① 格式化剧本</summary><pre>{task.rewritten_script || "等待 Gemini 改写……"}</pre></details>
                   <details><summary>② 角色与场景 JSON</summary><pre>{task.extraction_json || "等待提取……"}</pre></details>
                   <details><summary>③ 完整分镜 JSON</summary><pre>{task.storyboard_json || "等待拆分镜……"}</pre></details>
@@ -2291,7 +2298,7 @@ function ReferenceRemixPage({
     if (!geminiAccountId) return onNotice("请选择一个已登录的 Gemini 网页账号");
     if (!tiktokAccountName) return onNotice("请先在创作中心添加 TK 归档账号");
     if (!integrations.gemini || integrations.geminiMode !== "web") {
-      return onNotice("爆款复刻需要在线的 Gemini 网页 Pro 执行器");
+      return onNotice("爆款复刻需要在线的 Gemini 网页执行器");
     }
     setBusy(true);
     try {
@@ -2482,6 +2489,7 @@ function ReferenceRemixPage({
               {task.error && <div className="warning-box">{task.error}</div>}
               {isExpanded && (
                 <div className="remix-task-detail">
+                  <GeminiModelInfo value={task.gemini_model_info} />
                   <div><h4>第一轮 · 对标结构分析</h4><pre>{task.reference_analysis || "等待 Gemini 完成第一轮分析…"}</pre></div>
                   <div><h4>第二轮 · 最终 Seedance 提示词</h4><pre>{task.prompt || "等待同一对话上传产品图并继续改编…"}</pre></div>
                   {task.download_path && <p className="download-note">成片已归档：{task.download_path}</p>}
@@ -3092,7 +3100,7 @@ function SettingsPage({
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ provider, config: entries }),
           })) as { message?: string };
-          setMessage(result.message || "Gemini 网页 Pro 执行器已连接");
+          setMessage(result.message || "Gemini 网页执行器已连接");
           return;
         }
         await api("/api/settings", {
@@ -3100,7 +3108,7 @@ function SettingsPage({
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ provider, config: entries }),
         });
-        setMessage("已切换为本机 Gemini 网页 Pro 执行器");
+        setMessage("已切换为本机 Gemini 网页执行器");
         await load();
         await onUpdated();
         return;
@@ -3263,7 +3271,7 @@ function SettingsPage({
     setMessage("");
     try {
       if (action === "add") {
-        await desktop.addAccount(accountName.trim() || "Gemini Pro");
+        await desktop.addAccount(accountName.trim() || "Gemini 账号");
         setAccountName("");
         setMessage("已打开 Google 登录窗口；登录并确认 Pro 模型后，回到这里点“保存登录并隐藏”");
       } else if (action === "open") {
@@ -3360,7 +3368,7 @@ function SettingsPage({
           </div>
           <p>
             {geminiMode === "web"
-              ? "使用你本机已登录的 Gemini 网页版（默认 3.7 Flash），自动上传全部商品图和所选 Gem 设定。"
+              ? "使用你本机已登录的 Gemini 网页版，按全局模型设置执行，自动上传全部商品图和所选 Gem 设定。"
               : "使用 Google AI Studio API 分析商品图并生成提示词。"}
           </p>
           <div className="connection-fields">
@@ -3373,7 +3381,7 @@ function SettingsPage({
                   setGeminiMode(event.currentTarget.value as "web" | "api")
                 }
               >
-                <option value="web">本机 Gemini 网页版（默认 3.7 Flash，推荐）</option>
+                <option value="web">本机 Gemini 网页版</option>
                 <option value="api">Google AI Studio API</option>
               </select>
             </label>
@@ -3397,6 +3405,7 @@ function SettingsPage({
                     <><br />账号可用；创建任务时会自动启动队列，测试连接不会启动任务。</>
                   )}
                 </div>
+                <GeminiModelSettingsPanel bridge={desktopBridge} />
                 <div className="gemini-account-add">
                   <input
                     value={accountName}
@@ -4363,6 +4372,7 @@ function PromptDrawer({
         {task.duration === 30 && <div className="download-result"><b>双段 30 秒 · 15秒＋15秒</b><span>{task.segment_progress || "等待 Gemini 生成两段提示词"}</span></div>}
         <div className="drawer-chain-wrap">
           <span>本任务执行链路</span>
+          <GeminiModelInfo value={task.gemini_model_info} />
           <TaskChain task={task} />
         </div>
         {task.provider === "demo-engine" && (

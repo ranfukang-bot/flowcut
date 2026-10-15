@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 const desktopApi = {
+  readGeminiModels: () => ipcRenderer.invoke('workbench:read-gemini-models'),
+  saveGeminiModel: settings => ipcRenderer.invoke('workbench:save-gemini-model', settings),
   listGemBindings: (gem) => ipcRenderer.invoke("gem:list-bindings", gem),
   configureGem: (options) => ipcRenderer.invoke("gem:configure", options),
   seedanceSetPreferredModel: (id, model) => ipcRenderer.invoke('seedance:preferred-model', { id, model }),

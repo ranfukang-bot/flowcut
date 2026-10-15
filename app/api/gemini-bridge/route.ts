@@ -392,7 +392,9 @@ export async function POST(request: Request) {
       return Response.json({ error: "Gemini 网页执行器鉴权失败" }, { status: 401 });
     }
     const body = (await request.json()) as {
-      action?: "heartbeat" | "stage" | "result" | "error" | "release" | "retrying" | "defer";
+      action?: "heartbeat" | "stage" | "result" | "error" | "release" | "retrying" | "defer" | "model";
+      modelInfo?: { model?: string; thinking?: string | null; checkedAt?: string; elapsedMs?: number };
+      errorCode?: string;
       taskId?: string;
       kind?: "standard" | "reference-remix" | "script-pipeline";
       stage?: "extracting" | "storyboarding" | "grouping" | "optimizing";
@@ -419,6 +421,7 @@ export async function POST(request: Request) {
         authenticated: boolean;
         enabled?: boolean;
         busy?: boolean;
+        error?: string;
       }>;
     };
     const db = getDb();
@@ -486,6 +489,16 @@ export async function POST(request: Request) {
 
     if (!body.taskId) {
       return Response.json({ error: "缺少 FlowCut 任务 ID" }, { status: 400 });
+    }
+
+    if (body.action === 'model') {
+      const info = body.modelInfo;
+      if (!info || !String(info.model || '').trim() || String(info.model).length > 200 || String(info.thinking || '').length > 160) return Response.json({ error: '实际模型记录无效' }, { status: 400 });
+      const table = body.kind === 'reference-remix' ? 'reference_remix_tasks' : body.kind === 'script-pipeline' ? 'script_pipeline_tasks' : 'tasks';
+      const updated = await db.prepare(`UPDATE ${table} SET gemini_model_info = ?, gemini_error_code = NULL, updated_at = ? WHERE id = ? AND bridge_worker_id = ? AND bridge_claimed_at IS NOT NULL`)
+        .bind(JSON.stringify({ model: info.model, thinking: info.thinking || null, checkedAt: now, elapsedMs: Math.max(0, Number(info.elapsedMs) || 0) }), now, body.taskId, body.workerId).run();
+      if (!updated.meta.changes) return Response.json({ error: '任务领取已失效，禁止发送', ignorable: true }, { status: 409 });
+      return Response.json({ ok: true });
     }
 
     if (body.action === "stage" && body.kind === "reference-remix") {
@@ -747,9 +760,9 @@ export async function POST(request: Request) {
         .prepare(
           `UPDATE ${table} SET status = ${queuedStatusSql}, progress = ${queuedProgressSql},
            bridge_claimed_at = NULL, bridge_worker_id = NULL,
-           gemini_retry_at = NULL, error = ?, updated_at = ? WHERE id = ?`
+           gemini_retry_at = NULL, error = ?, gemini_error_code = ?, updated_at = ? WHERE id = ?`
         )
-        .bind(body.error || null, now, body.taskId)
+        .bind(body.error || null, body.errorCode || null, now, body.taskId)
         .run();
       return Response.json({ ok: true });
     }

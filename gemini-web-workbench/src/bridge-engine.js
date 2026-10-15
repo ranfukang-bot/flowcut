@@ -1,5 +1,6 @@
 const { randomUUID } = require("node:crypto");
 const { gemVersion } = require("./saved-gems");
+const { modelSettingsKey } = require('./gemini-model-selection');
 
 const RETRYABLE_JOB_CODES = new Set([
   "GEM_SETUP_RETRYABLE",
@@ -182,6 +183,7 @@ class BridgeEngine {
           authenticated: Boolean(account.authenticated),
           enabled: account.enabled !== false,
           busy: this.active.has(account.id),
+          error: account.modelSelectionHold?.settingsKey === modelSettingsKey(this.store.state.settings.geminiModel) ? account.modelSelectionHold.message : account.error || '',
         })),
       }),
     });
@@ -193,7 +195,7 @@ class BridgeEngine {
     try {
       const key = this.store.state.settings.bridgeKey;
       if (!key) throw new Error("尚未读取到本机 Bridge Key");
-      const accounts = this.getAuthenticatedAccounts().filter((account) => account.enabled !== false);
+      const accounts = this.getAuthenticatedAccounts().filter((account) => account.enabled !== false && account.modelSelectionHold?.settingsKey !== modelSettingsKey(this.store.state.settings.geminiModel));
       const planLimit = Math.max(1, Number(this.getMaxConcurrent() || 1));
       const effectiveLimit = Math.min(planLimit, accounts.length);
       await this.heartbeat(this.store.state.accounts, effectiveLimit);
@@ -425,7 +427,12 @@ class BridgeEngine {
       } else {
         this.failureStreak.delete(account.id);
       }
-      if (code === "EXECUTION_PERMIT_REQUIRED" || code === "EXECUTION_PERMIT_INVALID") {
+      if (code === 'MODEL_SELECTION_FAILED') {
+        const detail = `[MODEL_SELECTION_FAILED] ${account.name}：${message}。请重新读取模型列表或更改 Gemini 生成模型设置；此账号已暂停领取任务。`;
+        this.store.updateAccount(account.id, { error: detail, modelSelectionHold: { settingsKey: error.modelSettingsKey || modelSettingsKey(this.store.state.settings.geminiModel), message: detail, at: new Date().toISOString() } });
+        await this.report(job.id, 'release', { kind: job.kind, error: detail, errorCode: code }).catch(() => {});
+        this.store.log(detail, 'error');
+      } else if (code === "EXECUTION_PERMIT_REQUIRED" || code === "EXECUTION_PERMIT_INVALID") {
         await this.report(job.id, "release", {
           kind: job.kind,
           error: message,

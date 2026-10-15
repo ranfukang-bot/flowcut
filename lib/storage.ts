@@ -168,6 +168,10 @@ async function initializeWorkspace() {
   await ensureColumn("tasks", "bridge_worker_id", "TEXT");
   await ensureColumn("tasks", "gemini_failures", "INTEGER NOT NULL DEFAULT 0");
   await ensureColumn("tasks", "gemini_retry_at", "TEXT");
+  for (const table of ['tasks', 'reference_remix_tasks', 'script_pipeline_tasks']) {
+    await ensureColumn(table, 'gemini_model_info', 'TEXT');
+    await ensureColumn(table, 'gemini_error_code', 'TEXT');
+  }
   await db.batch(LEGACY_GEMINI_RETRY_UPDATES.map((sql) => db.prepare(sql)));
   await ensureColumn("tasks", "download_path", "TEXT");
   await ensureColumn("tasks", "review_status", "TEXT NOT NULL DEFAULT 'pending'");

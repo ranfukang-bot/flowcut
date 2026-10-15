@@ -12,6 +12,7 @@
     "test:gem-electron": "node scripts/test-gem-electron.cjs",
     "test:quota-ui": "node scripts/test-gem-electron.cjs --quota-ui",
     "test:review-ui": "node scripts/test-gem-electron.cjs --review-ui",
+    "test:model-electron": "node scripts/test-gem-electron.cjs --model-ui",
     "build:protected": "node scripts/build-protected.cjs",
     "build:win": "npm --prefix .. run build && node scripts/harden-site-build.cjs && node scripts/build-protected.cjs && node scripts/prepare-runtime.cjs && node scripts/prepare-media-tools.cjs && electron-builder --win nsis portable",
     "build:runtime": "node scripts/prepare-runtime.cjs"

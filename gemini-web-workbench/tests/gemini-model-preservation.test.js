@@ -59,7 +59,7 @@ function fixture({ label = "Flash 扩展", hasContent = true, generating = false
 }
 
 for (const label of ["Flash 扩展", "3.8 Flash", "3.1 Pro", "Future model"]) {
-  test(`new conversations/retries preserve user model and thinking: ${label}`, async () => {
+  test(`preserve mode: new conversations/retries leave user model and thinking untouched: ${label}`, async () => {
     const page = fixture({ label });
     for (let turn = 0; turn < 3; turn += 1) {
       page.state.hasContent = true;

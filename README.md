@@ -26,6 +26,8 @@ npm run build:win --prefix gemini-web-workbench
 
 打包后可运行 `npm run smoke:packaged`，它会创建隔离的临时配置并验证个人版启动、沙箱、页面执行器和 ZIP 备份。
 
+人工验证运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-isolated-test.ps1`。它会新建临时资料并显示主窗口，使用 4198/18777 测试端口；不会清空任务或自动退出。程序路径含空格时可通过脚本的 `-Executable` 参数指定。
+
 更新程序前退出旧程序，并保留该电脑自己的本机资料。源码以 `origin/main` 为准；不要覆盖未提交修改。仓库保留 MPL-2.0 LICENSE，第三方依赖按各自许可证使用。
 
 ## 数据边界

@@ -13,6 +13,7 @@ const { pathToFileURL } = require('node:url');
 const { createHash, randomBytes, randomUUID } = require("node:crypto");
 const { Store } = require("./store");
 const { createStateBroadcast } = require('./state-broadcast');
+const { desktopLaunchMode } = require('./launch-mode');
 const { BackupManager, scheduleBackups, confirmRestore } = require('./backup-manager');
 const { gemExportFiles } = require('../../lib/gem-export.ts');
 const { Readable } = require('node:stream');
@@ -44,8 +45,9 @@ const modelSessionChecks = new Map();
 
 app.commandLine.appendSwitch("disable-blink-features", "AutomationControlled");
 app.setName("FlowCut全自动AI视频工作台");
-// The explicit smoke-test profile never reads or submits the user's old queue.
-const smokeProfile = process.env.FLOWCUT_SMOKE_USER_DATA;
+// Isolation and automatic smoke are independent: manual test windows stay visible.
+const launchMode = desktopLaunchMode();
+const smokeProfile = launchMode.isolatedProfile;
 if (smokeProfile) {
   fs.mkdirSync(path.resolve(smokeProfile), { recursive: true });
   app.setPath("userData", path.resolve(smokeProfile));
@@ -269,7 +271,7 @@ async function showStartupBlocked(message) {
 
 function showNextPersistenceNotice() {
   if (persistenceNoticeOpen || !persistenceNotices.length) return;
-  if (smokeProfile) {
+  if (launchMode.automaticSmoke) {
     persistenceNotices.length = 0;
     return;
   }
@@ -352,7 +354,7 @@ function flowcutWindowIcon() {
 function navigationContext() {
   return { mainId: mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.id : undefined,
     siteUrl: store?.state?.settings?.flowcutUrl || 'http://127.0.0.1:4173', bootUrl: pathToFileURL(path.join(__dirname, 'boot.html')).href,
-    publisherOrigin: publisherRuntime?.origin || `http://127.0.0.1:${smokeProfile ? 18777 : 18776}` };
+    publisherOrigin: publisherRuntime?.origin || `http://127.0.0.1:${launchMode.publisherPort}` };
 }
 
 function ipcContext() {
@@ -362,7 +364,7 @@ function ipcContext() {
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
-    show: !smokeProfile,
+    show: launchMode.showMainWindow,
     width: 1500,
     height: 920,
     minWidth: 920,
@@ -1628,7 +1630,7 @@ app.whenReady().then(async () => {
     });
   }
   if (smokeProfile) {
-    store.state.settings.flowcutUrl = 'http://127.0.0.1:4198';
+    store.state.settings.flowcutUrl = launchMode.siteUrl;
     store.state.settings.backupDirectory = path.join(smokeProfile, 'backups');
   }
   if (!store.state.settings.personalEditionInitialized) {
@@ -1642,7 +1644,7 @@ app.whenReady().then(async () => {
   publisherRuntime = new PublisherRuntime({ app, store, token: desktopRuntimeToken, smoke: Boolean(smokeProfile),
     onOpen: () => { if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); } } });
   await activateWorkbench();
-  if (process.env.FLOWCUT_DESKTOP_SMOKE_FILE) {
+  if (launchMode.automaticSmoke) {
     const sandbox = { main: mainWindow.webContents.getLastWebPreferences().sandbox,
       seedance: [...(seedanceRuntime?.authWindows.values() || [])].map(window => window.webContents.getLastWebPreferences().sandbox) };
     const geminiProbe = createGeminiWindow({ name: '隔离沙箱验证', partition: 'flowcut-sandbox-probe' }, false);
@@ -1687,7 +1689,7 @@ app.whenReady().then(async () => {
     }
     const backupVerified = smokeProfile ? Boolean((await backupManager.backup('smoke')).mediaCount >= 0) : null;
     fs.writeFileSync(
-      process.env.FLOWCUT_DESKTOP_SMOKE_FILE,
+      launchMode.smokeFile,
       JSON.stringify(
         {
           edition: "personal",

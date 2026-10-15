@@ -32,7 +32,7 @@ $env:FLOWCUT_SMOKE_USER_DATA = Join-Path $env:TEMP ('FlowCut-model-check-' + [gu
 & '.\gemini-web-workbench\release\win-unpacked\FlowCut全自动AI视频工作台.exe'
 ```
 
-该变量会隔离 userData 和 appData、停用旧资料迁入，并使用测试端口。不要设置 `FLOWCUT_DESKTOP_SMOKE_FILE`：该变量会触发自动 smoke 后退出。普通启动不设置这两个变量，仍使用原本的资料目录。
+该变量会隔离 userData 和 appData、停用旧资料迁入，并使用测试端口；主窗口正常显示。也可直接运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-isolated-test.ps1`。只有同时设置 `FLOWCUT_DESKTOP_SMOKE_FILE` 才隐藏窗口、执行自动 smoke 并退出；单独的报告路径不会启用 smoke。普通启动不设置这两个变量，仍使用原本的资料目录。
 
 1. 在隔离实例中新加测试用 Gemini 账号并登录；不要复制原程序的 Partitions、状态文件或数据库。保持 Gemini 队列暂停，点击「读取模型列表」。逐个核对账号可选模型、思考等级和读取时间；列表变化时记录当前页面的实际选择器。
 2. 设置自动 Flash 和「高」（以实际列表名称为准），保存。创建测试商品、Gem 和一条商品提示词任务。确认保存的 `/gem/…` 页面上先确认模型、再上传图片和发送；详情与日志应显示所用完整模型、思考等级和检查耗时。

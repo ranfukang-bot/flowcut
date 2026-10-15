@@ -1,4 +1,4 @@
-/** Cloudflare Worker entry point for the vinext-starter template. */
+/** Local vinext service with desktop request authentication. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 
@@ -6,8 +6,6 @@ interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   MEDIA?: R2Bucket;
-  UPDATES?: R2Bucket;
-  UPDATES_KV?: KVNamespace;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -15,10 +13,7 @@ interface Env {
       };
     };
   };
-  FLOWCUT_CONTROL_PLANE?: string;
-  FLOWCUT_CONTROL_PLANE_VERSION?: string;
   FLOWCUT_DESKTOP_RUNTIME?: string;
-  FLOWCUT_PERSONAL_MODE?: string;
   FLOWCUT_DESKTOP_TOKEN?: string;
 }
 
@@ -36,12 +31,7 @@ interface ExecutionContext {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    const isControlPlane = env.FLOWCUT_CONTROL_PLANE === "1";
     const isDesktopRuntime = env.FLOWCUT_DESKTOP_RUNTIME === "1";
-
-    if (env.FLOWCUT_PERSONAL_MODE === "1" && /^\/api\/(?:license|admin|control-plane|updates)(?:\/|$)/.test(url.pathname)) {
-      return Response.json({ error: "个人本机版不使用云端授权与更新" }, { status: 404 });
-    }
 
     if (isDesktopRuntime && url.pathname.startsWith("/api/")) {
       const expected = String(env.FLOWCUT_DESKTOP_TOKEN || "");
@@ -52,20 +42,6 @@ const worker = {
           { status: 401, headers: { "cache-control": "no-store" } },
         );
       }
-    }
-
-    if (
-      isControlPlane &&
-      url.pathname.startsWith("/api/") &&
-      !url.pathname.startsWith("/api/license/") &&
-      !url.pathname.startsWith("/api/admin/") &&
-      !url.pathname.startsWith("/api/control-plane/") &&
-      !url.pathname.startsWith("/api/updates/")
-    ) {
-      return secureResponse(request, Response.json(
-        { error: "公网授权中心不提供本地工作台业务接口" },
-        { status: 404, headers: { "cache-control": "no-store" } },
-      ), isControlPlane);
     }
 
     if (url.pathname === "/_vinext/image") {
@@ -79,41 +55,9 @@ const worker = {
       }, allowedWidths);
     }
 
-    const response = await handler.fetch(request, env, ctx);
-    return secureResponse(request, response, isControlPlane);
+    return handler.fetch(request, env, ctx);
   },
 };
-
-function secureResponse(
-  request: Request,
-  response: Response,
-  isControlPlane: boolean,
-) {
-  if (!isControlPlane) return response;
-  const headers = new Headers(response.headers);
-  headers.set("x-content-type-options", "nosniff");
-  headers.set("x-frame-options", "DENY");
-  headers.set("referrer-policy", "no-referrer");
-  headers.set("permissions-policy", "camera=(), microphone=(), geolocation=()");
-  headers.set(
-    "content-security-policy",
-    "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
-  );
-  if (new URL(request.url).protocol === "https:") {
-    headers.set(
-      "strict-transport-security",
-      "max-age=31536000; includeSubDomains",
-    );
-  }
-  if (new URL(request.url).pathname.startsWith("/api/")) {
-    headers.set("cache-control", "no-store");
-  }
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
 
 export default worker;
 

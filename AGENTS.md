@@ -63,3 +63,4 @@ Pop-Location
 7. 每次发版同步更新 `gemini-web-workbench/package.json`、对应锁文件、README 当前版本及 `CHANGELOG.md`。
 8. 保留已有用户修改。普通代码、构建输出和临时测试资料分离，禁止提交凭据、Cookie、真实数据库、成片或日志。
 9. 新增桌面 IPC 必须通过 `bindIpc` 中的 `handle` 注册。Gemini 结果必须匹配当前 pending job 的 webContents；导航、令牌和窗口来源边界见 `docs/desktop-security.md`。
+10. 本机备份仅通过业务表导出事务和明确的本机文件清单收集数据，不复制运行中的 SQLite 或 Partitions。恢复先校验并备份当前数据，保留较新提交记录、暂停历史未完成任务；见 `docs/local-backups.md`。

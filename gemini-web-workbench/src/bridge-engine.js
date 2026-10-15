@@ -471,12 +471,6 @@ class BridgeEngine {
         this.store.updateAccount(account.id, { error: detail, modelSelectionHold: { settingsKey: error.modelSettingsKey || modelSettingsKey(this.store.state.settings.geminiModel), message: detail, at: new Date().toISOString() } });
         await this.report(job.id, 'release', { kind: job.kind, error: detail, errorCode: code }).catch(() => {});
         this.store.log(detail, 'error');
-      } else if (code === "EXECUTION_PERMIT_REQUIRED" || code === "EXECUTION_PERMIT_INVALID") {
-        await this.report(job.id, "release", {
-          kind: job.kind,
-          error: message,
-        }).catch(() => {});
-        this.store.log(`任务 ${job.id} 未取得云端执行许可：${message}`, "error");
       } else if (code === "NEEDS_LOGIN") {
         this.store.updateAccount(account.id, {
           authenticated: false,

@@ -4,19 +4,11 @@ import { LEGACY_GEMINI_RETRY_UPDATES } from "./gemini-retry";
 type RuntimeEnv = {
   DB?: D1Database;
   MEDIA?: R2Bucket;
-  UPDATES?: R2Bucket;
-  UPDATES_KV?: KVNamespace;
   GEMINI_API_KEY?: string;
   GEMINI_MODEL?: string;
   SEEDANCE_WEBHOOK_URL?: string;
   SEEDANCE_WEBHOOK_TOKEN?: string;
   CREDENTIALS_MASTER_KEY?: string;
-  FLOWCUT_CONTROL_PLANE?: string;
-  FLOWCUT_ADMIN_USERNAME?: string;
-  FLOWCUT_ADMIN_PASSWORD?: string;
-  FLOWCUT_LICENSE_PRIVATE_JWK?: string;
-  FLOWCUT_LICENSE_PUBLIC_JWK?: string;
-  FLOWCUT_CONTROL_PLANE_VERSION?: string;
   FLOWCUT_DESKTOP_RUNTIME?: string;
 };
 

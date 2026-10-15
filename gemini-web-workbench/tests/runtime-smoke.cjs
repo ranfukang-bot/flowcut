@@ -293,6 +293,8 @@ async function main() {
     };
   });
   await page.reload({ waitUntil: "networkidle" });
+  await page.getByText('个人本机版', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: /授权登录|续费/ }).count(), 0);
   await page.getByText("Gemini 已登录 · 队列已暂停", { exact: true }).waitFor();
   await page.getByRole("navigation").getByRole("button", { name: "账号与设置" }).click();
   const geminiCard = page.locator("form.connection-card").filter({ hasText: "提示词引擎" });

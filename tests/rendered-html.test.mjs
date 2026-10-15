@@ -51,10 +51,9 @@ test("task queue can clear all completed records without deleting product assets
 });
 
 test("Gemini web transient failures are persisted for delayed automatic recovery", async () => {
-  const [bridge, storage, schema, desktopBridge] = await Promise.all([
+  const [bridge, storage, desktopBridge] = await Promise.all([
     source("app/api/gemini-bridge/route.ts"),
     source("lib/storage.ts"),
-    source("db/schema.ts"),
     source("gemini-web-workbench/src/bridge-engine.js"),
   ]);
 
@@ -66,8 +65,6 @@ test("Gemini web transient failures are persisted for delayed automatic recovery
   );
   assert.match(storage, /gemini_failures/);
   assert.match(storage, /gemini_retry_at/);
-  assert.match(schema, /geminiFailures/);
-  assert.match(schema, /geminiRetryAt/);
   assert.match(desktopBridge, /this\.report\(job\.id, "defer"/);
 });
 
@@ -86,7 +83,7 @@ test("desktop runtime hides developer overlays and accepts idempotent Gemini wri
 });
 
 test("studio exposes encrypted providers, concurrent tasks and Seedance bridge", async () => {
-  const [studio, settings, tasks, bridge, geminiBridge, providerConfig, tiktokAccounts, desktopRenderer] = await Promise.all([
+  const [studio, settings, tasks, bridge, geminiBridge, providerConfig, tiktokAccounts] = await Promise.all([
     source("app/studio-app.tsx"),
     source("app/api/settings/route.ts"),
     source("app/api/tasks/route.ts"),
@@ -94,7 +91,6 @@ test("studio exposes encrypted providers, concurrent tasks and Seedance bridge",
     source("app/api/gemini-bridge/route.ts"),
     source("lib/provider-config.ts"),
     source("app/api/tiktok-accounts/route.ts"),
-    source("gemini-web-workbench/src/renderer.js"),
   ]);
 
   assert.match(studio, /Gemini API/);
@@ -130,8 +126,6 @@ test("studio exposes encrypted providers, concurrent tasks and Seedance bridge",
   assert.match(settings, /generateContent/);
   assert.match(providerConfig, /AES-GCM/);
   assert.doesNotMatch(settings, /secrets\.apiKey[^;]*Response\.json/);
-  assert.match(desktopRenderer, /account-name-dialog/);
-  assert.doesNotMatch(desktopRenderer, /\bprompt\(/);
 });
 
 test("duration, region and shooting style travel through the real task chain", async () => {

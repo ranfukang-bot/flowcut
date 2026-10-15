@@ -20,11 +20,6 @@ const localBindingConfig = {
   vars: Object.fromEntries(
     [
       "CREDENTIALS_MASTER_KEY",
-      "FLOWCUT_CONTROL_PLANE",
-      "FLOWCUT_ADMIN_USERNAME",
-      "FLOWCUT_ADMIN_PASSWORD",
-      "FLOWCUT_LICENSE_PRIVATE_JWK",
-      "FLOWCUT_LICENSE_PUBLIC_JWK",
       "FLOWCUT_DESKTOP_RUNTIME",
       "FLOWCUT_DESKTOP_TOKEN",
     ]

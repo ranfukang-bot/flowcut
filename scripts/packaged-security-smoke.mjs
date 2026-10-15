@@ -1,130 +1,42 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { execFileSync, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { ProxyAgent, setGlobalDispatcher } from "undici";
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import { spawn, execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 
-const root = path.resolve(import.meta.dirname, "..");
-if (process.platform === "win32") {
-  try {
-    const registry = execFileSync(
-      "reg.exe",
-      [
-        "query",
-        "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
-        "/v",
-        "ProxyServer",
-      ],
-      { encoding: "utf8", windowsHide: true },
-    );
-    const proxy = registry.match(/ProxyServer\s+REG_SZ\s+([^\r\n]+)/i)?.[1]?.trim();
-    if (proxy) setGlobalDispatcher(new ProxyAgent(`http://${proxy}`));
-  } catch {}
-}
-
-const recovery = JSON.parse(
-  fs.readFileSync(path.join(root, ".flowcut-cloudflare", "recovery.json"), "utf8"),
-);
-const base = String(recovery.controlPlaneUrl || "").replace(/\/+$/, "");
-const adminLogin = await fetch(`${base}/api/admin/login`, {
-  method: "POST",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify({
-    username: recovery.adminUsername,
-    password: recovery.adminPassword,
-  }),
-});
-if (!adminLogin.ok) throw new Error(`管理员测试登录失败：${adminLogin.status}`);
-const cookie = adminLogin.headers.get("set-cookie")?.split(";")[0] || "";
-const suffix = Date.now().toString(36);
-const username = `desktop-smoke-${suffix}`;
-const password = randomBytes(24).toString("base64url");
-let userId = "";
-let child = null;
-let childExit = null;
-
-async function adminAction(body) {
-  const response = await fetch(`${base}/api/admin/license`, {
-    method: "POST",
-    headers: { "content-type": "application/json", cookie },
-    body: JSON.stringify(body),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `管理员操作失败：${response.status}`);
-  return data;
-}
-
+const root = path.resolve(import.meta.dirname, '..');
+const executable = path.resolve(process.argv[2] || path.join(root, 'gemini-web-workbench/release/win-unpacked/FlowCut全自动AI视频工作台.exe'));
+const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'flowcut-personal-package-'));
+const profile = path.join(temporary, 'profile'), resultFile = path.join(temporary, 'result.json');
+fs.mkdirSync(path.join(profile, 'seedance'), { recursive: true });
+fs.writeFileSync(path.join(profile, 'workbench-state.json'), JSON.stringify({ settings: { bridgeKey: randomBytes(32).toString('hex'), queueRunning: false, flowcutUrl: 'http://127.0.0.1:4198' }, accounts: [] }));
+fs.writeFileSync(path.join(profile, 'seedance/workbench-state.json'), JSON.stringify({ settings: { running: false, apiPort: 17891, downloadDirectory: path.join(temporary, 'downloads') }, accounts: [{ id: 'default', name: '隔离测试', enabled: false, partition: 'persist:isolated-package-smoke' }], tasks: [] }));
+let child, exited = false;
 try {
-  const created = await adminAction({
-    action: "createUser",
-    username,
-    password,
-    planCode: "trial",
-    maxDevices: 1,
-    maxConcurrent: 1,
-    expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
-    notes: "受保护安装包冒烟测试，完成后自动删除",
-  });
-  userId = created.users?.find((item) => item.username === username)?.id || "";
-  if (!userId) throw new Error("测试账号创建后没有返回账号 ID");
-
-  const executable = path.join(
-    root,
-    "gemini-web-workbench",
-    "release",
-    "win-unpacked",
-    "FlowCut全自动AI视频工作台.exe",
-  );
-  const smokeFile = path.join(os.tmpdir(), `flowcut-packaged-authorized-${suffix}.json`);
-  const isolatedUserData = path.join(os.tmpdir(), `flowcut-user-data-${suffix}`);
-  child = spawn(executable, [`--user-data-dir=${isolatedUserData}`], {
-    env: {
-      ...process.env,
-      FLOWCUT_TEST_LICENSE_USERNAME: username,
-      FLOWCUT_TEST_LICENSE_PASSWORD: password,
-      FLOWCUT_DESKTOP_SMOKE_FILE: smokeFile,
-    },
-    windowsHide: true,
-    stdio: "ignore",
-  });
-  child.once("exit", (code, signal) => {
-    childExit = { code, signal };
-  });
-  const deadline = Date.now() + 90_000;
-  while (Date.now() < deadline && !fs.existsSync(smokeFile) && !childExit) {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  if (childExit) {
-    throw new Error(
-      `受保护安装包提前退出：${childExit.signal || childExit.code || "unknown"}`,
-    );
-  }
-  if (!fs.existsSync(smokeFile)) throw new Error("受保护安装包启动超时");
-  const result = JSON.parse(fs.readFileSync(smokeFile, "utf8"));
-  if (!result.license?.authorized || !result.workbenchStarted) {
-    throw new Error(`受保护安装包未进入已授权工作台：${result.license?.error || "未知错误"}`);
-  }
-  if (!result.geminiPageRuntimeReady) {
-    throw new Error("受保护安装包没有成功注入 Gemini 页面执行器");
-  }
-  const response = await fetch(`${result.siteUrl}/api/settings`, {
-    signal: AbortSignal.timeout(5_000),
-  }).catch(() => null);
-  if (response?.status !== 401) {
-    throw new Error("本地业务接口没有拒绝缺少随机凭证的外部访问");
-  }
-  console.log("Protected packaged desktop smoke test passed.");
+  child = spawn(executable, [`--user-data-dir=${profile}`], { windowsHide: true, stdio: 'ignore', env: { ...process.env, FLOWCUT_SMOKE_USER_DATA: profile, FLOWCUT_DESKTOP_SMOKE_FILE: resultFile } });
+  let launchError;
+  child.once('error', error => { launchError = error; }); child.once('exit', () => { exited = true; });
+  const deadline = Date.now() + 90000;
+  while (!fs.existsSync(resultFile) && !exited && !launchError && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 250));
+  if (launchError) throw launchError;
+  assert.ok(fs.existsSync(resultFile), 'packaged smoke timed out or exited before reporting');
+  const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+  const expectedVersion = JSON.parse(fs.readFileSync(path.join(root, 'gemini-web-workbench/package.json'), 'utf8')).version;
+  assert.equal(result.version, expectedVersion); assert.equal(result.edition, 'personal');
+  for (const key of ['workbenchStarted', 'publisherReady', 'geminiPageRuntimeReady', 'backupVerified', 'clearAllVerified', 'modelPolicyVerified', 'nativeProtocolBlocked', 'savedGemEditorVerified']) assert.equal(result[key], true, key);
+  assert.equal(result.sandbox.main, true); assert.equal(result.sandbox.gemini, true); assert.equal(result.sandbox.geminiBridge, true);
+  assert.ok(result.sandbox.seedance.length > 0 && result.sandbox.seedance.every(Boolean));
+  const evidence = { passed: true, version: result.version, edition: result.edition, sandbox: result.sandbox, backupVerified: true, isolatedProfile: profile };
+  if (process.env.FLOWCUT_PACKAGED_SMOKE_EVIDENCE) fs.writeFileSync(process.env.FLOWCUT_PACKAGED_SMOKE_EVIDENCE, JSON.stringify(evidence, null, 2));
+  console.log(JSON.stringify(evidence));
+  const exitDeadline = Date.now() + 10000;
+  while (!exited && Date.now() < exitDeadline) await new Promise(resolve => setTimeout(resolve, 100));
 } finally {
-  if (child?.pid && process.platform === "win32") {
-    try {
-      execFileSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
-        windowsHide: true,
-        stdio: "ignore",
-      });
-    } catch {}
-  } else {
-    child?.kill("SIGKILL");
+  if (child?.pid && !exited) {
+    if (process.platform === 'win32') { try { execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch {} }
+    else child.kill();
   }
-  if (userId) await adminAction({ action: "deleteUser", userId }).catch(() => {});
+  // The resolved target was created here and is always inside the OS temp root.
+  if (temporary.startsWith(path.join(os.tmpdir(), 'flowcut-personal-package-'))) fs.rmSync(temporary, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
 }

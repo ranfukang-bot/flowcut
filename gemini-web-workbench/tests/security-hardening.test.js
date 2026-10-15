@@ -21,22 +21,7 @@ test("release packaging excludes the editable FlowCut source tree", () => {
   assert.deepEqual(pkg.build.files, ["dist-protected/**/*", "package.json"]);
 });
 
-test("personal desktop executors have no cloud execution permit dependency", () => {
-  const main = fs.readFileSync(path.join(desktopRoot, "src", "main.js"), "utf8");
-  const bridge = fs.readFileSync(
-    path.join(desktopRoot, "src", "bridge-engine.js"),
-    "utf8",
-  );
-  const seedanceBridge = fs.readFileSync(
-    path.join(workspaceRoot, "vendor", "seedance-engine", "flowcut-bridge.js"),
-    "utf8",
-  );
-  assert.doesNotMatch(main, /licenseClient|authorizeExecution/);
-  assert.doesNotMatch(bridge, /authorizeJob/);
-  assert.doesNotMatch(seedanceBridge, /authorizeJob/);
-});
-
-test("protected build contains bytecode without editable authorization modules", (t) => {
+test("protected build contains bytecode without editable executors", (t) => {
   const output = path.join(desktopRoot, "dist-protected");
   if (!fs.existsSync(output)) {
     t.skip("dist-protected 尚未生成；请在 build:protected 后验证打包产物");
@@ -44,7 +29,6 @@ test("protected build contains bytecode without editable authorization modules",
   }
   assert.equal(fs.existsSync(path.join(output, "main.jsc")), true);
   assert.equal(fs.existsSync(path.join(output, "main.bundle.cjs")), false);
-  assert.equal(fs.existsSync(path.join(output, "license-client.js")), false);
   assert.equal(fs.existsSync(path.join(output, "bridge-engine.js")), false);
   assert.equal(fs.existsSync(path.join(output, "seedance-runtime.js")), false);
   const geminiPreload = fs.readFileSync(

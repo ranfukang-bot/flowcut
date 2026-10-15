@@ -1,9 +1,11 @@
 const { randomUUID } = require("node:crypto");
 const { gemVersion } = require("./saved-gems");
 const { modelSettingsKey } = require('./gemini-model-selection');
+const { MODEL_SELECTION_RETRYABLE, modelFailure, modelSucceeded } = require('./model-selection-errors');
 
 const RETRYABLE_JOB_CODES = new Set([
   "GEM_SETUP_RETRYABLE",
+  MODEL_SELECTION_RETRYABLE,
   "GEM_SETUP_REQUIRED",
   "CONVERSATION_RESET_FAILED",
   "GEMINI_PAGE_ERROR",
@@ -425,6 +427,7 @@ class BridgeEngine {
       this.onChange();
       this.assertTaskActive(job.id);
       const runResult = await this.runJob(account, { ...job, files, referenceFiles });
+      modelSucceeded(this.store, account);
       const result = typeof runResult === "string"
         ? { prompt: runResult, analysis: "" }
         : { ...runResult, prompt: String(runResult?.prompt || ""), analysis: String(runResult?.analysis || "") };
@@ -466,10 +469,11 @@ class BridgeEngine {
       } else {
         this.failureStreak.delete(account.id);
       }
-      if (code === 'MODEL_SELECTION_FAILED') {
-        const detail = `[MODEL_SELECTION_FAILED] ${account.name}：${message}。请重新读取模型列表或更改 Gemini 生成模型设置；此账号已暂停领取任务。`;
-        this.store.updateAccount(account.id, { error: detail, modelSelectionHold: { settingsKey: error.modelSettingsKey || modelSettingsKey(this.store.state.settings.geminiModel), message: detail, at: new Date().toISOString() } });
-        await this.report(job.id, 'release', { kind: job.kind, error: detail, errorCode: code }).catch(() => {});
+      const modelFailureState = modelFailure(this.store, account, error);
+      if (modelFailureState?.hold) {
+        const detail = `[MODEL_SELECTION_FAILED] ${account.name}：${code === MODEL_SELECTION_RETRYABLE ? `相同设置下连续 ${modelFailureState.count} 次模型检查临时失败；` : ''}${message}。请重新读取模型列表或更改 Gemini 生成模型设置；此账号已暂停领取任务。`;
+        this.store.updateAccount(account.id, { error: detail, modelSelectionHold: { settingsKey: modelFailureState.settingsKey, message: detail, at: new Date().toISOString() } });
+        await this.report(job.id, 'release', { kind: job.kind, error: detail, errorCode: 'MODEL_SELECTION_FAILED' }).catch(() => {});
         this.store.log(detail, 'error');
       } else if (code === "NEEDS_LOGIN") {
         this.store.updateAccount(account.id, {

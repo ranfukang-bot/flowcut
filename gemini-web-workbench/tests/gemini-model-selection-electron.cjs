@@ -1,6 +1,7 @@
 const { app, BrowserWindow } = require('electron');
 const assert = require('node:assert/strict');
 const { modelRuntimeSource } = require('../src/gemini-model-selection');
+const { callModelPage } = require('../src/model-selection-errors');
 const { runWithActivatedGeminiWorker } = require('../src/gemini-worker-activation');
 const report = require('./helpers/electron-test-report.cjs');
 app.on('window-all-closed', () => {});
@@ -29,6 +30,12 @@ app.whenReady().then(async () => {
     const switchMs = performance.now() - started;
     assert.equal(changed.model, '3.8 Flash'); assert.equal(changed.thinking, '高'); assert.ok(switchMs < 5000);
     report({ pass: true, scenario: 'hidden Electron activation switches model before restoring thinking', elapsedMs: switchMs });
-  } finally { window.destroy(); }
+    await assert.rejects(callModelPage(window, modelRuntimeSource, 'ensure', [{ mode: 'exact', name: 'missing-model', thinking: '' }]), { code: 'MODEL_SELECTION_FAILED' });
+    await run(`__flowcutModelPicker.inspect = () => { throw new Error('temporary fixture script error'); }; true`);
+    await assert.rejects(callModelPage(window, '', 'inspect'), { code: 'MODEL_SELECTION_RETRYABLE' });
+    window.destroy();
+    await assert.rejects(callModelPage(window, '', 'inspect'), { code: 'MODEL_SELECTION_RETRYABLE' });
+    report({ pass: true, scenario: 'native model calls preserve deterministic codes and retry script/destruction errors' });
+  } finally { if (!window.isDestroyed()) window.destroy(); }
   app.exit(0);
 }).catch(error => { report({ pass: false, error: String(error.stack || error) }); app.exit(1); });

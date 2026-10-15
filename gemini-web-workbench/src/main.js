@@ -41,6 +41,7 @@ const { VideoReview } = require("./video-review");
 const { startRuntimeLogMaintenance } = require("./runtime-log-maintenance");
 const { version: appVersion } = require("../package.json");
 const { normalizeModelSettings, modelSettingsKey, needsThinkingCheck, modelRuntimeSource } = require('./gemini-model-selection');
+const { callModelPage, temporaryModelError, modelSucceeded, modelWatchdogError } = require('./model-selection-errors');
 const modelSessionChecks = new Map();
 
 app.commandLine.appendSwitch("disable-blink-features", "AutomationControlled");
@@ -861,6 +862,7 @@ async function runGeminiJob(account, job) {
       contents: window.webContents,
       timeoutMs: (job.kind === "script-pipeline" ? 60 : job.kind === "reference-remix" ? 26 : 13) * 60_000,
       onFailure(error) {
+        error = modelWatchdogError(error, pendingJobs.get(requestId));
         pendingJobs.delete(requestId);
         // Stop the old renderer before releasing the account for another task.
         if (!window.isDestroyed()) window.destroy();
@@ -1004,11 +1006,7 @@ async function smokeProtectedGeminiRuntime() {
 }
 
 async function modelPageCall(window, method, args = []) {
-  try {
-    return await window.webContents.executeJavaScript(`${modelRuntimeSource}\nglobalThis.__flowcutModelPicker.${method}(...${JSON.stringify(args)})`, true);
-  } catch (error) {
-    throw Object.assign(new Error(error.message || '模型菜单读取失败'), { code: 'MODEL_SELECTION_FAILED' });
-  }
+  return callModelPage(window, modelRuntimeSource, method, args);
 }
 
 async function selectJobModel(event) {
@@ -1021,11 +1019,18 @@ async function selectJobModel(event) {
   const prior = modelSessionChecks.get(account.id);
   const checkThinking = needsThinkingCheck(prior, settings);
   const startedAt = performance.now();
-  const inspected = await modelPageCall(window, 'inspect', [settings, account.modelCatalog, checkThinking]);
-  const selected = inspected.needsMenu
-    ? await runWithActivatedGeminiWorker({ workerWindow: window, ownerWindow: mainWindow, debugVisible: showGeminiWorkerForDebug,
-        action: () => modelPageCall(window, 'ensure', [settings, { checkThinking, previousThinking: prior?.thinking || null }]) })
-    : { model: inspected.model, thinking: prior?.settingsKey === settingsKey ? prior.thinking : null, thinkingChecked: false, changed: false };
+  let selected;
+  pending.modelSelectionActive = true;
+  try {
+    const inspected = await modelPageCall(window, 'inspect', [settings, account.modelCatalog, checkThinking]);
+    selected = inspected.needsMenu
+      ? await runWithActivatedGeminiWorker({ workerWindow: window, ownerWindow: mainWindow, debugVisible: showGeminiWorkerForDebug,
+          action: () => modelPageCall(window, 'ensure', [settings, { checkThinking, previousThinking: prior?.thinking || null }]) })
+      : { model: inspected.model, thinking: prior?.settingsKey === settingsKey ? prior.thinking : null, thinkingChecked: false, changed: false };
+  } catch (error) {
+    throw error.code === 'MODEL_SELECTION_FAILED' ? error : temporaryModelError(error);
+  } finally { pending.modelSelectionActive = false; }
+  modelSucceeded(store, account);
   const elapsedMs = Math.round(performance.now() - startedAt);
   if (selected.models) store.updateAccount(account.id, { modelCatalog: { ...account.modelCatalog, models: selected.models, thinking: selected.thinkingOptions || account.modelCatalog?.thinking || [], readAt: new Date().toISOString(), error: '' } });
   if (selected.thinkingChecked) modelSessionChecks.set(account.id, { settingsKey, thinking: selected.thinking, checkedAt: Date.now() });
@@ -1055,7 +1060,7 @@ function completeGeminiJob(result, contentsId) {
   }
   const error = new Error(result.error || "Gemini 网页执行失败");
   error.code = result.code || "";
-  if (error.code === 'MODEL_SELECTION_FAILED') error.modelSettingsKey = modelSettingsKey(pending.modelSettings);
+  if (['MODEL_SELECTION_FAILED', 'MODEL_SELECTION_RETRYABLE'].includes(error.code)) error.modelSettingsKey = modelSettingsKey(pending.modelSettings);
   if (error.code === "NEEDS_LOGIN") {
     void openLoginWindow(pending.accountId);
   }
@@ -1185,7 +1190,18 @@ function bindIpc() {
   });
   handle('gemini:select-model', async event => {
     try { return { ok: true, ...await selectJobModel(event) }; }
-    catch (error) { return { ok: false, code: error.code || 'GEMINI_PAGE_ERROR', error: error.message }; }
+    catch (error) {
+      if (['MODEL_SELECTION_FAILED', 'MODEL_SELECTION_RETRYABLE'].includes(error.code)) {
+        const pending = [...pendingJobs.entries()].find(([, job]) => job.contentsId === event.sender.id);
+        if (pending) {
+          const [requestId, job] = pending;
+          completeGeminiJob({ requestId, ok: false, code: error.code, error: error.message }, event.sender.id);
+          const window = workerWindows.get(job.accountId);
+          if (window && !window.isDestroyed()) window.destroy();
+        }
+      }
+      return { ok: false, code: error.code || 'GEMINI_PAGE_ERROR', error: error.message };
+    }
   });
   handle('workbench:save-gemini-model', (_event, input) => {
     const previous = store.state.settings.geminiModel;
@@ -1193,8 +1209,9 @@ function bindIpc() {
     if (!store.save()) { store.state.settings.geminiModel = previous; throw new Error('无法保存 Gemini 模型设置，请检查磁盘后重试'); }
     modelSessionChecks.clear();
     for (const account of store.state.accounts) {
+      if (modelSettingsKey(previous) !== modelSettingsKey(store.state.settings.geminiModel) && account.modelSelectionFailures) modelSucceeded(store, account);
       if (account.modelSelectionHold?.settingsKey !== modelSettingsKey(store.state.settings.geminiModel) && account.error?.includes('MODEL_SELECTION_FAILED')) {
-        store.updateAccount(account.id, { error: '', modelSelectionHold: null });
+        store.updateAccount(account.id, { error: '', modelSelectionHold: null, modelSelectionFailures: null });
       }
     }
     store.log('Gemini 生成模型设置已保存，后续任务和重试使用新设置');
@@ -1212,7 +1229,7 @@ function bindIpc() {
         await loadGeminiPage(account, window);
         const catalog = await runWithActivatedGeminiWorker({ workerWindow: window, ownerWindow: mainWindow, debugVisible: showGeminiWorkerForDebug,
           action: () => modelPageCall(window, 'readCatalog') });
-        store.updateAccount(account.id, { modelCatalog: { ...catalog, readAt: new Date().toISOString(), error: '' }, modelSelectionHold: null, error: '' });
+        store.updateAccount(account.id, { modelCatalog: { ...catalog, readAt: new Date().toISOString(), error: '' }, modelSelectionHold: null, modelSelectionFailures: null, error: '' });
         modelSessionChecks.delete(account.id);
         store.log(`${account.name} 已读取模型：${catalog.models.join('、')}；思考等级：${catalog.thinking.join('、') || '未提供子菜单'}`);
       } catch (error) {

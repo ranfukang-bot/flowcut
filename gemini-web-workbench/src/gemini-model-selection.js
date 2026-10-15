@@ -22,8 +22,10 @@ function createModelPicker(doc = document) {
   const equal = (a, b) => clean(a).toLowerCase() === clean(b).toLowerCase();
   const visible = el => Boolean(el && el.isConnected && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden' && !el.closest('[hidden],[aria-hidden="true"]'));
   const fail = message => { throw Object.assign(new Error(message), { code: 'MODEL_SELECTION_FAILED' }); };
+  const retry = message => { throw Object.assign(new Error(message), { code: 'MODEL_SELECTION_RETRYABLE' }); };
   const button = () => {
     const rows = [...doc.querySelectorAll(buttonSelector)].filter(visible);
+    if (!rows.length) retry('模型按钮尚未出现，请稍后重试');
     if (rows.length !== 1) fail('模型按钮无法唯一识别，网页菜单结构可能已变化');
     return rows[0];
   };
@@ -80,10 +82,10 @@ function createModelPicker(doc = document) {
     return { needsMenu: checkThinking || !wanted || !buttonMatches(current, wanted, catalog.models || []), model: wanted || current };
   }
   async function session(action) {
-    const deadline = Date.now() + 4000;
+    const deadline = Date.now() + 8000;
     const wait = async (predicate, message = '模型菜单响应超时或结构已变化') => {
       while (Date.now() <= deadline) { const value = predicate(); if (value) return value; await new Promise(resolve => setTimeout(resolve, 25)); }
-      fail(message);
+      retry(message);
     };
     const open = async () => {
       let menu = menus().find(isModelMenu);
@@ -109,8 +111,10 @@ function createModelPicker(doc = document) {
       trigger.click();
       return wait(() => menus().find(el => el !== menu && items(el).length && !isModelMenu(el)));
     };
+    let failed = false;
     try { return await action({ wait, open, close, thoughtMenu }); }
-    finally { await close(); }
+    catch (error) { failed = true; throw error; }
+    finally { try { await close(); } catch (error) { if (!failed) throw error; } }
   }
   async function readCatalog() {
     return session(async ({ open, thoughtMenu }) => {
@@ -125,6 +129,7 @@ function createModelPicker(doc = document) {
     return session(async ({ wait, open, close, thoughtMenu }) => {
       let menu = await open();
       let rows = models(menu), names = rows.map(label);
+      if (!names.length || new Set(names.map(name => name.toLowerCase())).size !== names.length) fail('模型列表为空或存在重名选项');
       const marked = rows.filter(selected);
       if (marked.length !== 1) fail('无法从菜单勾选状态确认当前模型');
       const wanted = target(settings, names) || label(marked[0]);
@@ -140,7 +145,8 @@ function createModelPicker(doc = document) {
         await close();
         menu = await open(); rows = models(menu); names = rows.map(label);
       }
-      await wait(() => models(menu).filter(el => selected(el) && equal(label(el), wanted)).length === 1, `切换后核对不一致，目标模型 ${wanted}`);
+      const verified = models(menu).filter(selected);
+      if (verified.length !== 1 || !equal(label(verified[0]), wanted)) fail(`切换后核对不一致，目标模型 ${wanted}`);
       let thinking = previousThinking, thinkingChecked = false, thinkingOptions;
       if (changed || checkThinking) {
         const thought = await thoughtMenu(menu);

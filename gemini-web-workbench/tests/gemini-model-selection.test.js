@@ -100,6 +100,32 @@ test('mismatched model verification prevents upload and send', async t => {
   const result = await select(config());
   assert.equal(result.code, 'MODEL_SELECTION_FAILED'); assert.equal(result.sent, 0); assert.equal(result.uploads, 0);
 });
+
+test('menu timeout has an eight-second budget and remains retryable without upload or send', async t => {
+  const { page, select } = await fixture(t);
+  await page.evaluate(() => {
+    globalThis.testClock = 0;
+    Date.now = () => (globalThis.testClock += 1000);
+    document.querySelector('button').onclick = () => { clicks.push('stalled menu'); };
+  });
+  const result = await select(config());
+  assert.equal(result.code, 'MODEL_SELECTION_RETRYABLE'); assert.equal(result.sent, 0); assert.equal(result.uploads, 0);
+  const clock = await page.evaluate(() => testClock);
+  assert.ok(clock >= 9000 && clock <= 11000, `eight-second simulated deadline: ${clock}`);
+});
+
+test('duplicate model names deterministically fail without upload or send', async t => {
+  const { select } = await fixture(t, { models: [...names, '3.8 Flash'] });
+  const result = await select(config());
+  assert.equal(result.code, 'MODEL_SELECTION_FAILED'); assert.equal(result.sent, 0); assert.equal(result.uploads, 0);
+});
+
+test('an identified empty model menu fails deterministically without upload or send', async t => {
+  const { page, select } = await fixture(t);
+  await page.evaluate(() => { document.querySelector('button').setAttribute('aria-controls', 'models'); document.querySelector('#models').replaceChildren(); });
+  const result = await select(config());
+  assert.equal(result.code, 'MODEL_SELECTION_FAILED'); assert.equal(result.sent, 0); assert.equal(result.uploads, 0);
+});
 test('menu reader returns per-account labels and thinking options without changing choices', async t => {
   const { page } = await fixture(t);
   const catalog = await page.evaluate(() => __flowcutModelPicker.readCatalog());
@@ -148,20 +174,20 @@ test('global selection, discovered catalog and account hold survive a store rest
   assert.equal(restored.state.accounts[0].modelSelectionHold.settingsKey, modelSettingsKey(restored.state.settings.geminiModel));
 });
 
-for (const [method, job] of [
+for (const code of ['MODEL_SELECTION_FAILED', 'MODEL_SELECTION_RETRYABLE']) for (const [method, job] of [
   ['runJob', { gemUrl: 'https://gemini.google.com/gem/fixture' }],
   ['runReferenceRemixJob', {}],
   ['runScriptPipelineJob', {}],
   ['runScriptPipelineJob', { rawGroupsJson: JSON.stringify([{ index: 1, rawDuration: 15, targetDuration: 15, rawPrompt: 'fixture' }]) }],
 ]) {
-  test(`real ${method} rejects serialized model failure before any upload or prompt: ${Object.keys(job)}`, async () => {
+  test(`real ${method} rejects ${code} before any upload or prompt: ${Object.keys(job)}`, async () => {
     const vm = require('node:vm');
     const source = require('node:fs').readFileSync(require.resolve('../src/gemini-preload'), 'utf8');
     const calls = [];
-    const context = vm.createContext({ require: () => ({ ipcRenderer: { on() {}, send() {}, invoke: async () => ({ ok: false, code: 'MODEL_SELECTION_FAILED', error: '找不到目标模型' }) } }), setTimeout, clearTimeout, console, document: { readyState: 'complete' } });
+    const context = vm.createContext({ require: () => ({ ipcRenderer: { on() {}, send() {}, invoke: async () => ({ ok: false, code, error: '模型检查失败' }) } }), setTimeout, clearTimeout, console, document: { readyState: 'complete' } });
     vm.runInContext(source, context);
     Object.assign(context, { loginOrChallengeVisible: () => false, waitUntil: async () => {}, waitFor: async () => {}, ensureFreshConversation: async () => {}, clearExistingAttachments: async () => {}, uploadFiles: async () => calls.push('upload'), typePrompt: async () => calls.push('prompt'), submitPrompt: async () => calls.push('send') });
-    await assert.rejects(context[method](job), { code: 'MODEL_SELECTION_FAILED' });
+    await assert.rejects(context[method](job), { code });
     assert.deepEqual(calls, []);
   });
 }

@@ -142,7 +142,7 @@ class SeedanceRuntime {
   }
 
   state() {
-    const state = this.engine?.state();
+    const state = this.engine?.state({ summary: true });
     if (!state) {
       return {
         ready: false,
@@ -551,6 +551,7 @@ class SeedanceRuntime {
   stop() {
     this.engine?.stop();
     this.flowcutBridge?.stop();
+    this.store?.flushPendingSave();
     for (const window of this.authWindows.values()) {
       if (this.isLiveWindow(window)) window.destroy();
     }

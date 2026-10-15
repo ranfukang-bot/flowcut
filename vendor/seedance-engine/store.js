@@ -76,6 +76,11 @@ const DEFAULT_ACCOUNT = {
   exhaustedReason: '',
 };
 
+function criticalTask(task) {
+  const { activity, activityLevel, activityAt, logs, ...critical } = task;
+  return JSON.stringify(critical);
+}
+
 class WorkbenchStore {
   constructor(userDataPath, { onPersistError = null, onPersistRecovered = null } = {}) {
     this.filePath = path.join(userDataPath, 'workbench-state.json');
@@ -439,8 +444,9 @@ class WorkbenchStore {
   // generation or a finished download into a failure. The owner is notified.
   save() {
     if (this.blocked) return false;
+    clearTimeout(this.saveTimer); this.saveTimer = null;
     try {
-      writeTextDurable(this.filePath, JSON.stringify(this.data, null, 2), {
+      writeTextDurable(this.filePath, JSON.stringify(this.data), {
         delays: this.persistError ? QUICK_RETRY_DELAYS_MS : undefined,
       });
     } catch (error) {
@@ -454,6 +460,7 @@ class WorkbenchStore {
       if (firstFailure) this.onPersistError?.(this.persistError);
       return false;
     }
+    this.durableTasks = new Map(this.data.tasks.map(task => [task.id, criticalTask(task)]));
     this.flushPendingUnmatched();
     this.pruneSubmissionJournal();
     if (this.persistError) {
@@ -464,12 +471,31 @@ class WorkbenchStore {
     return true;
   }
 
-  snapshot(extra = {}) {
+  scheduleSave() {
+    // A previously failed critical save must still recover synchronously.
+    if (this.persistError) return this.save();
+    if (!this.saveTimer) {
+      this.saveTimer = setTimeout(() => { this.saveTimer = null; this.save(); }, 1000);
+      this.saveTimer.unref?.();
+    }
+    return true;
+  }
+
+  flushPendingSave() { return this.saveTimer ? this.save() : !this.persistError; }
+
+  snapshot(extra = {}, { summary = false } = {}) {
+    const tasks = [...this.data.tasks].sort((a, b) => (a.order || 0) - (b.order || 0));
     return JSON.parse(
       JSON.stringify({
         settings: this.data.settings,
         accounts: this.data.accounts,
-        tasks: [...this.data.tasks].sort((a, b) => (a.order || 0) - (b.order || 0)),
+        tasks: summary ? tasks.map(task => ({
+          id: task.id, status: task.status, flowcutTaskId: task.flowcutTaskId,
+          imageName: task.imageName, accountId: task.accountId, accountName: task.accountName,
+          activity: task.activity, activityLevel: task.activityLevel, activityAt: task.activityAt,
+          errorCode: task.errorCode, errorMessage: task.errorMessage,
+          logs: task.logs?.slice(0, 5) || [],
+        })) : tasks,
         logs: this.data.logs.slice(0, 100),
         ...extra,
       }),
@@ -520,12 +546,13 @@ class WorkbenchStore {
     this.save();
   }
 
-  upsertTask(task) {
+  upsertTask(task, { activityOnly = false } = {}) {
     if (this.isFlowcutTaskCleared(task.flowcutTaskId)) return task;
     const index = this.data.tasks.findIndex((item) => item.id === task.id);
     if (index >= 0) this.data.tasks[index] = task;
     else this.data.tasks.push(task);
-    this.save();
+    if (activityOnly && this.durableTasks?.get(task.id) === criticalTask(task)) this.scheduleSave();
+    else this.save();
     return task;
   }
 
@@ -556,7 +583,7 @@ class WorkbenchStore {
     const entry = { time: Date.now(), level, message: String(message) };
     this.data.logs.unshift(entry);
     this.data.logs = this.data.logs.slice(0, 200);
-    this.save();
+    this.scheduleSave();
     return entry;
   }
 }

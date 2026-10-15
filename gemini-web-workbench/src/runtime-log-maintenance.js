@@ -11,8 +11,19 @@ const LOG_FILES = [
 const MAX_LOG_BYTES = 10 * 1024 * 1024;
 
 function cleanRuntimeLogs(userData, { clearAll = false, maxBytes = MAX_LOG_BYTES,
-  io = fs, onError = () => {} } = {}) {
+  io = fs, onError = () => {}, now = () => Date.now() } = {}) {
   const cleared = [];
+  // Only our own rotated diagnostic files; never recurse into application data.
+  const logDir = path.join(userData, 'logs');
+  try {
+    if (!io.lstatSync(userData).isSymbolicLink() && !io.lstatSync(logDir).isSymbolicLink()) {
+      for (const name of io.readdirSync(logDir)) {
+        if (!/^workbench-\d{4}-\d{2}-\d{2}-\d+-\d+\.log$/.test(name)) continue;
+        const file = path.join(logDir, name), stat = io.lstatSync(file);
+        if (stat.isFile() && !stat.isSymbolicLink() && now() - stat.mtimeMs > 7 * 86400000) io.unlinkSync(file);
+      }
+    }
+  } catch (error) { if (error.code !== 'ENOENT') onError(error, 'logs'); }
   for (const relative of LOG_FILES) {
     const file = path.join(userData, relative);
     try {

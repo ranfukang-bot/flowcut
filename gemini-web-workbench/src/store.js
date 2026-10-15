@@ -1,5 +1,6 @@
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { WorkbenchLog } = require('./workbench-log');
 const { normalizeModelSettings } = require('./gemini-model-selection');
 const {
   QUICK_RETRY_DELAYS_MS,
@@ -44,6 +45,10 @@ class Store {
     }
     this.blocked = null;
     this.state = this.normalize(loaded.value || {});
+    this.logWriter = new WorkbenchLog(app.getPath('userData'));
+    const legacyLogs = this.state.logs;
+    this.state.logs = [...this.logWriter.tail(), ...legacyLogs].slice(-300);
+    legacyLogs.forEach(entry => this.logWriter.append(entry));
     if (loaded.status === "recovered") {
       this.state.logs.push({
         time: new Date().toISOString(),
@@ -97,8 +102,11 @@ class Store {
   // task into a failure. The owner is notified so the problem is visible.
   save() {
     if (this.blocked) return false;
+    const { logs: _logs, ...durable } = this.state;
+    const serialized = JSON.stringify(durable, null, 2);
+    if (!this.persistError && serialized === this.lastSerialized) return true;
     try {
-      writeTextDurable(this.filePath, JSON.stringify(this.state, null, 2), {
+      writeTextDurable(this.filePath, serialized, {
         delays: this.persistError ? QUICK_RETRY_DELAYS_MS : undefined,
         backup: "mirror",
       });
@@ -113,6 +121,7 @@ class Store {
       if (firstFailure) this.onPersistError?.(this.persistError);
       return false;
     }
+    this.lastSerialized = serialized;
     if (this.persistError) {
       const previous = this.persistError;
       this.persistError = null;
@@ -230,14 +239,17 @@ class Store {
   }
 
   log(message, level = "info") {
-    this.state.logs.push({
+    const entry = {
       time: new Date().toISOString(),
       level,
       message: String(message),
-    });
+    };
+    this.state.logs.push(entry);
     this.state.logs = this.state.logs.slice(-300);
-    this.save();
+    this.logWriter.append(entry);
   }
+
+  flushLogs() { return this.logWriter?.flush(); }
 }
 
 module.exports = { Store };

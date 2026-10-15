@@ -34,6 +34,7 @@ const desktopApi = {
     ipcRenderer.invoke("workbench:save-settings", settings),
   updateState: () => ipcRenderer.invoke("update:get-state"),
   seedanceState: () => ipcRenderer.invoke("seedance:get-state"),
+  seedanceTaskDetail: id => ipcRenderer.invoke('seedance:task-detail', id),
   seedanceAddAccount: (name) =>
     ipcRenderer.invoke("seedance:account-add", name),
   seedanceOpenLogin: (id) =>

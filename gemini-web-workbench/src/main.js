@@ -12,6 +12,7 @@ const fs = require("node:fs");
 const { pathToFileURL } = require('node:url');
 const { createHash, randomBytes, randomUUID } = require("node:crypto");
 const { Store } = require("./store");
+const { createStateBroadcast } = require('./state-broadcast');
 const { SavedGems, createGemDriver, cleanGemUrl } = require("./saved-gems");
 const { BridgeEngine } = require("./bridge-engine");
 const { watchGeminiJob } = require("./gemini-job-watchdog");
@@ -236,11 +237,11 @@ function publicState() {
   };
 }
 
-function broadcast() {
+const broadcast = createStateBroadcast(() => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("workbench:state", publicState());
   }
-}
+});
 
 function tickBridgeSoon() {
   if (bridge) setTimeout(() => void bridge.tick(), 50);
@@ -1323,6 +1324,11 @@ function bindIpc() {
   handle("publisher:release", (_event, input) => publisherRuntime.release(String(input?.taskId || ""), input?.confirmed === true));
   handle("update:get-state", () => publicState().update);
   handle("seedance:get-state", () => seedanceRuntime?.state() || null);
+  handle('seedance:task-detail', (_event, id) => {
+    const task = seedanceRuntime?.store?.getTask(String(id)) || seedanceRuntime?.store?.tasks.find(task => task.flowcutTaskId === String(id));
+    if (!task) throw new Error('Seedance 任务不存在');
+    return JSON.parse(JSON.stringify(task));
+  });
   handle('seedance:preferred-model', (_event, input) => seedanceRuntime.setPreferredModel(input.id, input.model));
   handle('seedance:fast-fallback', (_event, input) => seedanceRuntime.decideFastFallback(input.id, input.choice, input.date));
   handle('seedance:reconnect-login', (_event, id) => seedanceRuntime.reconnectLogin(id));
@@ -1635,10 +1641,12 @@ app.on("second-instance", () => {
   }
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
   app.isQuitting = true;
   if (shutdownStarted) return;
+  event.preventDefault();
   shutdownStarted = true;
+  broadcast.stop();
   stopRuntimeLogMaintenance?.();
   stopRuntimeLogMaintenance = null;
   bridge?.stop();
@@ -1655,6 +1663,7 @@ app.on("before-quit", () => {
   if (localSiteProcess?.pid) {
     localSiteProcess.kill();
   }
+  Promise.resolve(store?.flushLogs()).finally(() => app.quit());
 });
 
 app.on("window-all-closed", () => {

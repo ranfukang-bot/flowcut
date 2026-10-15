@@ -95,16 +95,16 @@ class QueueEngine {
     return this.accounts.authenticated;
   }
 
-  state() {
+  state(options) {
     return this.store.snapshot({
       authenticated: this.accounts.authenticated,
       accountState: this.accounts.state(),
       activeUploads: [...this.activeUploads],
-    });
+    }, options);
   }
 
   emit() {
-    this.onChange(this.state());
+    this.onChange(this.state({ summary: true }));
   }
 
   log(message, level = 'info') {
@@ -130,7 +130,7 @@ class QueueEngine {
       task.logs.unshift({ time: timestamp, level, message: text });
       task.logs = task.logs.slice(0, 80);
     }
-    this.store.upsertTask(task);
+    this.store.upsertTask(task, { activityOnly: true });
     this.emit();
   }
 

@@ -24,6 +24,7 @@ import { DEFAULT_GEM_REQUEST, renderGemRequest, validateGemRequest } from "../li
 import { ApprovalStats } from './approval-stats';
 import { GeminiModelSettingsPanel, GeminiModelInfo, type GeminiModelSettings, type ModelState } from './gemini-model-settings';
 import { useTaskPage } from './use-task-page';
+import { SeedanceTaskDetail } from './seedance-task-detail';
 import type { TaskCounts } from '../lib/task-list';
 
 type Gem = {
@@ -2194,6 +2195,7 @@ function ScriptPipelinePage({
               {isExpanded && (
                 <div className="script-task-detail">
                   <GeminiModelInfo value={task.gemini_model_info} />
+                  <SeedanceTaskDetail taskId={task.id} />
                   <details><summary>① 格式化剧本</summary><pre>{task.rewritten_script || "等待 Gemini 改写……"}</pre></details>
                   <details><summary>② 角色与场景 JSON</summary><pre>{task.extraction_json || "等待提取……"}</pre></details>
                   <details><summary>③ 完整分镜 JSON</summary><pre>{task.storyboard_json || "等待拆分镜……"}</pre></details>
@@ -2504,6 +2506,7 @@ function ReferenceRemixPage({
               {isExpanded && (
                 <div className="remix-task-detail">
                   <GeminiModelInfo value={task.gemini_model_info} />
+                  <SeedanceTaskDetail taskId={task.id} />
                   <div><h4>第一轮 · 对标结构分析</h4><pre>{task.reference_analysis || "等待 Gemini 完成第一轮分析…"}</pre></div>
                   <div><h4>第二轮 · 最终 Seedance 提示词</h4><pre>{task.prompt || "等待同一对话上传产品图并继续改编…"}</pre></div>
                   {task.download_path && <p className="download-note">成片已归档：{task.download_path}</p>}
@@ -4388,6 +4391,7 @@ function PromptDrawer({
         <div className="drawer-chain-wrap">
           <span>本任务执行链路</span>
           <GeminiModelInfo value={task.gemini_model_info} />
+          <SeedanceTaskDetail taskId={task.id} />
           <TaskChain task={task} />
         </div>
         {task.provider === "demo-engine" && (

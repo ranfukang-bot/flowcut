@@ -1,6 +1,7 @@
-param(
+﻿param(
   [string]$Executable = (Join-Path $PSScriptRoot '..\gemini-web-workbench\release\win-unpacked\FlowCut全自动AI视频工作台.exe')
 )
+# Keep the UTF-8 BOM so Windows PowerShell 5.1 decodes the Chinese filename.
 $ErrorActionPreference = 'Stop'
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
 $testProfile = Join-Path ([IO.Path]::GetTempPath()) ('FlowCut-manual-' + [guid]::NewGuid().ToString('N'))

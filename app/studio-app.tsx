@@ -512,6 +512,7 @@ export function StudioApp() {
   const [productMode, setProductMode] = useState<"new" | "library">("new");
   const [productChoiceLoaded, setProductChoiceLoaded] = useState(false);
   useEffect(() => {
+    const timer = window.setTimeout(() => {
     try {
       const choice = JSON.parse(window.localStorage.getItem("flowcut-product-choice-v1") || "null");
       if (choice && typeof choice.id === "string") {
@@ -520,6 +521,8 @@ export function StudioApp() {
       }
     } catch { /* Selection still works when local storage is unavailable. */ }
     setProductChoiceLoaded(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
   useEffect(() => {
     if (!productChoiceLoaded) return;
@@ -536,10 +539,13 @@ export function StudioApp() {
   const [autoQueue, setAutoQueue] = useState(true);
   const [gemRequestTemplate, setGemRequestTemplate] = useState(DEFAULT_GEM_REQUEST);
   useEffect(() => {
+    const timer = window.setTimeout(() => {
     try {
       const saved = window.localStorage.getItem("flowcut-gem-request-template-v1");
       if (saved !== null) setGemRequestTemplate(saved);
     } catch { /* The editor still works when local storage is unavailable. */ }
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
   function changeGemRequestTemplate(value: string) {
     setGemRequestTemplate(value);
@@ -2523,10 +2529,14 @@ function PublisherPage() {
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let alive = true;
-    const desktop = desktopBridge();
-    if (!desktop?.publisherStart) { setError("请在 FlowCut 桌面应用中打开发布管理"); return; }
-    setError("");
-    void desktop.publisherStart().then(value => { if (alive) setOrigin(value.origin); }).catch(value => { if (alive) setError(value instanceof Error ? value.message : "发布管理启动失败"); });
+    void Promise.resolve().then(async () => {
+      if (!alive) return;
+      const desktop = desktopBridge();
+      if (!desktop?.publisherStart) throw new Error("请在 FlowCut 桌面应用中打开发布管理");
+      setError("");
+      const value = await desktop.publisherStart();
+      if (alive) setOrigin(value.origin);
+    }).catch(value => { if (alive) setError(value instanceof Error ? value.message : "发布管理启动失败"); });
     return () => { alive = false; };
   }, [attempt]);
   return <div className="page-body publisher-page">
@@ -2704,19 +2714,27 @@ function TaskProductThumbnail({ task }: { task: Task }) {
 function WebGemModal({ gem, onClose }: { gem: Gem; onClose: () => void }) {
   const [accounts, setAccounts] = useState<Array<{ id: string; name: string; authenticated: boolean; binding: { url?: string; status: string; name?: string } | null }>>([]);
   const [accountId, setAccountId] = useState("");
-  const [url, setUrl] = useState("");
+  const [urlDraft, setUrlDraft] = useState<{ accountId: string; source: string; value: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const current = accounts.find(a => a.id === accountId);
-  async function refresh() {
+  const bindingUrl = current?.binding?.url || "";
+  const url = urlDraft?.accountId === accountId && urlDraft.source === bindingUrl ? urlDraft.value : bindingUrl;
+  function setUrl(value: string) { setUrlDraft({ accountId, source: bindingUrl, value }); }
+  const readAccounts = useCallback(async () => {
     const desktop = desktopBridge();
     if (!desktop?.listGemBindings) throw new Error("请使用支持网页 Gem 的新版 FlowCut 桌面端");
-    const rows = await desktop.listGemBindings(gem);
+    return desktop.listGemBindings(gem);
+  }, [gem]);
+  const applyAccounts = useCallback((rows: typeof accounts) => {
     setAccounts(rows);
     setAccountId(id => id || rows[0]?.id || "");
-  }
-  useEffect(() => { void refresh().catch(e => setMessage(String(e.message || e))); }, [gem.id]);
-  useEffect(() => { setUrl(current?.binding?.url || ""); }, [accountId, current?.binding?.url]);
+  }, []);
+  useEffect(() => {
+    let alive = true;
+    void readAccounts().then(rows => { if (alive) applyAccounts(rows); }).catch(e => { if (alive) setMessage(String(e.message || e)); });
+    return () => { alive = false; };
+  }, [readAccounts, applyAccounts]);
   async function act(action: "create" | "bind" | "open") {
     if (busy || !accountId) return;
     setBusy(true); setMessage("");
@@ -2724,7 +2742,7 @@ function WebGemModal({ gem, onClose }: { gem: Gem; onClose: () => void }) {
       const desktop = desktopBridge();
       if (!desktop?.configureGem) throw new Error("请更新 FlowCut 桌面端");
       await desktop.configureGem({ accountId, gem, action, url });
-      await refresh();
+      applyAccounts(await readAccounts());
       setMessage(action === "open" ? "已打开这个账号的 Gem 管理页。手动保存后，将 /gem/ 开头的对话链接复制回来。" : action === "bind" ? "链接已保存。请确保此账号能访问该 Gem，且指令与当前模板一致。" : "Gem 已创建并保存，后续任务会直接进入此链接。");
     } catch (e) { setMessage(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
@@ -2733,7 +2751,7 @@ function WebGemModal({ gem, onClose }: { gem: Gem; onClose: () => void }) {
     <ModalHead title={`网页 Gem · ${gem.name}`} text="按 Gemini 账号分别绑定。修改本地指令后会建立新版本，不会覆盖原 Gem。" onClose={() => { if (!busy) onClose(); }} />
     <div className="form-body">
       <p>正常任务会自动完成首次创建，无需预先操作。手动设置前，请暂停 Gemini 队列并等待当前任务收尾。</p>
-      <label>Gemini 账号<select value={accountId} disabled={busy} onChange={e => { setAccountId(e.target.value); setUrl(accounts.find(a => a.id === e.target.value)?.binding?.url || ""); }}><option value="">请选择账号</option>{accounts.map(a => <option key={a.id} value={a.id}>{a.name}{a.authenticated ? "" : "（未登录）"}</option>)}</select></label>
+      <label>Gemini 账号<select value={accountId} disabled={busy} onChange={e => { setAccountId(e.target.value); setUrlDraft(null); }}><option value="">请选择账号</option>{accounts.map(a => <option key={a.id} value={a.id}>{a.name}{a.authenticated ? "" : "（未登录）"}</option>)}</select></label>
       <p>{current?.binding?.status === "ready" ? "此版本已绑定" : current?.binding?.status === "saving" ? `上次保存结果待核对：${current.binding.name}。请到该账号的 Gem 管理页找回链接，不会重复创建。` : "此版本尚未创建"}</p>
       <button className="primary" disabled={busy || !accountId} onClick={() => void act("create")}>{busy ? "处理中…" : "自动创建并保存 / 检查已有绑定"}</button>
       <button className="secondary" disabled={busy || !accountId} onClick={() => void act("open")}>打开该账号的 Gem 管理页</button>
@@ -4210,6 +4228,7 @@ function PromptDrawer({
   const [busy, setBusy] = useState("");
   const [recreateError, setRecreateError] = useState("");
   const [recreateGemId, setRecreateGemId] = useState("");
+  const [recreateRequested, setRecreateRequested] = useState(false);
   const recreateRequest = useRef<string | null>(null);
   const recreateLock = useRef(false);
   async function recreateTask() {
@@ -4221,6 +4240,7 @@ function PromptDrawer({
       const gemLabel = recreateGemId ? gems.find(gem => gem.id === recreateGemId)?.name : '原任务 Gem 设定';
       if (!await confirmAction(`确认删除旧成片并重新生成？本次使用：${gemLabel}。旧视频将永久删除，旧任务也会从列表移除。沿用本任务的图片、商品 ID 和视频参数，从提示词开始重新生成，会消耗生成额度。新成片仍为待检查，不会自动发布。`)) return;
       recreateRequest.current ||= crypto.randomUUID();
+      setRecreateRequested(true);
       const result = await api("/api/tasks/recreate", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ id: task.id, requestId: recreateRequest.current, gemId: recreateGemId || undefined }),
@@ -4375,7 +4395,7 @@ function PromptDrawer({
             <b>成片不满意？用这些素材重新制作</b>
             <span>删除旧成片和旧任务，复用原图片和商品 ID，从提示词开始重做。默认沿用原 Gem，也可切换。新成片仍需检查。</span>
             <label>重做使用的 Gem
-              <select aria-label="重做使用的 Gem" value={recreateGemId} disabled={Boolean(busy) || Boolean(recreateRequest.current) || ['replaced','deleting'].includes(task.review_status || '')} onChange={event => setRecreateGemId(event.target.value)}>
+              <select aria-label="重做使用的 Gem" value={recreateGemId} disabled={Boolean(busy) || recreateRequested || ['replaced','deleting'].includes(task.review_status || '')} onChange={event => setRecreateGemId(event.target.value)}>
                 <option value="">沿用原任务 Gem（{task.gem_name || '原设定'}）</option>
                 {gems.map(gem => <option key={gem.id} value={gem.id}>{gem.name}</option>)}
               </select>
@@ -4383,7 +4403,7 @@ function PromptDrawer({
             <button className="secondary" disabled={Boolean(busy) || task.review_status === 'deleting'} onClick={recreateTask}>
               {busy === "recreate" ? "正在处理…" : task.review_status === 'replaced' ? '完成旧成片清理（不重复生成）' : "重新生成该任务"}
             </button>
-            {['pending','deleting'].includes(task.review_status || 'pending') && task.download_path && <button className="secondary" disabled={Boolean(busy) || Boolean(recreateRequest.current)} onClick={() => reviewAction('delete')}>
+            {['pending','deleting'].includes(task.review_status || 'pending') && task.download_path && <button className="secondary" disabled={Boolean(busy) || recreateRequested} onClick={() => reviewAction('delete')}>
               {busy === 'delete' ? '正在删除…' : '删除该任务并删除该视频'}
             </button>}
           </div>

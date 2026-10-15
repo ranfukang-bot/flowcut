@@ -8,7 +8,9 @@ function today() {
 type Counts={day:string;total:number;accounts:{account_name:string;count:number}[]};
 export function ApprovalStats({refreshKey}:{refreshKey:string}) {
   const [selectedDay,setSelectedDay]=useState('');
-  const [counts,setCounts]=useState<Counts|null>(null);
+  const requestKey=JSON.stringify([selectedDay,refreshKey]);
+  const [loaded,setLoaded]=useState<{key:string;counts:Counts}|null>(null);
+  const counts=loaded?.key===requestKey?loaded.counts:null;
   const [error,setError]=useState('');
   useEffect(()=>{
     let stopped=false;
@@ -19,13 +21,13 @@ export function ApprovalStats({refreshKey}:{refreshKey:string}) {
         const response=await fetch('/api/tasks/stats?'+query,{signal:controller.signal});
         const result=await response.json() as Counts & {error?:string};
         if(!response.ok) throw Error(result.error||'统计加载失败');
-        if(!stopped){setCounts(result);setError('');}
+        if(!stopped){setLoaded({key:requestKey,counts:result});setError('');}
       }catch(e){if(!stopped)setError(e instanceof Error?e.message:'统计加载失败');}
     }
-    setCounts(null);void refresh();
+    void refresh();
     const timer=window.setInterval(()=>void refresh(),15000);
     return ()=>{stopped=true;controller.abort();window.clearInterval(timer);};
-  },[selectedDay,refreshKey]);
+  },[selectedDay,requestKey]);
   return <section aria-label="每日通过统计" style={{background:'white',border:'1px solid #dfe3dc',borderRadius:14,padding:18,marginBottom:20}}>
     <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
       <div><h3 style={{margin:0}}>每日通过统计 <span style={{color:'#73852b'}}>共 {counts?.total??'—'} 条</span></h3>

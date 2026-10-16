@@ -38,6 +38,14 @@ test('one model timeout defers without holding the account or uploading/sending'
   assert.equal(account.modelSelectionHold, undefined); assert.equal(account.modelSelectionFailures.count, 1);
   assert.deepEqual(actions(), { uploads: 0, sends: 0 });
 });
+
+test('the first deferred model error keeps its button diagnostics in the log', async t => {
+  const diagnostic = '模型按钮等待 10 秒后仍未出现。\n可见按钮诊断：data-test-id="future-picker" aria-label="模型" aria-haspopup="menu" class="one two three" 文字="Flash"';
+  const { store, execute, reports, actions } = await fixture(t, [Object.assign(Error(diagnostic), { code: 'MODEL_SELECTION_RETRYABLE' })]);
+  await execute();
+  assert.ok(store.state.logs.some(entry => entry.message.includes(diagnostic)));
+  assert.equal(reports[0].error, diagnostic); assert.deepEqual(actions(), { uploads: 0, sends: 0 });
+});
 test('three consecutive model timeouts hold the account; counter is persisted', async t => {
   const { app, account, execute, reports, actions } = await fixture(t, [timeout(), timeout(), timeout()]);
   await execute(); await execute();
@@ -90,4 +98,14 @@ test('a crash/unresponsive watchdog during selection is counted as a model tempo
   const converted = modelWatchdogError(original, { modelSelectionActive: true, modelSettings: { mode: 'auto' } });
   assert.equal(converted.code, 'MODEL_SELECTION_RETRYABLE'); assert.ok(converted.modelSettingsKey);
   assert.equal(modelWatchdogError(original, { modelSelectionActive: false }), original);
+});
+
+test('native model calls allow the readiness wait and the subsequent catalog session to finish', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const [method, delay] of [['inspect', 10_000], ['readCatalog', 18_000]]) {
+    const window = { webContents: { executeJavaScript: () => new Promise(resolve => setTimeout(() => resolve({ ok: true, value: { ready: true } }), delay)) } };
+    const result = callModelPage(window, '', method);
+    t.mock.timers.tick(delay);
+    assert.deepEqual(await result, { ready: true });
+  }
 });

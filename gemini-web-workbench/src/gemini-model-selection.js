@@ -1,5 +1,5 @@
 function normalizeModelSettings(value = {}) {
-  const mode = value.mode || 'auto';
+  const mode = value.mode || 'preserve';
   if (!['auto', 'exact', 'preserve'].includes(mode)) throw new Error('未知的 Gemini 模型设置');
   const name = String(value.name || '').trim();
   const thinking = String(value.thinking || '').trim();
@@ -23,9 +23,39 @@ function createModelPicker(doc = document) {
   const visible = el => Boolean(el && el.isConnected && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden' && !el.closest('[hidden],[aria-hidden="true"]'));
   const fail = message => { throw Object.assign(new Error(message), { code: 'MODEL_SELECTION_FAILED' }); };
   const retry = message => { throw Object.assign(new Error(message), { code: 'MODEL_SELECTION_RETRYABLE' }); };
+  const buttonRows = () => [...doc.querySelectorAll(buttonSelector)].filter(visible);
+  const diagnosticText = (value, limit = 160) => Array.from(clean(value)
+    .replace(/(?:https?:\/\/|www\.)[^\s"'<>]+/gi, '[网址已省略]')
+    .replace(/\S*[?&#]\S*/g, '[参数已省略]')
+    .replace(/\b(?:cookie|set-cookie)\s*[:=].*/gi, '[Cookie已省略]')
+    .replace(/\b(?:__Secure-[\w-]+|SID|HSID|SSID|APISID|SAPISID)\s*=\s*[^\s;]+/gi, '[Cookie已省略]'))
+    .slice(0, limit).join('');
+  const buttonDiagnostics = () => {
+    const rows = [...doc.querySelectorAll('button,[role="button"]')].filter(visible);
+    const entries = rows.map((el, index) => {
+      // Conversation/history labels can contain prompts. Never include their
+      // aria-label or text, nor inspect inputs, URLs, cookies or page content.
+      const privateLabel = el.closest('nav,[role="navigation"],user-query,model-response,.conversation-container,[data-message-id],[contenteditable="true"],[data-test-id*="conversation" i],[data-test-id*="history" i]');
+      const text = value => privateLabel ? '[会话区域文字已省略]' : diagnosticText(value);
+      return `${index + 1}. data-test-id=${JSON.stringify(diagnosticText(el.getAttribute('data-test-id')))} aria-label=${JSON.stringify(text(el.getAttribute('aria-label')))} aria-haspopup=${JSON.stringify(diagnosticText(el.getAttribute('aria-haspopup')))} class=${JSON.stringify([...el.classList].slice(0, 3).map(value => diagnosticText(value, 64)).join(' '))} 文字=${JSON.stringify(Array.from(text(el.innerText || el.textContent)).slice(0, 30).join(''))}`;
+    });
+    return `可见按钮诊断（${rows.length} 个）：\n${entries.join('\n') || '（无可见按钮）'}`;
+  };
+  const waitForButton = async () => {
+    const deadline = Date.now() + 10_000;
+    while (true) {
+      const rows = buttonRows();
+      if (rows.length > 1) fail('模型按钮无法唯一识别，网页菜单结构可能已变化');
+      if (rows.length === 1) return rows[0];
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await new Promise(resolve => setTimeout(resolve, Math.min(50, remaining)));
+    }
+    retry(`模型按钮等待 10 秒后仍未出现，请稍后重试。\n${buttonDiagnostics()}`);
+  };
   const button = () => {
-    const rows = [...doc.querySelectorAll(buttonSelector)].filter(visible);
-    if (!rows.length) retry('模型按钮尚未出现，请稍后重试');
+    const rows = buttonRows();
+    if (!rows.length) retry(`模型按钮尚未出现，请稍后重试。\n${buttonDiagnostics()}`);
     if (rows.length !== 1) fail('模型按钮无法唯一识别，网页菜单结构可能已变化');
     return rows[0];
   };
@@ -74,9 +104,12 @@ function createModelPicker(doc = document) {
     const matches = names.filter(name => equal(current, family(name)));
     return matches.length === 1 && equal(matches[0], wanted);
   }
-  function inspect(settings, catalog = {}, checkThinking = false) {
-    const current = (() => { try { return label(button()); } catch (error) { if (settings.mode !== 'preserve' || settings.thinking) throw error; return ''; } })();
-    if (settings.mode === 'preserve' && (!settings.thinking || !checkThinking)) return { needsMenu: false, model: current, thinking: null };
+  async function inspect(settings, catalog = {}, checkThinking = false) {
+    if (settings.mode === 'preserve' && (!settings.thinking || !checkThinking)) {
+      const rows = buttonRows();
+      return { needsMenu: false, model: rows.length === 1 ? label(rows[0]) : '', thinking: null };
+    }
+    const current = label(await waitForButton());
     let wanted = '';
     try { wanted = target(settings, catalog.models || []); } catch { return { needsMenu: true }; }
     return { needsMenu: checkThinking || !wanted || !buttonMatches(current, wanted, catalog.models || []), model: wanted || current };
@@ -117,6 +150,7 @@ function createModelPicker(doc = document) {
     finally { try { await close(); } catch (error) { if (!failed) throw error; } }
   }
   async function readCatalog() {
+    await waitForButton();
     return session(async ({ open, thoughtMenu }) => {
       const menu = await open();
       const names = models(menu).map(label);

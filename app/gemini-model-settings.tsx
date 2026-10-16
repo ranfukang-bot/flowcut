@@ -11,7 +11,7 @@ type ModelBridge = {
   readGeminiModels?: () => Promise<ModelState>;
   saveGeminiModel?: (settings: GeminiModelSettings) => Promise<ModelState>;
 };
-const defaults: GeminiModelSettings = { mode: 'auto', name: '', thinking: '' };
+const defaults: GeminiModelSettings = { mode: 'preserve', name: '', thinking: '' };
 
 export function GeminiModelSettingsPanel({ bridge }: { bridge: () => ModelBridge | undefined }) {
   const [state, setState] = useState<ModelState | null>(null);
@@ -41,7 +41,7 @@ export function GeminiModelSettingsPanel({ bridge }: { bridge: () => ModelBridge
   }
   return <section aria-label="Gemini 生成模型" className="local-api-note">
     <h3>Gemini 生成模型</h3>
-    <p>统一用于商品提示词、爆款复刻和剧本流水线。无法确认目标时停止上传与发送，并暂停该账号领取任务。</p>
+    <p>默认不指定模型、不改动思考等级；手动选择并保存后生效。统一用于商品提示词、爆款复刻和剧本流水线。无法确认目标时停止上传与发送，并暂停该账号领取任务。</p>
     <label>模型<select aria-label="Gemini 生成模型模式" disabled={busy} value={value.mode} onChange={event => setDraft({ ...value, mode: event.target.value as GeminiModelSettings['mode'] })}>
       <option value="auto">自动：最新 Flash（不含 Lite）</option><option value="exact">指定某个模型</option><option value="preserve">不指定：沿用网页当前选择</option>
     </select></label>
@@ -55,7 +55,7 @@ export function GeminiModelSettingsPanel({ bridge }: { bridge: () => ModelBridge
     <small>读取前请暂停 Gemini 队列并等待当前任务结束。列表按账号保存；某一账号不支持所选模型时不会改选其他模型。</small>
     {accounts.map(account => <div key={account.id}><strong>{account.name}</strong> · {account.modelCatalog?.readAt ? `读取于 ${new Date(account.modelCatalog.readAt).toLocaleString()}` : '尚未读取'}
       <div>模型：{account.modelCatalog?.models?.join('、') || '—'}；思考等级：{account.modelCatalog?.thinking?.join('、') || '—'}</div>
-      {account.modelCatalog?.error && <p role="alert">{account.modelCatalog.error}</p>}{account.modelSelectionHold && <p role="alert">{account.modelSelectionHold.message}</p>}
+      {account.modelCatalog?.error && <pre role="alert" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', font: 'inherit' }}>{account.modelCatalog.error}</pre>}{account.modelSelectionHold && <p role="alert">{account.modelSelectionHold.message}</p>}
     </div>)}
     {message && <p role="status">{message}</p>}
   </section>;

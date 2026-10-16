@@ -71,6 +71,7 @@ test('model selection failure releases the task and holds the account until sett
   const { engine, reports, store } = fixture(async () => { throw Object.assign(Error('找不到模型'), { code: 'MODEL_SELECTION_FAILED' }); });
   const account = { id: 'model-account', name: '模型测试账号' };
   store.state.accounts = [account]; store.state.settings.queueRunning = true;
+  store.state.settings.geminiModel = { mode: 'auto' };
   store.updateAccount = (_id, patch) => Object.assign(account, patch);
   engine.active.set(account.id, { taskId: 'model-task' });
   await engine.execute(account, { id: 'model-task', imageUrls: [] });

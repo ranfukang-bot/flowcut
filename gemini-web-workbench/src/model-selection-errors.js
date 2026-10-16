@@ -5,7 +5,12 @@ function temporaryModelError(error) {
   return Object.assign(new Error(error?.message || String(error || '模型页面暂时不可用')), { code: MODEL_SELECTION_RETRYABLE });
 }
 
-async function callModelPage(window, runtimeSource, method, args = [], { timeoutMs = 8000 } = {}) {
+function modelPageTimeout(method) {
+  // Button readiness has its own 10s budget; catalog menus then get 8s.
+  return method === 'readCatalog' ? 20_000 : method === 'inspect' ? 12_000 : 9_000;
+}
+
+async function callModelPage(window, runtimeSource, method, args = [], { timeoutMs = modelPageTimeout(method) } = {}) {
   let timer, reply;
   try {
     const script = `${runtimeSource}\n(async () => {
@@ -47,4 +52,4 @@ function modelWatchdogError(error, pending) {
   return Object.assign(temporaryModelError(error), { modelSettingsKey: modelSettingsKey(pending.modelSettings) });
 }
 
-module.exports = { MODEL_SELECTION_RETRYABLE, temporaryModelError, callModelPage, modelFailure, modelSucceeded, modelWatchdogError };
+module.exports = { MODEL_SELECTION_RETRYABLE, temporaryModelError, modelPageTimeout, callModelPage, modelFailure, modelSucceeded, modelWatchdogError };

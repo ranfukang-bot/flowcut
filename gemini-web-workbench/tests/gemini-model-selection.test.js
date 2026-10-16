@@ -44,7 +44,7 @@ async function fixture(t, { models = names, current = '3.1 Pro', short = false, 
   const select = (settings, checkThinking = false, catalog = { models }) => page.evaluate(async ({ settings, checkThinking, catalog }) => {
     const started = performance.now();
     try {
-      const inspect = __flowcutModelPicker.inspect(settings, catalog, checkThinking);
+      const inspect = await __flowcutModelPicker.inspect(settings, catalog, checkThinking);
       const result = inspect.needsMenu ? await __flowcutModelPicker.ensure(settings, { checkThinking }) : inspect;
       // Exercise the send boundary: rejection must prevent both actions.
       uploads++; sent++;
@@ -149,13 +149,74 @@ test('preserve mode leaves model and thinking menus untouched', async t => {
   const result = await select(config('preserve'), true);
   assert.equal(result.model, '4 Argon'); assert.deepEqual(result.clicks, []);
 });
+
+for (const method of ['inspect', 'readCatalog']) {
+  test(`${method} waits for a model button that appears near the ten-second readiness deadline`, async t => {
+    const { page } = await fixture(t, { current: '3.8 Flash' });
+    await page.evaluate(() => {
+      const button = document.querySelector('button'), nativeTimeout = setTimeout;
+      button.hidden = true; globalThis.readinessClock = 0;
+      Date.now = () => readinessClock;
+      globalThis.setTimeout = (callback, delay, ...args) => {
+        if (delay > 0 && delay <= 50) {
+          readinessClock += 500;
+          if (readinessClock >= 9500) button.hidden = false;
+          return nativeTimeout(callback, 0, ...args);
+        }
+        return nativeTimeout(callback, delay, ...args);
+      };
+    });
+    const result = await page.evaluate(async method => {
+      const result = await (method === 'inspect' ? __flowcutModelPicker.inspect({ mode: 'auto', thinking: '' }, { models: ['3.8 Flash'] }) : __flowcutModelPicker.readCatalog());
+      return { result, clock: readinessClock, clicks, sent, uploads };
+    }, method);
+    assert.equal(result.clock, 9500); assert.equal(result.sent, 0); assert.equal(result.uploads, 0);
+    if (method === 'inspect') { assert.equal(result.result.needsMenu, false); assert.deepEqual(result.clicks, []); }
+    else { assert.deepEqual(result.result.models, names); assert.equal(result.result.current, '3.8 Flash'); }
+  });
+
+  test(`${method} times out after ten seconds with visible-button diagnostics and no private page data`, async t => {
+    const { page } = await fixture(t);
+    await page.evaluate(() => {
+      document.querySelector('button').remove();
+      document.body.insertAdjacentHTML('beforeend', `<button data-test-id="future-picker" aria-label="选择模型" aria-haspopup="listbox" class="first second third fourth">123456789012345678901234567890EXTRA_TEXT</button>
+        <button hidden data-test-id="HIDDEN_CANARY">HIDDEN_CANARY</button>
+        <nav><button aria-label="HISTORY_PROMPT_CANARY">HISTORY_PROMPT_CANARY</button></nav>
+        <user-query><button aria-label="MESSAGE_PROMPT_CANARY">MESSAGE_PROMPT_CANARY</button></user-query>
+        <button aria-label="https://example.invalid/login?token=URL_TOKEN_CANARY#secret">Cookie: SID=COOKIE_CANARY</button>
+        <textarea>PROMPT_INPUT_CANARY</textarea>`);
+      Object.defineProperty(document, 'cookie', { get() { throw Error('cookie must never be read'); } });
+      const nativeTimeout = setTimeout; globalThis.readinessClock = 0;
+      Date.now = () => readinessClock;
+      globalThis.setTimeout = (callback, delay, ...args) => {
+        if (delay > 0 && delay <= 50) { readinessClock += 500; return nativeTimeout(callback, 0, ...args); }
+        return nativeTimeout(callback, delay, ...args);
+      };
+    });
+    const result = await page.evaluate(async method => {
+      try { await (method === 'inspect' ? __flowcutModelPicker.inspect({ mode: 'auto' }) : __flowcutModelPicker.readCatalog()); uploads++; sent++; return { unexpectedSuccess: true }; }
+      catch (error) { return { error: error.message, code: error.code, clock: readinessClock, sent, uploads }; }
+    }, method);
+    assert.equal(result.clock, 10000); assert.equal(result.code, 'MODEL_SELECTION_RETRYABLE');
+    assert.equal(result.sent, 0); assert.equal(result.uploads, 0);
+    for (const expected of ['等待 10 秒', 'data-test-id="future-picker"', 'aria-label="选择模型"', 'aria-haspopup="listbox"', 'class="first second third"', '文字="123456789012345678901234567890"']) assert.ok(result.error.includes(expected), expected);
+    for (const privateValue of ['HIDDEN_CANARY', 'HISTORY_PROMPT_CANARY', 'MESSAGE_PROMPT_CANARY', 'URL_TOKEN_CANARY', 'COOKIE_CANARY', 'PROMPT_INPUT_CANARY', 'EXTRA_TEXT', 'fourth']) assert.equal(result.error.includes(privateValue), false, privateValue);
+  });
+}
+
+test('default preserve mode does not wait, open menus, upload or send when no model button exists', async t => {
+  const { page } = await fixture(t);
+  await page.evaluate(() => document.querySelector('button').remove());
+  const result = await page.evaluate(async settings => ({ ...await __flowcutModelPicker.inspect(settings, {}, true), clicks, sent, uploads }), normalizeModelSettings());
+  assert.equal(result.needsMenu, false); assert.deepEqual(result.clicks, []); assert.equal(result.sent, 0); assert.equal(result.uploads, 0);
+});
 test('thinking checks are due at startup, after one hour, and after a settings change', () => {
   const value = config('auto', '', '高'), prior = { settingsKey: modelSettingsKey(value), checkedAt: 1000 };
   assert.equal(needsThinkingCheck(undefined, value, 2000), true);
   assert.equal(needsThinkingCheck(prior, value, 2000), false);
   assert.equal(needsThinkingCheck(prior, value, 3601000), true);
   assert.equal(needsThinkingCheck(prior, config('exact', '3.1 Pro'), 2000), true);
-  assert.deepEqual(normalizeModelSettings(), config());
+  assert.deepEqual(normalizeModelSettings(), config('preserve'));
 });
 
 test('global selection, discovered catalog and account hold survive a store restart', t => {
@@ -164,7 +225,7 @@ test('global selection, discovered catalog and account hold survive a store rest
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'flowcut-model-state-'));
   t.after(() => { if (!path.resolve(directory).startsWith(path.resolve(os.tmpdir(), 'flowcut-model-state-'))) throw Error('Unsafe test cleanup path'); fs.rmSync(directory, { recursive: true, force: true }); });
   const app = { getPath: () => directory }, first = new Store(app);
-  assert.deepEqual(first.state.settings.geminiModel, config());
+  assert.deepEqual(first.state.settings.geminiModel, config('preserve'));
   first.state.settings.geminiModel = config('exact', '3.1 Pro', '高');
   const account = first.addAccount('模型测试');
   first.updateAccount(account.id, { modelCatalog: { models: names, thinking: ['低', '高'], readAt: '2026-10-15T08:00:00Z' }, modelSelectionHold: { settingsKey: modelSettingsKey(first.state.settings.geminiModel), message: 'MODEL_SELECTION_FAILED' } });
@@ -172,6 +233,27 @@ test('global selection, discovered catalog and account hold survive a store rest
   assert.deepEqual(restored.state.settings.geminiModel, config('exact', '3.1 Pro', '高'));
   assert.deepEqual(restored.state.accounts[0].modelCatalog.models, names);
   assert.equal(restored.state.accounts[0].modelSelectionHold.settingsKey, modelSettingsKey(restored.state.settings.geminiModel));
+});
+
+test('upgrading an unconfigured profile defaults to preserve while saved choices, accounts and keys survive', async t => {
+  const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+  const { Store } = require('../src/store');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'flowcut-model-upgrade-'));
+  t.after(() => { if (!path.resolve(directory).startsWith(path.resolve(os.tmpdir(), 'flowcut-model-upgrade-'))) throw Error('Unsafe cleanup'); fs.rmSync(directory, { recursive: true, force: true }); });
+  const original = { settings: { bridgeKey: 'fixture-bridge', credentialsMasterKey: 'fixture-key', queueRunning: false }, accounts: [{ id: 'existing', name: 'Existing account', partition: 'persist:existing', authenticated: true }], pendingResults: [] };
+  fs.writeFileSync(path.join(directory, 'workbench-state.json'), JSON.stringify(original));
+  const app = { getPath: () => directory }, upgraded = new Store(app);
+  assert.deepEqual(upgraded.state.settings.geminiModel, config('preserve'));
+  assert.deepEqual(upgraded.state.accounts, original.accounts);
+  assert.equal(upgraded.state.settings.credentialsMasterKey, original.settings.credentialsMasterKey);
+  await upgraded.flushLogs();
+  for (const settings of [config('auto', '', '高'), config('exact', '3.1 Pro', '低'), config('preserve')]) {
+    const saved = { ...original, settings: { ...original.settings, geminiModel: settings } };
+    fs.writeFileSync(path.join(directory, 'workbench-state.json'), JSON.stringify(saved));
+    const reopened = new Store(app);
+    assert.deepEqual(reopened.state.settings.geminiModel, settings); assert.deepEqual(reopened.state.accounts, original.accounts);
+    await reopened.flushLogs();
+  }
 });
 
 for (const code of ['MODEL_SELECTION_FAILED', 'MODEL_SELECTION_RETRYABLE']) for (const [method, job] of [
@@ -212,4 +294,30 @@ test('settings UI shows each account catalog and saves exact model plus thinking
   await page.getByRole('button', { name: '保存生成模型' }).click();
   await page.getByRole('status').waitFor();
   assert.deepEqual(await page.evaluate(() => savedSettings), [{ mode: 'exact', name: '3.1 Pro', thinking: '高' }]);
+});
+
+test('unconfigured settings UI preserves the web model until saved and shows catalog failure diagnostics', async t => {
+  const page = await browser.newPage(); t.after(() => page.close());
+  await page.setContent('<div id="root"></div>');
+  await page.evaluate(() => {
+    globalThis.savedSettings = [];
+    globalThis.modelApi = {
+      getState: async () => ({ settings: {}, accounts: [] }),
+      readGeminiModels: async () => ({ settings: {}, accounts: [{ id: 'a', name: 'Account A', modelCatalog: { error: '模型按钮等待 10 秒后仍未出现。\n可见按钮诊断：data-test-id="future-picker" aria-label="模型" aria-haspopup="menu" class="one two three" 文字="Flash"' } }] }),
+      saveGeminiModel: async value => { savedSettings.push(value); return { settings: { geminiModel: value } }; },
+    };
+  });
+  const bundle = require('esbuild').buildSync({ stdin: { contents: `import {createRoot} from 'react-dom/client'; import {GeminiModelSettingsPanel} from './gemini-model-settings'; const bridge=()=>window.modelApi; createRoot(document.getElementById('root')).render(<GeminiModelSettingsPanel bridge={bridge}/>);`, loader: 'tsx', resolveDir: require('node:path').resolve(__dirname, '../../app') }, bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' } }).outputFiles[0].text;
+  await page.addScriptTag({ content: bundle });
+  await page.getByRole('button', { name: '读取模型列表' }).waitFor();
+  assert.equal(await page.getByLabel('Gemini 生成模型模式').inputValue(), 'preserve');
+  assert.equal(await page.getByLabel('Gemini 思考等级').inputValue(), '');
+  assert.deepEqual(await page.evaluate(() => savedSettings), []);
+  await page.getByRole('button', { name: '读取模型列表' }).click();
+  await page.getByRole('alert').waitFor(); assert.ok((await page.getByRole('alert').innerText()).includes('data-test-id="future-picker"'));
+  await page.getByLabel('Gemini 生成模型模式').selectOption('auto');
+  assert.deepEqual(await page.evaluate(() => savedSettings), []);
+  await page.getByRole('button', { name: '保存生成模型' }).click();
+  await page.waitForFunction(() => savedSettings.length === 1);
+  assert.deepEqual(await page.evaluate(() => savedSettings), [config()]);
 });

@@ -470,6 +470,7 @@ class BridgeEngine {
         this.failureStreak.delete(account.id);
       }
       const modelFailureState = modelFailure(this.store, account, error);
+      if (modelFailureState && !modelFailureState.hold) this.store.log(`${account.name} 模型检查暂时失败：${message}`, 'warn');
       if (modelFailureState?.hold) {
         const detail = `[MODEL_SELECTION_FAILED] ${account.name}：${code === MODEL_SELECTION_RETRYABLE ? `相同设置下连续 ${modelFailureState.count} 次模型检查临时失败；` : ''}${message}。请重新读取模型列表或更改 Gemini 生成模型设置；此账号已暂停领取任务。`;
         this.store.updateAccount(account.id, { error: detail, modelSelectionHold: { settingsKey: modelFailureState.settingsKey, message: detail, at: new Date().toISOString() } });

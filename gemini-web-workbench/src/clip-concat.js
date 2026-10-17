@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const {execFile} = require('node:child_process');
 const {promisify} = require('node:util');
-const {probe, mediaTool} = require('./dual-video-composer');
 const run = promisify(execFile);
 
 // A clip keeps its own length. Picture and sound are padded to the longer of
@@ -34,6 +33,9 @@ function clipTiming(media, index) {
 // temporary file, checked, and only then renamed to the output path.
 async function concatClips(files, output, {signal, timeoutMs = 20 * 60_000} = {}) {
   if (!Array.isArray(files) || files.length < 2) throw Error('至少需要 2 条视频才能拼接');
+  // Resolve after startup: the composer imports video-review, whose default
+  // concatenator is this module. Loading it at module scope creates a cycle.
+  const {probe, mediaTool} = require('./dual-video-composer');
   const media = await Promise.all(files.map(file => probe(file, signal)));
   const timing = media.map((item, index) => clipTiming(item, index + 1));
   const inputs = files.flatMap(file => ['-i', file]);

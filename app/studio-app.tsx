@@ -28,6 +28,9 @@ import { SeedanceTaskDetail } from './seedance-task-detail';
 import { LocalBackups } from './local-backups';
 import { exportAllGems } from './export-gems';
 import type { TaskCounts } from '../lib/task-list';
+import { DEFAULT_VARIANT_REQUEST, validateVariantRequest } from '../lib/prompt-blocks';
+import { VariantConfigBlock, type VariantConfig } from './variant-config';
+import { TaskBatchPanel, clipLabel } from './task-batch-panel';
 
 type Gem = {
   id: string;
@@ -88,6 +91,17 @@ type Task = {
   segment_progress?: string | null;
   download_error?: string | null;
   created_at: string;
+  task_role?: string | null;
+  batch_parent_id?: string | null;
+  batch_index?: number | null;
+  batch_round?: number | null;
+  batch_size?: number | null;
+  merged_into_task_id?: string | null;
+  prompt_note?: string | null;
+  variant_mode?: number;
+  gemini_raw_reply?: string | null;
+  variant_request_text?: string | null;
+  children?: Task[];
 };
 
 type TikTokAccount = {
@@ -256,6 +270,10 @@ const statusLabels: Record<string, string> = {
   optimization_queued: "等待 Gem 优化",
   optimizing: "Gem 优化提示词",
   completed: "提示词已完成",
+  variant_queued: "等待变体 Gem",
+  variant_generating: "变体 Gem 生成中",
+  split_done: "已按代码块拆分",
+  concat_running: "正在拼接",
 };
 
 type SeedanceRuntime = {
@@ -271,7 +289,32 @@ type TaskStage = {
   state: "done" | "active" | "waiting" | "blocked";
 };
 
+// Clips and concatenated videos are listed inside their group.
+function withChildren(tasks: Task[]) {
+  return tasks.flatMap(task => [task, ...(task.children || [])]);
+}
+
 function taskStages(task: Task): TaskStage[] {
+  if (task.task_role === "concat") {
+    const done = ["video_ready", "scheduled"].includes(task.status);
+    return [
+      { number: "1", label: "选择视频", detail: `${task.batch_size || "多"} 条视频`, state: "done" },
+      { number: "2", label: "本机拼接", detail: done ? "已拼接" : task.status === "concat_running" ? "正在拼接" : "未完成", state: done ? "done" : task.status === "concat_running" ? "active" : "blocked" },
+      { number: "3", label: "检查", detail: done ? taskStatusLabel(task) : "等待拼接", state: done && ['approved', 'replaced'].includes(task.review_status || '') ? "done" : done ? "active" : "waiting" },
+    ];
+  }
+  if (task.task_role === "group" && !["prompt_queued", "prompt_generating"].includes(task.status)) {
+    const clips = (task.children || []).filter(child => child.task_role === "clip").length;
+    const variantWaiting = ["variant_queued", "variant_generating"].includes(task.status);
+    return [
+      { number: "1", label: "商品图片", detail: `${Math.max(Number(task.image_count || 0), 1)} 张参考图已保存`, state: "done" },
+      { number: "2", label: task.variant_mode ? "母版提示词" : "Gemini 识别与提示词", detail: "已生成", state: "done" },
+      { number: "3", label: task.variant_mode ? "变体 Gem" : "按代码块拆分",
+        detail: task.status === "split_done" ? `已拆成 ${task.batch_size || clips} 条视频` : task.status === "failed" ? "未完成，可查看原因" : variantWaiting ? "正在生成变体" : "等待",
+        state: task.status === "split_done" ? "done" : task.status === "failed" ? "blocked" : "active" },
+      { number: "4", label: "视频", detail: task.status === "split_done" ? "见本组每条视频" : "等待拆分", state: task.status === "split_done" ? "done" : "waiting" },
+    ];
+  }
   const isDemo = task.provider === "demo-engine";
   const hasRealPrompt = Boolean(task.has_prompt ?? task.prompt?.trim()) && !isDemo;
   const seedanceStarted = [
@@ -392,13 +435,35 @@ type UpdateState = {
 };
 
 
+// Kept apart from taskStatusLabel so a group's label can count its clips.
+function clipAwaitingReview(task: Task): boolean {
+  return taskStatusLabel(task) === '待检查';
+}
+
 function taskStatusClass(task: Task) {
+  if (task.task_role === "group" && task.status === "split_done") {
+    const children = task.children || [];
+    if (children.some(clipAwaitingReview)) return 'review_pending';
+    if (children.some(child => ["failed", "seedance_blocked"].includes(child.status))) return 'failed';
+    return children.length && children.every(child => ["video_ready", "scheduled"].includes(child.status)) ? 'video_ready' : 'video_generating';
+  }
   return taskStatusLabel(task) === '待检查' ? 'review_pending' : task.status;
 }
 
 function taskStatusLabel(task: Task) {
   if (task.provider === "demo-engine") return "需重新用 Gemini 识别";
+  if (task.task_role === "group" && task.status === "split_done") {
+    const children = task.children || [];
+    const videos = children.filter(child => child.task_role !== "concat").length;
+    const joined = children.length - videos;
+    const review = children.filter(clipAwaitingReview).length;
+    const failed = children.filter(child => ["failed", "seedance_blocked"].includes(child.status)).length;
+    return [videos ? `${videos} 条视频` : "", joined ? `${joined} 条拼接成片` : "", review ? `${review} 条待检查` : "", failed ? `${failed} 条需处理` : ""]
+      .filter(Boolean).join(" · ") || "本组已清空";
+  }
   if (["video_ready", "scheduled"].includes(task.status)) {
+    if (task.review_status === 'merging') return '正在拼接';
+    if (task.review_status === 'merged') return '已用于拼接';
     if (task.review_status === 'replaced') return '已重做';
     if (task.review_status === 'approved') return '已通过';
     if (task.review_status === 'approving') return '放行待完成';
@@ -423,6 +488,7 @@ type FlowCutDesktopBridge = {
   deletePendingReviewVideo?: (id: string, confirmed: boolean) => Promise<boolean>;
   approveReviewVideo?: (id: string, confirmed: boolean) => Promise<{file:string;alreadyApproved?:boolean}>;
   discardReviewVideo?: (id: string, replacementId: string) => Promise<boolean>;
+  concatReviewVideos?: (groupId: string, ids: string[], confirmed: boolean) => Promise<{ id: string; file: string }>;
   listGemBindings?: (gem: Gem) => Promise<Array<{ id: string; name: string; authenticated: boolean; binding: { url?: string; status: string; name?: string } | null }>>;
   configureGem?: (options: { accountId: string; gem: Gem; action: "create" | "bind" | "open"; url?: string }) => Promise<unknown>;
   seedanceSetPreferredModel?: (id: string, model: string) => Promise<SeedanceDesktopState>;
@@ -574,6 +640,23 @@ export function StudioApp() {
     try { window.localStorage.setItem("flowcut-gem-request-template-v1", value); }
     catch { setNotice("文字已修改，但本机无法记住此设置；重启后请检查"); }
   }
+  const [variantConfig, setVariantConfig] = useState<VariantConfig>({ enabled: false, gemId: "", template: DEFAULT_VARIANT_REQUEST });
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        const saved = JSON.parse(window.localStorage.getItem("flowcut-variant-config-v1") || "null");
+        if (saved && typeof saved.template === "string") {
+          setVariantConfig({ enabled: saved.enabled === true, gemId: String(saved.gemId || ""), template: saved.template });
+        }
+      } catch { /* Defaults still work when local storage is unavailable. */ }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+  function changeVariantConfig(value: VariantConfig) {
+    setVariantConfig(value);
+    try { window.localStorage.setItem("flowcut-variant-config-v1", JSON.stringify(value)); }
+    catch { setNotice("设置已修改，但本机无法记住；重启后请检查"); }
+  }
   const [updateState, setUpdateState] = useState<UpdateState | null>(null);
   const [seedanceRuntime, setSeedanceRuntime] = useState<SeedanceRuntime>({
     status: "checking",
@@ -684,10 +767,13 @@ export function StudioApp() {
 
   useEffect(() => {
     const active =
-      data?.tasks.some((task) =>
+      withChildren(data?.tasks || []).some((task) =>
         [
           "prompt_queued",
           "prompt_generating",
+          "variant_queued",
+          "variant_generating",
+          "concat_running",
           "video_queued",
           "video_generating",
         ].includes(task.status)
@@ -729,7 +815,7 @@ export function StudioApp() {
 
   useEffect(() => {
     const pollable =
-      data?.tasks.filter(
+      withChildren(data?.tasks || []).filter(
         (task) =>
           task.provider !== "seedance-local" &&
           Boolean(task.provider_status_url) &&
@@ -752,7 +838,7 @@ export function StudioApp() {
   }, [data?.tasks, reload]);
 
   const readyTasks = useMemo(
-    () => data?.tasks.filter((task) => task.status === "video_ready" && ['approved','replaced'].includes(task.review_status || '')) || [],
+    () => withChildren(data?.tasks || []).filter((task) => task.status === "video_ready" && ['approved','replaced'].includes(task.review_status || '')) || [],
     [data]
   );
 
@@ -786,6 +872,9 @@ export function StudioApp() {
       const geminiRequestText = data.integrations.geminiMode === "web"
         ? validateGemRequest(renderGemRequest(gemRequestTemplate, { duration: selectedDuration, region: selectedRegion, shooting_style: selectedShootingStyle }))
         : undefined;
+      const variantActive = variantConfig.enabled && data.integrations.geminiMode === "web" && selectedDuration !== 30;
+      if (variantActive && !data.gems.some(gem => gem.id === variantConfig.gemId)) throw new Error("请选择变体 Gem，或关闭“变体两轮”");
+      const variantRequestText = variantActive ? validateVariantRequest(variantConfig.template) : undefined;
       const savedProduct = input.mode === "new"
         ? await quickUploadProduct(
             input.files,
@@ -810,9 +899,10 @@ export function StudioApp() {
           region: selectedRegion,
           shootingStyle: selectedShootingStyle,
           geminiRequestText,
+          ...(variantActive ? { variantGemId: variantConfig.gemId, variantRequestText } : {}),
         }),
       });
-      let queueNotice = `${savedProduct?.reused ? "已识别相同商品 ID，复用已有商品并使用本次上传图片。" : ""}任务已创建，将按所选模板生成并保存到归档文件夹`;
+      let queueNotice = `${savedProduct?.reused ? "已识别相同商品 ID，复用已有商品并使用本次上传图片。" : ""}任务已创建${variantActive ? "：先生成母版，再由变体 Gem 按代码块数量生成视频" : "，将按所选模板生成并保存到归档文件夹"}`;
       const desktop = desktopBridge();
       try {
         if (data.integrations.geminiMode === "web") await desktop?.setQueueRunning?.(true);
@@ -1053,6 +1143,8 @@ export function StudioApp() {
             selectedShootingStyle={selectedShootingStyle}
             gemRequestTemplate={gemRequestTemplate}
             onGemRequestTemplate={changeGemRequestTemplate}
+            variantConfig={variantConfig}
+            onVariantConfig={changeVariantConfig}
             autoQueue={autoQueue}
             busy={busy}
             onProduct={setSelectedProduct}
@@ -1129,7 +1221,9 @@ export function StudioApp() {
             tasks={data.tasks}
             geminiRuntime={data.integrations.geminiRuntime}
             onPreview={openTask}
-            onDelete={(id) => deleteRecord("/api/tasks", id, "确认删除这个任务？")}
+            onDelete={(task) => deleteRecord("/api/tasks", task.id, task.task_role === "group"
+              ? `确认删除这一整组任务（含 ${task.children?.length || 0} 条视频记录）？已下载到待检查文件夹的视频文件会保留。`
+              : "确认删除这个任务？")}
             onClearCompleted={clearCompletedTasks}
             onClearAll={clearAllTasks}
           />
@@ -1208,8 +1302,10 @@ export function StudioApp() {
       )}
       {previewTask && (
         <PromptDrawer
+          key={previewTask.id}
           task={previewTask}
           gems={data.gems}
+          onOpenTask={openTask}
           onClose={() => setPreviewTask(null)}
           onUpdated={async (message) => {
             setNotice(message);
@@ -1457,6 +1553,8 @@ function Dashboard({
   selectedShootingStyle,
   gemRequestTemplate,
   onGemRequestTemplate,
+  variantConfig,
+  onVariantConfig,
   autoQueue,
   busy,
   onProduct,
@@ -1487,6 +1585,8 @@ function Dashboard({
   selectedShootingStyle: string;
   gemRequestTemplate: string;
   onGemRequestTemplate: (value: string) => void;
+  variantConfig: VariantConfig;
+  onVariantConfig: (value: VariantConfig) => void;
   autoQueue: boolean;
   busy: boolean;
   onProduct: (value: string) => void;
@@ -1862,10 +1962,14 @@ function Dashboard({
               <pre data-testid="gem-request-preview" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{renderGemRequest(gemRequestTemplate, { duration: selectedDuration, region: selectedRegion, shooting_style: selectedShootingStyle })}</pre>
             </details>
           </div>}
+          {data.integrations.geminiMode === "web" && <VariantConfigBlock value={variantConfig} gems={data.gems}
+            duration={selectedDuration} region={selectedRegion} shootingStyle={selectedShootingStyle}
+            disabledReason={selectedDuration === 30 ? "双段 30 秒任务不支持变体两轮" : ""} onChange={onVariantConfig} />}
           <div className="composer-foot">
             <div className="chips">
               <span>{selectedDuration === 30 ? "双段 30 秒 · 消耗两次视频生成额度" : `${selectedDuration} 秒`}</span>
               {selectedDuration === 30 && <span>请选择双段 Gem：需输出「视频1｜上半段」和「视频2｜下半段」两份完整提示词</span>}
+              {selectedDuration !== 30 && data.integrations.geminiMode === "web" && <span>{variantConfig.enabled ? "变体两轮 · " : ""}每个代码块生成一条视频，有几个代码块消耗几次额度</span>}
               <span>9:16</span>
               <span>{selectedShootingStyle}</span>
               <span>{selectedRegion}</span>
@@ -2805,14 +2909,14 @@ function TasksPage({
   tasks: Task[];
   geminiRuntime?: Workspace["integrations"]["geminiRuntime"];
   onPreview: (task: Task) => void;
-  onDelete: (id: string) => void;
+  onDelete: (task: Task) => void;
   onClearCompleted: () => void;
   onClearAll: () => void;
 }) {
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [videoError, setVideoError] = useState("");
-  const refreshKey = tasks.map(task => `${task.id}:${task.updated_at}:${task.status}:${task.review_status}`).join('|');
+  const refreshKey = withChildren(tasks).map(task => `${task.id}:${task.updated_at}:${task.status}:${task.review_status}`).join('|');
   const { tasks: visibleTasks, hasMore, loading, error: listError, resetPages, loadMore } = useTaskPage(tasks, filter, query, refreshKey);
   async function openVideo(task: Task) {
     setVideoError("");
@@ -2823,10 +2927,10 @@ function TasksPage({
     } catch (error) { setVideoError(error instanceof Error ? error.message : '视频打开失败'); }
   }
   const completed = (task: Task) => ["video_ready", "scheduled"].includes(task.status) && ['approved','replaced'].includes(task.review_status || '');
-  const pendingReview = (task: Task) => ["video_ready", "scheduled"].includes(task.status) && !completed(task);
+  const pendingReview = (task: Task) => ["video_ready", "scheduled"].includes(task.status) && !completed(task) && !['merging','merged'].includes(task.review_status || '');
   const failed = (task: Task) => ["failed", "seedance_blocked"].includes(task.status);
   const progressText = (task: Task) => {
-    if (["prompt_queued", "prompt_generating"].includes(task.status)) {
+    if (["prompt_queued", "prompt_generating", "variant_queued", "variant_generating"].includes(task.status)) {
       if (!geminiRuntime?.online) return "Gemini 执行器离线，请在账号与设置中检查";
       const active = geminiRuntime.activeJobs?.find((job) => job.taskId === task.id);
       if (active) return `${active.accountName || "Gemini"} · ${active.stage || "正在处理"}`;
@@ -2847,7 +2951,7 @@ function TasksPage({
         onAction={onClearCompleted}
       />
       <button className="secondary danger-text clear-all-tasks" onClick={onClearAll}>清除全部任务</button>
-      <ApprovalStats refreshKey={tasks.map(task=>`${task.id}:${task.review_status}`).join('|')} />
+      <ApprovalStats refreshKey={withChildren(tasks).map(task=>`${task.id}:${task.review_status}`).join('|')} />
       <button className="secondary" onClick={async () => {
         setVideoError('');
         try {
@@ -2888,7 +2992,14 @@ function TasksPage({
             </button>
             <TaskChain task={task} compact />
             <div className="task-live-status"><span className={`status ${taskStatusClass(task)}`}>{taskStatusLabel(task)}</span><small>{progressText(task)}</small></div>
-            <div className="row-actions">{task.download_path && task.review_status === 'approved' && <button onClick={() => void openVideo(task)}>查看视频</button>}<button onClick={() => onPreview(task)}>{failed(task) ? "查看 / 继续" : pendingReview(task) ? "审核" : "查看"}</button><button onClick={() => onDelete(task.id)}>×</button></div>
+            <div className="row-actions">{task.download_path && task.review_status === 'approved' && <button onClick={() => void openVideo(task)}>查看视频</button>}<button onClick={() => onPreview(task)}>{failed(task) ? "查看 / 继续" : pendingReview(task) ? "审核" : "查看"}</button><button aria-label={task.task_role === "group" ? "删除整组" : "删除任务"} onClick={() => onDelete(task)}>×</button></div>
+            {task.task_role === "group" && Boolean(task.children?.length) && <div className="task-batch-rows" role="list" aria-label="本组视频">
+              {task.children!.map(child => <div className="task-batch-row" role="listitem" key={child.id}>
+                <button className="task-name" onClick={() => onPreview(child)}><b>{clipLabel(child)}</b><small>{child.duration || task.duration} 秒</small></button>
+                <div className="task-live-status"><span className={`status ${taskStatusClass(child)}`}>{taskStatusLabel(child)}</span><small>{progressText(child)}</small></div>
+                <div className="row-actions">{child.download_path && child.review_status === 'approved' && <button onClick={() => void openVideo(child)}>查看视频</button>}<button onClick={() => onPreview(child)}>{failed(child) ? "查看 / 继续" : pendingReview(child) ? "审核" : "查看"}</button><button aria-label={`删除${clipLabel(child)}`} onClick={() => onDelete(child)}>×</button></div>
+              </div>)}
+            </div>}
           </div>
         ))}
         {!loading && !visibleTasks.length && (filter !== 'all' || query ? <EmptyState icon="↗" title="没有匹配的任务" text="换一个筛选条件或搜索词。" /> : <EmptyState icon="↗" title="任务队列为空" text="从创作中心选择商品和 Gem 后启动第一条任务。" />)}
@@ -4251,12 +4362,18 @@ function PromptDrawer({
   gems,
   onClose,
   onUpdated,
+  onOpenTask,
 }: {
   task: Task;
   gems: Gem[];
   onClose: () => void;
   onUpdated: (message: string) => Promise<void>;
+  onOpenTask: (task: Task) => void;
 }) {
+  const isGroup = task.task_role === "group";
+  const isClip = task.task_role === "clip";
+  const isConcat = task.task_role === "concat";
+  const merged = ['merging', 'merged'].includes(task.review_status || '');
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState("");
   const [recreateError, setRecreateError] = useState("");
@@ -4271,14 +4388,19 @@ function PromptDrawer({
     setRecreateError("");
     try {
       const gemLabel = recreateGemId ? gems.find(gem => gem.id === recreateGemId)?.name : '原任务 Gem 设定';
-      if (!await confirmAction(`确认删除旧成片并重新生成？本次使用：${gemLabel}。旧视频将永久删除，旧任务也会从列表移除。沿用本任务的图片、商品 ID 和视频参数，从提示词开始重新生成，会消耗生成额度。新成片仍为待检查，不会自动发布。`)) return;
+      const confirmText = isClip
+        ? `确认删除这条视频并用同一条提示词重新生成？不经过 Gemini，旧视频将永久删除，会消耗一次视频生成额度。新视频仍为待检查，不会自动发布。`
+        : `确认删除旧成片并重新生成？本次使用：${gemLabel}。旧视频将永久删除，旧任务也会从列表移除。沿用本任务的图片、商品 ID 和视频参数，从提示词开始重新生成，会消耗生成额度。新成片仍为待检查，不会自动发布。`;
+      if (!await confirmAction(confirmText)) return;
       recreateRequest.current ||= crypto.randomUUID();
       setRecreateRequested(true);
       const result = await api("/api/tasks/recreate", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: task.id, requestId: recreateRequest.current, gemId: recreateGemId || undefined }),
-      }) as { id: string; created: boolean };
-      let message = result.created ? "已新建重做任务，将从 Gemini 提示词开始完整生成视频" : "已有重做任务，未重复创建";
+        body: JSON.stringify({ id: task.id, requestId: recreateRequest.current, gemId: isClip ? undefined : recreateGemId || undefined }),
+      }) as { id: string; status?: string; created: boolean };
+      let message = !result.created ? "已有重做任务，未重复创建"
+        : isClip ? (result.status === "prompt_ready" ? "已新建重做任务（同一条提示词），请打开它点“提交 Seedance”" : "已新建重做任务，将用同一条提示词重新生成视频")
+        : "已新建重做任务，将从 Gemini 提示词开始完整生成视频";
       const desktop = desktopBridge();
       if (!desktop?.discardReviewVideo) throw new Error('重做任务已保存，但旧视频尚未删除：请在最新版桌面程序中操作');
       try { await desktop.discardReviewVideo(task.id, result.id); }
@@ -4310,10 +4432,12 @@ function PromptDrawer({
     try {
       const desktop = desktopBridge();
       if (action === 'delete') {
-        if (!await confirmAction(`确认删除该任务并永久删除该视频？商品 ID：${task.product_external_id || '未填写'}，TK 账号：${task.tiktok_account_name || '未填写'}。临时目录中的这条视频和任务记录将一起删除，不会重新生成。商品图片和 Gem 模板保留。`)) return;
+        if (!await confirmAction(isConcat
+          ? `确认删除这条拼接成片？成片文件会永久删除，参与拼接的 ${task.batch_size || ''} 条原视频会回到待检查，可以重新拼接或单独通过。`
+          : `确认删除该任务并永久删除该视频？商品 ID：${task.product_external_id || '未填写'}，TK 账号：${task.tiktok_account_name || '未填写'}。临时目录中的这条视频和任务记录将一起删除，不会重新生成。商品图片和 Gem 模板保留。`)) return;
         if (!desktop?.deletePendingReviewVideo) throw Error('请在最新版 FlowCut 桌面程序中删除任务和视频');
         await desktop.deletePendingReviewVideo(task.id, true);
-        await onUpdated('已删除该任务及临时视频，没有重新生成');
+        await onUpdated(isConcat ? '已删除拼接成片，原视频已回到待检查' : '已删除该任务及临时视频，没有重新生成');
         onClose();
       } else if (action === 'folder') {
         if (!desktop?.openReviewFolder) throw Error('请在最新版 FlowCut 桌面程序中打开临时目录');
@@ -4322,10 +4446,10 @@ function PromptDrawer({
         if (!desktop?.openReviewVideo) throw Error('请在新版 FlowCut 桌面程序中查看视频');
         await desktop.openReviewVideo(task.id);
       } else {
-        if (!await confirmAction(`确认通过此成片？商品 ID：${task.product_external_id || '未填写'}，账号：${task.tiktok_account_name}。通过后将送入本任务设置的发布文件夹；如果自动发布正在运行，可能很快开始上传。请确认内容和账号橱窗无误。`)) return;
+        if (!await confirmAction(`确认通过此成片？商品 ID：${task.product_external_id || '未填写'}，账号：${task.tiktok_account_name}。通过后将送入本任务设置的发布文件夹；如果自动发布正在运行，可能很快开始上传。请确认内容和账号橱窗无误。${isConcat ? '通过后，参与拼接的原视频会从待检查中删除。' : ''}`)) return;
         if (!desktop?.approveReviewVideo) throw Error('请在新版 FlowCut 桌面程序中审核');
-        await desktop.approveReviewVideo(task.id, true);
-        await onUpdated('已审核通过，视频已送入原发布目录');
+        const approved = await desktop.approveReviewVideo(task.id, true) as { cleanupWarning?: string };
+        await onUpdated(approved?.cleanupWarning ? `已审核通过；${approved.cleanupWarning}` : '已审核通过，视频已送入原发布目录');
       }
     } catch(error) { setRecreateError(error instanceof Error ? error.message : '操作失败'); }
     finally { setBusy(''); }
@@ -4366,7 +4490,7 @@ function PromptDrawer({
           <div>
             <span className="step-kicker">AUTOMATION RESULT</span>
             <h2>{task.product_name || task.title}</h2>
-            <p>{task.gem_name}</p>
+            <p>{task.gem_name}{isClip || isConcat ? ` · ${clipLabel(task)}` : ""}</p>
           </div>
           <button onClick={onClose}>×</button>
         </div>
@@ -4377,6 +4501,8 @@ function PromptDrawer({
           <em>
             {task.provider === "demo-engine"
               ? "旧版演示结果 · 未识别图片"
+              : isConcat
+                ? "本机拼接成片"
               : task.provider.startsWith("seedance")
                 ? "Gemini → Seedance"
                 : task.provider === "gemini-web"
@@ -4393,13 +4519,21 @@ function PromptDrawer({
           </em>
           <time>{formatTime(task.created_at)}</time>
         </div>
-        {task.duration === 30 && <div className="download-result"><b>双段 30 秒 · 15秒＋15秒</b><span>{task.segment_progress || "等待 Gemini 生成两段提示词"}</span></div>}
+        {task.duration === 30 && !task.task_role && <div className="download-result"><b>双段 30 秒 · 15秒＋15秒</b><span>{task.segment_progress || "等待 Gemini 生成两段提示词"}</span></div>}
         <div className="drawer-chain-wrap">
           <span>本任务执行链路</span>
           <GeminiModelInfo value={task.gemini_model_info} />
-          <SeedanceTaskDetail taskId={task.id} />
+          {!isGroup && !isConcat && <SeedanceTaskDetail taskId={task.id} />}
           <TaskChain task={task} />
         </div>
+        {task.prompt_note && !isGroup && <div className="warning-box">{task.prompt_note}</div>}
+        {isGroup && <TaskBatchPanel task={task} statusLabel={child => taskStatusLabel(child as Task)}
+          onOpenTask={child => onOpenTask(child as Task)} onUpdated={onUpdated} desktop={desktopBridge} request={api} />}
+        {merged && <div className="download-result">
+          <b>{task.review_status === 'merging' ? '正在拼接这条视频' : '这条视频已用于拼接'}</b>
+          <span>请审核拼接成片。如果不满意，删除拼接成片后这条视频会回到待检查，可以单独通过或重新拼接。</span>
+          {task.merged_into_task_id && <button className="secondary" onClick={() => onOpenTask({ ...task, id: task.merged_into_task_id! })}>查看拼接成片</button>}
+        </div>}
         {task.provider === "demo-engine" && (
           <div className="warning-box strong-warning">
             这段提示词不是根据你的商品图生成的。商品图片已经保存，但当时 Gemini
@@ -4420,21 +4554,32 @@ function PromptDrawer({
             <span>{task.approved_path || task.download_path}</span>
             <button className="secondary" disabled={Boolean(busy) || task.review_status === 'replaced'} onClick={() => reviewAction('open')}>外部打开视频</button>
             {!['approved','replaced'].includes(task.review_status || '') && <button className="secondary" disabled={Boolean(busy)} onClick={() => reviewAction('folder')}>打开临时存放目录</button>}
-            {!['approved','replaced','deleting'].includes(task.review_status || '') && <button className="primary" disabled={Boolean(busy)} onClick={() => reviewAction('approve')}>通过检查并送入发布目录</button>}
+            {!['approved','replaced','deleting','merging','merged'].includes(task.review_status || '') && <button className="primary" disabled={Boolean(busy)} onClick={() => reviewAction('approve')}>通过检查并送入发布目录</button>}
             {task.approved_path && <span>已放行至：{task.approved_path}</span>}
             {!task.download_path.includes('review-videos') && task.review_status !== 'approved' && <span>这是旧版已下载的文件，可能早已在发布目录中。此状态不会撤回已开始的发布。</span>}
           </div>
         )}
-        {["video_ready", "scheduled"].includes(task.status) && !['approved','approving'].includes(task.review_status || '') && (
+        {isConcat && ["video_ready", "scheduled"].includes(task.status) && ['pending','deleting'].includes(task.review_status || 'pending') && task.download_path && (
           <div className="download-result">
-            <b>成片不满意？用这些素材重新制作</b>
-            <span>删除旧成片和旧任务，复用原图片和商品 ID，从提示词开始重做。默认沿用原 Gem，也可切换。新成片仍需检查。</span>
-            <label>重做使用的 Gem
+            <b>拼接成片不满意？</b>
+            <span>删除这条拼接成片后，参与拼接的原视频会回到待检查，可以单独通过、重做或重新拼接。</span>
+            <button className="secondary" disabled={Boolean(busy)} onClick={() => reviewAction('delete')}>
+              {busy === 'delete' ? '正在删除…' : '删除拼接成片'}
+            </button>
+          </div>
+        )}
+        {!isConcat && !merged && ["video_ready", "scheduled"].includes(task.status) && !['approved','approving'].includes(task.review_status || '') && (
+          <div className="download-result">
+            <b>{isClip ? "这条视频不满意？" : "成片不满意？用这些素材重新制作"}</b>
+            <span>{isClip
+              ? "用同一条提示词重新生成视频（不经过 Gemini），旧视频会删除，新视频放回本组同一位置，仍需检查。"
+              : "删除旧成片和旧任务，复用原图片和商品 ID，从提示词开始重做。默认沿用原 Gem，也可切换。新成片仍需检查。"}</span>
+            {!isClip && <label>重做使用的 Gem
               <select aria-label="重做使用的 Gem" value={recreateGemId} disabled={Boolean(busy) || recreateRequested || ['replaced','deleting'].includes(task.review_status || '')} onChange={event => setRecreateGemId(event.target.value)}>
                 <option value="">沿用原任务 Gem（{task.gem_name || '原设定'}）</option>
                 {gems.map(gem => <option key={gem.id} value={gem.id}>{gem.name}</option>)}
               </select>
-            </label>
+            </label>}
             <button className="secondary" disabled={Boolean(busy) || task.review_status === 'deleting'} onClick={recreateTask}>
               {busy === "recreate" ? "正在处理…" : task.review_status === 'replaced' ? '完成旧成片清理（不重复生成）' : "重新生成该任务"}
             </button>
@@ -4450,18 +4595,24 @@ function PromptDrawer({
             下载状态：{task.download_error}
           </div>
         )}
+        {!isGroup && task.status === "failed" && task.gemini_raw_reply && <details className="warning-box">
+          <summary>查看 Gemini 原始回复</summary>
+          <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{task.gemini_raw_reply}</pre>
+        </details>}
+        {!isConcat && !isGroup && <>
         <div className="prompt-title">
-          <b>{task.provider === "demo-engine" ? "旧演示提示词（不可提交）" : "Gemini 生成的 Seedance 提示词"}</b>
+          <b>{task.provider === "demo-engine" ? "旧演示提示词（不可提交）" : isClip ? `本条视频的提示词（${clipLabel(task)}）` : "Gemini 生成的 Seedance 提示词"}</b>
         </div>
         <pre>{task.prompt || "尚未生成提示词"}</pre>
+        </>}
         <div className="drawer-foot">
-          <button
+          {!isConcat && (!isGroup || Boolean(task.variant_mode)) && <button
             className="secondary"
             onClick={copy}
             disabled={!task.prompt || task.provider === "demo-engine"}
           >
-            {copied ? "已复制" : "复制提示词"}
-          </button>
+            {copied ? "已复制" : isGroup ? "复制母版提示词" : "复制提示词"}
+          </button>}
           {task.provider === "demo-engine" && (
             <button
               className="primary"

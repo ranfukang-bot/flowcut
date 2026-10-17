@@ -11,7 +11,7 @@ import zip from '../gemini-web-workbench/src/backup-zip.js';
 import { gemExportFiles } from '../lib/gem-export.ts';
 import seedanceStore from '../vendor/seedance-engine/store.js';
 import queueEngine from '../vendor/seedance-engine/queue-engine.js';
-const { BackupManager, scheduleBackups, hash } = backup;
+const { BackupManager, restorableTables, scheduleBackups, hash } = backup;
 const { zipDirectory } = zip;
 
 function database(t) {
@@ -139,4 +139,23 @@ test('restore requires two affirmative confirmations; either cancel aborts', asy
   assert.equal(await backup.confirmRestore(async () => { calls++; return true; }), true); assert.equal(calls, 2);
   calls = 0; assert.equal(await backup.confirmRestore(async () => { calls++; return false; }), false); assert.equal(calls, 1);
   calls = 0; assert.equal(await backup.confirmRestore(async () => { calls++; return calls === 1; }), false); assert.equal(calls, 2);
+});
+
+test('restoring an old backup drops an unfinished local join, returns its clips to review and keeps split groups finished', () => {
+  const tables = { tasks: [
+    { id: 'group', task_role: 'group', status: 'split_done', review_status: 'pending', error: null },
+    { id: 'clip-1', task_role: 'clip', status: 'video_ready', review_status: 'merging', merged_into_task_id: 'running', error: null },
+    { id: 'clip-2', task_role: 'clip', status: 'video_ready', review_status: 'merged', merged_into_task_id: 'joined', error: null },
+    { id: 'clip-3', task_role: 'clip', status: 'video_queued', review_status: 'pending', error: null },
+    { id: 'running', task_role: 'concat', status: 'concat_running', review_status: 'pending', error: null },
+    { id: 'joined', task_role: 'concat', status: 'video_ready', review_status: 'pending', error: null },
+    { id: 'variant', task_role: 'group', status: 'variant_queued', review_status: 'pending', error: null },
+  ] };
+  const rows = Object.fromEntries(restorableTables(tables).tasks.map(row => [row.id, row]));
+  assert.equal(rows.running, undefined);
+  assert.deepEqual([rows['clip-1'].review_status, rows['clip-1'].merged_into_task_id], ['pending', null]);
+  assert.deepEqual([rows['clip-2'].review_status, rows['clip-2'].merged_into_task_id], ['merged', 'joined'], 'a finished join keeps its clips');
+  assert.equal(rows.group.status, 'split_done');
+  assert.equal(rows.joined.status, 'video_ready');
+  for (const id of ['clip-3', 'variant']) { assert.equal(rows[id].status, 'failed'); assert.match(rows[id].error, /未自动重发/); }
 });

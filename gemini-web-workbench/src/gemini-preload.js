@@ -238,6 +238,23 @@ function responseSnapshot() {
   );
 }
 
+// Each rendered code block (the dark box in Gemini) is one complete prompt.
+// Read only the code text: not the "Plaintext" label or copy/download buttons
+// above it, and not the explanation or tables outside the blocks.
+function codeBlocksIn(root) {
+  if (!root?.querySelectorAll) return { blocks: [], markup: false };
+  const blocks = [...root.querySelectorAll("pre")]
+    .filter((pre) => !pre.parentElement?.closest("pre"))
+    .map((pre) => String((pre.querySelector("code") || pre).textContent || "").replace(/\r\n?/g, "\n").trim())
+    .filter(Boolean);
+  const markup = Boolean(root.querySelector("code-block, pre, [data-test-id='code-content'], .code-block"));
+  return { blocks, markup };
+}
+
+function responseCodeBlocks() {
+  return codeBlocksIn(responseElements().at(-1));
+}
+
 function userMessageCount() {
   return all(
     'user-query, [data-test-id*="user-query" i], [class*="user-query" i]'
@@ -910,7 +927,9 @@ async function runJob(job) {
   await typePrompt(job.prompt);
   const baseline = responseSnapshot();
   await submitPrompt();
-  return waitForResponse(baseline);
+  const prompt = await waitForResponse(baseline);
+  const { blocks, markup } = responseCodeBlocks();
+  return { prompt, codeBlocks: blocks, codeBlockHint: markup && !blocks.length };
 }
 
 async function runReferenceRemixJob(job) {
@@ -1329,7 +1348,7 @@ async function executeGeminiJob(job) {
       ? await runReferenceRemixJob(job)
       : job.kind === "script-pipeline"
         ? await runScriptPipelineJob(job)
-        : { prompt: await runJob(job), analysis: "" };
+        : { ...(await runJob(job)), analysis: "" };
   } finally {
     clearInterval(timer);
   }
@@ -1348,6 +1367,8 @@ ipcRenderer.on("gemini:run-job", async (_event, job) => {
       storyboardJson: result.storyboardJson || "",
       rawGroupsJson: result.rawGroupsJson || "",
       optimizedGroupsJson: result.optimizedGroupsJson || "",
+      codeBlocks: Array.isArray(result.codeBlocks) ? result.codeBlocks : [],
+      codeBlockHint: result.codeBlockHint === true,
     });
   } catch (error) {
     ipcRenderer.send("gemini:job-result", {

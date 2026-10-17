@@ -834,7 +834,8 @@ async function runGeminiJob(account, job) {
   bridge?.assertTaskActive(job.id);
   const window = workerWindow(account, true);
   let gemUrl = "";
-  if (!job.kind || job.kind === "standard") {
+  // Product prompts and their second "variant" round both run in a saved Gem.
+  if (!job.kind || job.kind === "standard" || job.kind === "variant") {
     const active = bridge?.active.get(account.id);
     if (active) { active.stage = "准备已保存的 Gem（首次自动创建）"; broadcast(); }
     if (gemSetupAccounts.has(account.id)) throw Object.assign(new Error("该账号正在设置网页 Gem，请稍后重试"), { code: "GEM_SETUP_REQUIRED" });
@@ -862,7 +863,7 @@ async function runGeminiJob(account, job) {
   const resultPromise = new Promise((resolve, reject) => {
     const watchdog = watchGeminiJob({
       contents: window.webContents,
-      timeoutMs: (job.kind === "script-pipeline" ? 60 : job.kind === "reference-remix" ? 26 : 13) * 60_000,
+      timeoutMs: (job.kind === "script-pipeline" ? 60 : job.kind === "reference-remix" ? 26 : job.kind === "variant" ? 20 : 13) * 60_000,
       onFailure(error) {
         error = modelWatchdogError(error, pendingJobs.get(requestId));
         pendingJobs.delete(requestId);
@@ -1057,6 +1058,8 @@ function completeGeminiJob(result, contentsId) {
       storyboardJson: result.storyboardJson || "",
       rawGroupsJson: result.rawGroupsJson || "",
       optimizedGroupsJson: result.optimizedGroupsJson || "",
+      codeBlocks: Array.isArray(result.codeBlocks) ? result.codeBlocks.slice(0, 50).map(String) : [],
+      codeBlockHint: result.codeBlockHint === true,
     });
     return;
   }
@@ -1275,6 +1278,8 @@ function bindIpc() {
   handle('video-review:folder', (_event, id) => videoReview.openFolder(String(id || '')));
   handle('video-review:delete-pending', (_event, input) => videoReview.deletePending(String(input?.id || ''), input?.confirmed === true));
   handle('video-review:approve', (_event, input) => videoReview.approve(String(input?.id || ''), input?.confirmed === true));
+  handle('video-review:concat', (_event, input) => videoReview.concat(
+    String(input?.groupId || ''), Array.isArray(input?.ids) ? input.ids.map(String) : [], input?.confirmed === true));
   handle('video-review:discard', async (_event, input) => {
     const id = String(input?.id || '');
     await videoReview.discard(id, String(input?.replacementId || ''));
@@ -1405,7 +1410,7 @@ function bindIpc() {
     for (const task of seedanceRuntime?.store?.tasks || []) {
       if (task.flowcutTaskId && (!task.flowcutTaskKind || task.flowcutTaskKind === "standard")) ids.add(task.flowcutTaskId);
     }
-    for (const item of store.state.pendingResults || []) if (!item.kind || item.kind === "standard") ids.add(item.taskId);
+    for (const item of store.state.pendingResults || []) if (!item.kind || item.kind === "standard" || item.kind === "variant") ids.add(item.taskId);
     bridge?.cancelTasks([...ids]);
     seedanceRuntime?.clearTasks([...ids]);
     for (const [requestId, job] of pendingJobs) {
@@ -1617,6 +1622,12 @@ async function activateWorkbench() {
     store.state.settings.personalEditionInitialized = true;
     store.save();
     workbenchStarted = true;
+    // Concatenations interrupted by a restart are finished or released, and
+    // clips of approved concatenated videos are removed.
+    void videoReview.recoverConcats().then(result => {
+      if (result.finished || result.released || result.consumed) store.log(`拼接任务恢复：完成 ${result.finished} 条，释放 ${result.released} 条，清理 ${result.consumed} 组已放行片段`);
+      for (const error of result.errors) store.log(`拼接任务恢复未完成：${error}`, 'warn');
+    }).catch(error => store.log(`拼接任务恢复未完成：${error.message}`, 'warn'));
     stopAutoBackup ||= scheduleBackups(() => backupManager.backup('automatic'), { onError: error => { store.log(`自动备份失败：${error.message}`, 'warn'); broadcast(); } });
     await publisherRuntime.start().catch(error => store.log(`选品与发布连接暂不可用：${error.message}`, "warn"));
     startLocalSiteHealthMonitor();

@@ -4,11 +4,11 @@ const esbuild=require('esbuild');
 
 test('real review API SQL reserves deletion against approval and deletes only its task and schedule',async()=>{
   const sqlite=new DatabaseSync(':memory:');
-  sqlite.exec(`CREATE TABLE tasks(id TEXT PRIMARY KEY,review_status TEXT,status TEXT,download_path TEXT);
+  sqlite.exec(`CREATE TABLE tasks(id TEXT PRIMARY KEY,review_status TEXT,status TEXT,download_path TEXT,task_role TEXT,batch_parent_id TEXT,merged_into_task_id TEXT);
     CREATE TABLE schedules(task_id TEXT);
-    INSERT INTO tasks VALUES('pending','pending','video_ready','p.mp4'),('approved','approved','video_ready','a.mp4');
+    INSERT INTO tasks(id,review_status,status,download_path) VALUES('pending','pending','video_ready','p.mp4'),('approved','approved','video_ready','a.mp4');
     INSERT INTO schedules VALUES('pending'),('approved');`);
-  const db={prepare(sql){const stmt=sqlite.prepare(sql);return {bind(...args){return {run:async()=>({meta:stmt.run(...args)}),first:async()=>stmt.get(...args)||null};}};},batch:async statements=>{sqlite.exec('BEGIN');try{const result=[];for(const stmt of statements)result.push(await stmt.run());sqlite.exec('COMMIT');return result;}catch(e){sqlite.exec('ROLLBACK');throw e;}}};
+  const db={prepare(sql){const stmt=sqlite.prepare(sql);const bind=(...args)=>({run:async()=>({meta:stmt.run(...args)}),first:async()=>stmt.get(...args)||null});return {bind,...bind()};},batch:async statements=>{sqlite.exec('BEGIN');try{const result=[];for(const stmt of statements)result.push(await stmt.run());sqlite.exec('COMMIT');return result;}catch(e){sqlite.exec('ROLLBACK');throw e;}}};
   try{
     const build=await esbuild.build({entryPoints:[path.resolve(__dirname,'../../app/api/tasks/review/route.ts')],bundle:true,write:false,platform:'node',format:'cjs',plugins:[{name:'isolated-storage',setup(b){b.onResolve({filter:/lib\/storage$/},()=>({path:'storage',namespace:'fixture'}));b.onLoad({filter:/.*/,namespace:'fixture'},()=>({contents:'export const ensureWorkspace=async()=>{};export const getDb=()=>globalThis.fixtureDb;export const jsonError=e=>Response.json({error:e.message},{status:500});',loader:'js'}));}}]});
     const context={module:{exports:{}},exports:{},fixtureDb:db,Response,console};vm.runInNewContext(build.outputFiles[0].text,context);

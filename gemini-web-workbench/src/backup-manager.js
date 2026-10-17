@@ -28,6 +28,27 @@ function regularFile(root, relative) {
 }
 async function write(file, data) { await fs.promises.mkdir(path.dirname(file), { recursive: true }); await fs.promises.writeFile(file, data); }
 
+// A historical queue entry may have been submitted since this snapshot.
+// Require explicit inspection rather than automatically replaying it.
+// A local concatenation that was running when the backup was taken is dropped
+// and its clips return to review; nothing was generated remotely for it.
+function restorableTables(tables) {
+  if (Array.isArray(tables.tasks)) {
+    const running = new Set(tables.tasks.filter(row => row.task_role === 'concat' && row.status === 'concat_running').map(row => row.id));
+    tables.tasks = tables.tasks.filter(row => !running.has(row.id));
+    for (const row of tables.tasks) {
+      if (row.review_status === 'merging') { row.review_status = 'pending'; row.merged_into_task_id = null; }
+    }
+  }
+  for (const name of ['tasks', 'reference_remix_tasks', 'script_pipeline_tasks']) for (const row of tables[name] || []) {
+    // split_done: a group whose clips exist as their own rows; finished.
+    if (typeof row.status === 'string' && !['video_ready', 'scheduled', 'completed', 'success', 'failed', 'split_done'].includes(row.status)) {
+      row.status = 'failed';
+      if ('error' in row) row.error = '从历史备份恢复，请核对平台历史后再手动重新生成；未自动重发。';
+    }
+  }
+  return tables;
+}
 class BackupManager {
   constructor(options) { Object.assign(this, { beforeSnapshot: async () => {}, beforeRestore: async () => {}, onComplete: async () => {}, latest: null, now: () => new Date(), ...options }); this.busy = false; }
   async exclusive(action) {
@@ -147,14 +168,7 @@ class BackupManager {
       await this.beforeRestore();
       const previous = await this.createBackup('before-restore');
       for (const media of manifest.media) await this.site.uploadMedia(media, path.join(stage, media.path));
-      // A historical queue entry may have been submitted since this snapshot.
-      // Require explicit inspection rather than automatically replaying it.
-      for (const name of ['tasks', 'reference_remix_tasks', 'script_pipeline_tasks']) for (const row of tables[name] || []) {
-        if (typeof row.status === 'string' && !['video_ready', 'scheduled', 'completed', 'success', 'failed'].includes(row.status)) {
-          row.status = 'failed';
-          if ('error' in row) row.error = '从历史备份恢复，请核对平台历史后再手动重新生成；未自动重发。';
-        }
-      }
+      restorableTables(tables);
       await this.site.restoreTables(tables);
       for (const [relative, value] of Object.entries(local)) {
         const destination = path.join(this.userData, relative);
@@ -197,4 +211,4 @@ async function confirmRestore(confirm) {
   for (const message of ['恢复将覆盖商品、Gem、任务和本机配置，并重启程序。当前登录 Cookie 保留。是否继续？', '再次确认恢复：覆盖前会先备份当前数据；历史未完成任务将暂停自动执行，需要核对平台历史。']) if (!await confirm(message)) return false;
   return true;
 }
-module.exports = { BackupManager, LOCAL_FILES, BACKUP_NAME, safeRelative, scheduleBackups, confirmRestore, hash };
+module.exports = { BackupManager, restorableTables, LOCAL_FILES, BACKUP_NAME, safeRelative, scheduleBackups, confirmRestore, hash };

@@ -944,3 +944,19 @@ body {
 .product-image-grid { grid-auto-rows:max-content; align-content:start; }
 .product-image-option { min-height:245px; }
 @media(max-width:600px) { .product-image-option { min-height:212px; } }
+/* Clips of a code-block group, listed under the group row. */
+.tasks-table .task-batch-rows { grid-column:1 / -1; display:grid; gap:6px; margin:4px 0 2px 36px; }
+.tasks-table .task-batch-row { display:grid; grid-template-columns:minmax(160px,1fr) minmax(180px,1fr) 108px; gap:14px; align-items:center; padding:8px 12px; border-left:3px solid #dce3e8; background:#f7f9fb; border-radius:8px; }
+.tasks-table .task-batch-row .task-name { text-align:left; background:none; border:0; padding:0; cursor:pointer; }
+.tasks-table .task-batch-row .task-name small { display:block; margin-top:2px; }
+/* Two-round variant settings in the creation center. */
+.variant-config .variant-toggle { display:flex; gap:8px; align-items:center; color:#d9dcd5; font-size:12px; }
+.variant-config .variant-field { display:flex; flex-direction:column; gap:7px; margin-top:12px; color:#8d939b; font-size:12px; font-weight:650; }
+.variant-config .variant-field > span { color:#b9bdc4; }
+.variant-config select { width:100%; height:46px; background:#202329; border-color:#363a42; color:white; font-size:13px; }
+/* Clips of a group inside the task drawer. */
+.download-result .batch-clip-list { display:flex; flex-direction:column; gap:4px; margin:4px 0; }
+.download-result .batch-clip { display:grid; grid-template-columns:16px minmax(90px,auto) minmax(0,1fr) auto; gap:8px; align-items:center; padding:4px 0; border-top:1px solid #e3efcf; }
+.download-result .batch-clip b { font-size:12px; }
+.download-result .batch-clip .status { justify-self:start; }
+.download-result .batch-clip-open { padding:4px 12px; font-size:12px; border:1px solid #cde4a5; border-radius:7px; background:white; cursor:pointer; }

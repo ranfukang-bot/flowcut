@@ -1,7 +1,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
+const { randomUUID } = require('node:crypto');
 const { accountVideoDirectory } = require('../../vendor/seedance-engine/video-download');
+const { concatClips: defaultConcatClips } = require('./clip-concat');
+const MAX_CONCAT_CLIPS = 10;
 
 function reviewDirectory(userData, taskId) {
   return path.join(userData, 'review-videos', createHash('sha256').update(String(taskId)).digest('hex'));
@@ -70,9 +73,87 @@ function moveToStaging(source, temp, io = fs) {
   }
 }
 class VideoReview {
-  constructor({ userData, request, defaultDirectory, shell, beforeDelete = async () => {} }) {
-    Object.assign(this, { userData, request, defaultDirectory, shell, beforeDelete });
+  constructor({ userData, request, defaultDirectory, shell, beforeDelete = async () => {}, concatClips = defaultConcatClips }) {
+    Object.assign(this, { userData, request, defaultDirectory, shell, beforeDelete, concatClips });
     this.locks = new Set();
+  }
+  concatOutput(concatId) { return path.join(reviewDirectory(this.userData, concatId), 'concat.mp4'); }
+  // A clip may only be read from inside its own review folder.
+  clipFile(source) {
+    if (!/^[\w-]+$/.test(String(source.id || '')) || !source.download_path) throw Error('片段视频尚未下载完成');
+    if (path.extname(source.download_path).toLowerCase() !== '.mp4') throw Error('片段不是 MP4 视频');
+    const file = fs.realpathSync(source.download_path);
+    if (!fs.statSync(file).isFile() || !within(fs.realpathSync(reviewDirectory(this.userData, source.id)), file)) throw Error('片段视频不在该任务的待检查目录中');
+    return file;
+  }
+  // Joins selected clips of one group into a new video waiting for review.
+  // The clips are reserved first, so they cannot be approved or deleted while
+  // FFmpeg runs; a failure releases them unchanged.
+  async concat(groupId, ids, confirmed, concatId = randomUUID()) {
+    if (confirmed !== true) throw Error('请确认拼接所选视频');
+    if (!/^[\w-]+$/.test(groupId)) throw Error('任务组 ID 无效');
+    const sourceIds = Array.isArray(ids) ? ids.map(String) : [];
+    if (sourceIds.length < 2 || sourceIds.length > MAX_CONCAT_CLIPS || new Set(sourceIds).size !== sourceIds.length || sourceIds.some(id => !/^[\w-]+$/.test(id))) {
+      throw Error(`请选择 2–${MAX_CONCAT_CLIPS} 条不同的视频进行拼接`);
+    }
+    const lock = 'concat:' + groupId;
+    if (this.locks.has(lock)) throw Error('这一组正在拼接，请勿重复点击');
+    this.locks.add(lock);
+    const output = this.concatOutput(concatId);
+    try {
+      const reserved = await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id: groupId, action: 'concat-reserve', concatId, sourceIds, confirmed: true }) });
+      try {
+        const files = (reserved.sources || []).map(source => this.clipFile(source));
+        if (files.length !== sourceIds.length) throw Error('所选视频已变化，请刷新后重试');
+        fs.mkdirSync(path.dirname(output), { recursive: true });
+        await this.concatClips(files, output);
+      } catch (error) {
+        try { fs.unlinkSync(output); } catch (cleanup) { if (cleanup.code !== 'ENOENT') throw cleanup; }
+        await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id: concatId, action: 'concat-cancel', confirmed: true }) }).catch(() => {});
+        throw Error(`拼接未完成，所选视频保持原状：${error.message}`);
+      }
+      await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id: concatId, action: 'concat-finish', path: output, confirmed: true }) });
+      return { id: concatId, file: output };
+    } finally { this.locks.delete(lock); }
+  }
+  // After a concatenated video is approved its clips are used up: remove their
+  // files and records. Safe to repeat; anything left is retried on start-up.
+  async consumeMerged(concatId) {
+    const sources = await this.request('/api/tasks/review?merged=' + encodeURIComponent(concatId));
+    for (const source of sources || []) {
+      if (source.review_status !== 'merged') continue;
+      await this.beforeDelete(source.id);
+      const folder = reviewDirectory(this.userData, source.id);
+      if (source.download_path && fs.existsSync(source.download_path)) {
+        const file = this.clipFile(source);
+        fs.unlinkSync(file);
+      }
+      await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id: source.id, action: 'delete-merged', confirmed: true }) });
+      try { fs.rmdirSync(folder); } catch (error) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error.code)) throw error; }
+    }
+  }
+  // Start-up recovery: finish or release concatenations interrupted by a
+  // restart, and remove clips of concatenated videos approved earlier.
+  async recoverConcats() {
+    const result = { finished: 0, released: 0, consumed: 0, errors: [] };
+    for (const row of await this.request('/api/tasks/review?concat=running') || []) {
+      try {
+        const output = this.concatOutput(row.id);
+        if (fs.existsSync(output) && fs.statSync(output).size > 0) {
+          await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id: row.id, action: 'concat-finish', path: output, confirmed: true }) });
+          result.finished++;
+        } else {
+          await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id: row.id, action: 'concat-cancel', confirmed: true }) });
+          try { fs.unlinkSync(output + '.partial'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+          result.released++;
+        }
+      } catch (error) { result.errors.push(`${row.id}: ${error.message}`); }
+    }
+    for (const row of await this.request('/api/tasks/review?concat=consume') || []) {
+      try { await this.consumeMerged(row.id); result.consumed++; }
+      catch (error) { result.errors.push(`${row.id}: ${error.message}`); }
+    }
+    return result;
   }
   async task(id) {
     if (!/^[\w-]+$/.test(id)) throw Error('任务 ID 无效');
@@ -210,7 +291,9 @@ class VideoReview {
     this.locks.add(id);
     try {
       const task = await this.task(id);
-      if (task.review_status === 'approved') return { file: task.approved_path, alreadyApproved: true };
+      if (task.review_status === 'approved') {
+        return { file: task.approved_path, alreadyApproved: true, ...(task.task_role === 'concat' ? await this.consumeAfterApproval(id) : {}) };
+      }
       if (!['video_ready', 'scheduled'].includes(task.status)) throw Error('视频尚未完成');
       const folder = task.archive_directory ? path.resolve(task.archive_directory)
         : accountVideoDirectory(this.defaultDirectory(), task.tiktok_account_name);
@@ -261,7 +344,7 @@ class VideoReview {
       }
       await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id, path: record.file, confirmed: true, approvedAt:record.approvedAt, timeZone:record.timeZone }) });
       cleanupSegments(this.userData,id);
-      return { file: record.file, legacy: record.legacy || false };
+      return { file: record.file, legacy: record.legacy || false, ...(task.task_role === 'concat' ? await this.consumeAfterApproval(id) : {}) };
     } catch (error) {
       if (!fs.existsSync(path.join(reviewDirectory(this.userData, id), 'approval.json'))) {
         await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id, action:'cancel', confirmed:true }) }).catch(() => {});
@@ -270,4 +353,9 @@ class VideoReview {
     } finally { this.locks.delete(id); }
   }
 }
+// The approval itself already succeeded; leftover clips are retried later.
+VideoReview.prototype.consumeAfterApproval = async function consumeAfterApproval(id) {
+  try { await this.consumeMerged(id); return {}; }
+  catch (error) { return { cleanupWarning: `拼接成片已放行，原片段清理稍后重试：${error.message}` }; }
+};
 module.exports = { VideoReview, reviewDirectory, moveToStaging, cleanupSegments };

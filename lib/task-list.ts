@@ -3,13 +3,20 @@ type TaskRow = Record<string, unknown> & { id: string; created_at: string };
 type TaskQuery = { status?: string; q?: string; cursor?: string; limit?: number };
 type TaskDatabase = Pick<D1Database, 'prepare'>;
 
-const groups: Record<string, string> = {
-  all: '1 = 1',
-  active: "t.status NOT IN ('video_ready','scheduled','failed','seedance_blocked')",
-  review: "t.status IN ('video_ready','scheduled') AND COALESCE(t.review_status,'') NOT IN ('approved','replaced')",
-  completed: "t.status IN ('video_ready','scheduled') AND t.review_status IN ('approved','replaced')",
-  attention: "t.status IN ('failed','seedance_blocked')",
-};
+// Status filters, written for any table alias so the same rule can be applied
+// to a group's clips. A split group is a container, never a video by itself;
+// clips merged into a concatenated video are not waiting for review.
+const FILTERS = ['all', 'active', 'review', 'completed', 'attention'] as const;
+type Filter = (typeof FILTERS)[number];
+function condition(filter: Filter, a: string) {
+  switch (filter) {
+    case 'active': return `${a}.status NOT IN ('video_ready','scheduled','failed','seedance_blocked','split_done')`;
+    case 'review': return `${a}.status IN ('video_ready','scheduled') AND COALESCE(${a}.review_status,'') NOT IN ('approved','replaced','merging','merged')`;
+    case 'completed': return `${a}.status IN ('video_ready','scheduled') AND ${a}.review_status IN ('approved','replaced')`;
+    case 'attention': return `${a}.status IN ('failed','seedance_blocked')`;
+    default: return '1 = 1';
+  }
+}
 const aliases: Record<string, string> = { '全部': 'all', '处理中': 'active', '进行中': 'active', '待检查': 'review', '已完成': 'completed', '需处理': 'attention' };
 const joins = 'FROM tasks t LEFT JOIN products p ON p.id=t.product_id LEFT JOIN gems g ON g.id=t.gem_id';
 const displayColumns = `p.name AS product_name, COALESCE(t.product_external_id_snapshot,p.external_id) AS product_external_id, g.name AS gem_name,
@@ -18,6 +25,8 @@ const displayColumns = `p.name AS product_name, COALESCE(t.product_external_id_s
 const listColumns = `t.id,t.product_id,t.gem_id,t.title,t.status,t.progress,t.provider,t.duration,t.region,t.shooting_style,
   t.provider_job_id,t.provider_status_url,t.output_url,t.error,t.gemini_account_id,t.tiktok_account_name,t.archive_directory,
   t.download_path,t.review_status,t.approved_path,t.segment_progress,t.download_error,t.created_at,t.updated_at,
+  t.task_role,t.batch_parent_id,t.batch_index,t.batch_round,t.batch_size,t.merged_into_task_id,t.prompt_note,
+  t.variant_gem_snapshot IS NOT NULL AS variant_mode,
   length(trim(COALESCE(t.prompt,''))) > 0 AS has_prompt,${displayColumns}`;
 
 function encodeCursor(row: TaskRow) {
@@ -33,13 +42,31 @@ function decodeCursor(value: string): [string, string] {
   } catch { throw new Error('分页游标无效，请重新加载任务'); }
 }
 
+// Clips belong to their group: the list shows top-level rows only and each
+// group carries its clips (and concatenated videos) in batch order.
+async function attachChildren(db: TaskDatabase, rows: TaskRow[]) {
+  const groupIds = rows.filter(row => row.task_role === 'group').map(row => row.id);
+  if (!groupIds.length) return rows;
+  const children = await db.prepare(`SELECT ${listColumns} ${joins} WHERE t.batch_parent_id IN (${groupIds.map(() => '?').join(',')})
+    ORDER BY CASE WHEN t.task_role='concat' THEN 1 ELSE 0 END, t.batch_round ASC, t.batch_index ASC, t.created_at ASC, t.id ASC`)
+    .bind(...groupIds).all<TaskRow>();
+  const byGroup = new Map<string, TaskRow[]>();
+  for (const child of children.results) {
+    const key = String(child.batch_parent_id);
+    byGroup.set(key, [...(byGroup.get(key) || []), child]);
+  }
+  return rows.map(row => row.task_role === 'group' ? { ...row, children: byGroup.get(row.id) || [] } : row);
+}
+
 export async function listTasks(db: TaskDatabase, query: TaskQuery = {}) {
   const status = aliases[query.status || 'all'] || query.status || 'all';
-  if (!Object.hasOwn(groups, status)) throw new Error('未知的任务筛选状态');
+  if (!(FILTERS as readonly string[]).includes(status)) throw new Error('未知的任务筛选状态');
+  const filter = status as Filter;
   const requestedLimit = query.limit ?? 50;
   if (!Number.isInteger(requestedLimit) || requestedLimit < 1) throw new Error('分页条数必须是正整数');
   const limit = Math.min(200, requestedLimit);
-  const where = [`(${groups[status]})`];
+  const where = ['t.batch_parent_id IS NULL', filter === 'all' ? '1 = 1'
+    : `((${condition(filter, 't')}) OR (t.task_role = 'group' AND EXISTS (SELECT 1 FROM tasks c WHERE c.batch_parent_id = t.id AND ${condition(filter, 'c')})))`];
   const args: (string | number)[] = [];
   if (query.q?.trim()) {
     where.push("instr(lower(COALESCE(NULLIF(p.name,''),t.title,'') || ' ' || COALESCE(t.product_external_id_snapshot,p.external_id,'') || ' ' || COALESCE(t.tiktok_account_name,'')),lower(?)) > 0");
@@ -51,18 +78,20 @@ export async function listTasks(db: TaskDatabase, query: TaskQuery = {}) {
   }
   const rows = await db.prepare(`SELECT ${listColumns} ${joins} WHERE ${where.join(' AND ')} ORDER BY t.created_at DESC,t.id DESC LIMIT ?`).bind(...args, limit + 1).all<TaskRow>();
   const tasks = rows.results.slice(0, limit);
-  return { tasks, nextCursor: rows.results.length > limit ? encodeCursor(tasks.at(-1)!) : null };
+  return { tasks: await attachChildren(db, tasks), nextCursor: rows.results.length > limit ? encodeCursor(tasks.at(-1)!) : null };
 }
 
 export async function countTasks(db: TaskDatabase): Promise<TaskCounts> {
-  const result = await db.prepare(`SELECT COUNT(*) AS total,
-    COUNT(CASE WHEN ${groups.active} THEN 1 END) AS active,
-    COUNT(CASE WHEN ${groups.review} THEN 1 END) AS review,
-    COUNT(CASE WHEN ${groups.completed} THEN 1 END) AS completed,
-    COUNT(CASE WHEN ${groups.attention} THEN 1 END) AS attention FROM tasks t`).first<TaskCounts>();
+  const result = await db.prepare(`SELECT
+    COUNT(CASE WHEN NOT (COALESCE(t.task_role,'') = 'group' AND t.status = 'split_done') THEN 1 END) AS total,
+    COUNT(CASE WHEN ${condition('active', 't')} THEN 1 END) AS active,
+    COUNT(CASE WHEN ${condition('review', 't')} THEN 1 END) AS review,
+    COUNT(CASE WHEN ${condition('completed', 't')} THEN 1 END) AS completed,
+    COUNT(CASE WHEN ${condition('attention', 't')} THEN 1 END) AS attention FROM tasks t`).first<TaskCounts>();
   return result || { total: 0, active: 0, review: 0, completed: 0, attention: 0 };
 }
 
-export function taskDetail(db: TaskDatabase, id: string) {
-  return db.prepare(`SELECT t.*,${displayColumns} ${joins} WHERE t.id=?`).bind(id).first<TaskRow>();
+export async function taskDetail(db: TaskDatabase, id: string) {
+  const task = await db.prepare(`SELECT t.*,t.variant_gem_snapshot IS NOT NULL AS variant_mode,${displayColumns} ${joins} WHERE t.id=?`).bind(id).first<TaskRow>();
+  return task ? (await attachChildren(db, [task]))[0] : null;
 }

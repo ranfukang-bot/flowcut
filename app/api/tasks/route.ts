@@ -10,6 +10,8 @@ import {
 } from "../../../lib/task-config";
 import { validateTikTokAccountName } from "../../../lib/tiktok-accounts";
 import { listTasks, taskDetail } from '../../../lib/task-list';
+import { validateVariantRequest } from "../../../lib/prompt-blocks";
+import { ORPHAN_GROUP_DELETE } from "../../../lib/task-batches";
 
 export async function GET(request: Request) {
   try {
@@ -182,6 +184,8 @@ export async function POST(request: Request) {
       shootingStyle?: string;
       geminiRequestText?: string;
       imageKeys?: string[];
+      variantGemId?: string;
+      variantRequestText?: string;
     };
     if (!body.productId || !body.gemId) {
       return Response.json({ error: "请选择产品和 Gem" }, { status: 400 });
@@ -262,14 +266,29 @@ export async function POST(request: Request) {
     const region = normalizeTaskRegion(body.region);
     const shootingStyle = normalizeShootingStyle(body.shootingStyle);
     const geminiRequestText = body.geminiRequestText ?? renderGemRequest(DEFAULT_GEM_REQUEST, { duration, region, shooting_style: shootingStyle });
+    // Two-round task: the selected Gem writes a mother prompt, the variant Gem
+    // turns it into one video per code block. Snapshots keep later template
+    // edits from changing a task already in progress.
+    let variant: { id: string; content: string; request: string } | null = null;
+    if (body.variantGemId) {
+      if (provider !== "gemini-web") return Response.json({ error: "变体两轮只支持 Gemini 网页模式" }, { status: 400 });
+      if (duration === 30) return Response.json({ error: "变体两轮不支持双段 30 秒，请选择单条时长" }, { status: 400 });
+      const variantGem = await db.prepare("SELECT id, content FROM gems WHERE id = ?").bind(body.variantGemId).first<{ id: string; content: string }>();
+      if (!variantGem?.content?.trim()) return Response.json({ error: "选择的变体 Gem 不存在或内容为空" }, { status: 400 });
+      let request: string;
+      try { request = validateVariantRequest(body.variantRequestText); }
+      catch (error) { return jsonError(error, 400); }
+      variant = { id: variantGem.id, content: variantGem.content, request: renderGemRequest(request, { duration, region, shooting_style: shootingStyle }) };
+    }
     await db
       .prepare(
         `INSERT INTO tasks
          (id, product_id, gem_id, title, status, prompt, provider, progress,
           duration, region, shooting_style, callback_token, auto_queue,
-          gemini_account_id, tiktok_account_name, archive_directory, gem_content_snapshot, product_external_id_snapshot, gemini_request_text, image_keys_snapshot, error, created_at, updated_at)
+          gemini_account_id, tiktok_account_name, archive_directory, gem_content_snapshot, product_external_id_snapshot, gemini_request_text, image_keys_snapshot, error, created_at, updated_at,
+          task_role, variant_gem_id, variant_gem_snapshot, variant_request_text)
          VALUES (?, ?, ?, ?, 'prompt_queued', '', ?, 5, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                 ?, ?, NULL, ?, ?)`
+                 ?, ?, NULL, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         id,
@@ -290,7 +309,11 @@ export async function POST(request: Request) {
         geminiRequestText,
         JSON.stringify(images.keys),
         now,
-        now
+        now,
+        variant ? "group" : null,
+        variant?.id || null,
+        variant?.content || null,
+        variant?.request || null,
       )
       .run();
     return Response.json(
@@ -382,10 +405,30 @@ export async function PATCH(request: Request) {
       return Response.json({ ok: true });
     }
 
+    if (body.action === "resplit") {
+      // Run the variant round again from the same mother prompt; a new batch
+      // of clips is created and earlier clips are left for the user to judge.
+      const result = await db
+        .prepare(
+          `UPDATE tasks SET status = 'variant_queued', progress = 36, error = NULL,
+           bridge_claimed_at = NULL, bridge_worker_id = NULL,
+           gemini_failures = 0, gemini_retry_at = NULL, updated_at = ?
+           WHERE id = ? AND provider = 'gemini-web' AND task_role = 'group'
+             AND variant_gem_snapshot IS NOT NULL AND trim(prompt) <> ''
+             AND status IN ('split_done', 'failed')`
+        )
+        .bind(new Date().toISOString(), body.id)
+        .run();
+      if (!result.meta.changes) {
+        return Response.json({ error: "只有已生成母版的变体两轮任务可以重新分裂；正在处理中的任务请等待完成" }, { status: 409 });
+      }
+      return Response.json({ ok: true });
+    }
+
     if (body.action === "queue") {
       const task = await db
         .prepare(
-          "SELECT product_id, prompt, provider, callback_token, duration FROM tasks WHERE id = ?"
+          "SELECT product_id, prompt, provider, callback_token, duration, task_role FROM tasks WHERE id = ?"
         )
         .bind(body.id)
         .first<{
@@ -394,8 +437,12 @@ export async function PATCH(request: Request) {
           provider: string;
           callback_token?: string | null;
           duration: number;
+          task_role?: string | null;
         }>();
       if (!task) return Response.json({ error: "任务不存在" }, { status: 404 });
+      if (task.task_role === "group" || task.task_role === "concat") {
+        return Response.json({ error: "分组或拼接任务不能直接提交 Seedance，请在其中的单条视频上操作" }, { status: 409 });
+      }
       if (task.provider === "demo-engine") {
         return Response.json(
           {
@@ -473,12 +520,16 @@ export async function PATCH(request: Request) {
       await db
         .prepare(
           `UPDATE tasks SET
-           status = CASE WHEN prompt = '' THEN 'prompt_queued' ELSE 'prompt_ready' END,
-           progress = CASE WHEN prompt = '' THEN 5 ELSE 32 END,
+           status = CASE WHEN prompt = '' THEN 'prompt_queued'
+             WHEN variant_gem_snapshot IS NOT NULL THEN 'variant_queued' ELSE 'prompt_ready' END,
+           progress = CASE WHEN prompt = '' THEN 5
+             WHEN variant_gem_snapshot IS NOT NULL THEN 36 ELSE 32 END,
            error = NULL,
            provider_job_id = NULL, provider_status_url = NULL,
            gemini_failures = 0, gemini_retry_at = NULL,
-           updated_at = ? WHERE id = ?`
+           updated_at = ? WHERE id = ?
+             AND COALESCE(task_role, '') <> 'concat'
+             AND NOT (COALESCE(task_role, '') = 'group' AND status = 'split_done')`
         )
         .bind(new Date().toISOString(), body.id)
         .run();
@@ -505,30 +556,40 @@ export async function DELETE(request: Request) {
     }
     if (url.searchParams.get("completed") === "1") {
       const completedStatuses = ["video_ready", "scheduled"];
+      // A concatenated video keeps its row until the desktop has removed the
+      // clips merged into it; otherwise those clips would be stranded.
+      const completedWhere = `status IN (?, ?) AND review_status IN ('approved','replaced')
+        AND NOT EXISTS (SELECT 1 FROM tasks merged WHERE merged.merged_into_task_id = tasks.id AND merged.review_status = 'merged')`;
       const completed = await getDb()
-        .prepare(
-          "SELECT COUNT(*) AS count FROM tasks WHERE status IN (?, ?) AND review_status IN ('approved','replaced')"
-        )
+        .prepare(`SELECT COUNT(*) AS count FROM tasks WHERE ${completedWhere}`)
         .bind(...completedStatuses)
         .first<{ count: number }>();
       await getDb().batch([
         getDb().prepare(
-          `DELETE FROM schedules
-           WHERE task_id IN (
-             SELECT id FROM tasks WHERE status IN (?, ?) AND review_status IN ('approved','replaced')
-           )`
+          `DELETE FROM schedules WHERE task_id IN (SELECT id FROM tasks WHERE ${completedWhere})`
         ).bind(...completedStatuses),
         getDb()
-          .prepare("DELETE FROM tasks WHERE status IN (?, ?) AND review_status IN ('approved','replaced')")
+          .prepare(`DELETE FROM tasks WHERE ${completedWhere}`)
           .bind(...completedStatuses),
+        getDb().prepare(ORPHAN_GROUP_DELETE),
       ]);
       return Response.json({ ok: true, deleted: Number(completed?.count || 0) });
     }
     const { id } = (await request.json()) as { id?: string };
     if (!id) return Response.json({ error: "缺少任务 ID" }, { status: 400 });
-    await getDb().batch([
-      getDb().prepare("DELETE FROM schedules WHERE task_id = ?").bind(id),
-      getDb().prepare("DELETE FROM tasks WHERE id = ?").bind(id),
+    // Deleting a group removes its clips and concatenated videos as well.
+    // Clips merged into a deleted concatenated video return to review.
+    const db = getDb();
+    const concatRunning = await db.prepare(`SELECT 1 AS busy FROM tasks WHERE (id = ? OR batch_parent_id = ?)
+      AND (status = 'concat_running' OR review_status = 'merging') LIMIT 1`).bind(id, id).first();
+    if (concatRunning) return Response.json({ error: "正在拼接这组视频，请等拼接完成后再删除" }, { status: 409 });
+    await db.batch([
+      db.prepare(`UPDATE tasks SET review_status = 'pending', merged_into_task_id = NULL
+        WHERE review_status IN ('merging', 'merged')
+          AND merged_into_task_id IN (SELECT id FROM tasks WHERE id = ? OR batch_parent_id = ?)`).bind(id, id),
+      db.prepare("DELETE FROM schedules WHERE task_id IN (SELECT id FROM tasks WHERE id = ? OR batch_parent_id = ?)").bind(id, id),
+      db.prepare("DELETE FROM tasks WHERE id = ? OR batch_parent_id = ?").bind(id, id),
+      db.prepare(ORPHAN_GROUP_DELETE),
     ]);
     return Response.json({ ok: true });
   } catch (error) {

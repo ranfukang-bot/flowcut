@@ -1,5 +1,6 @@
 import { getProviderConfig } from "../../../../lib/provider-config";
 import { ensureWorkspace, getDb, jsonError, runtimeEnv } from "../../../../lib/storage";
+import { clipStart } from "../../../../lib/task-batches";
 
 // A fresh task identity keeps old callbacks/downloads/publication records isolated.
 export async function POST(request: Request) {
@@ -26,8 +27,16 @@ export async function POST(request: Request) {
         duration: number; region: string; shooting_style: string;
         gemini_request_text: string | null;
         image_keys_snapshot: string | null; review_status: string;
+        task_role: string | null; prompt: string; auto_queue: number;
+        batch_parent_id: string | null; batch_index: number | null; batch_round: number | null; batch_size: number | null;
       }>();
     if (!source) return Response.json({ error: "原任务不存在" }, { status: 404 });
+    if (source.task_role === "concat") {
+      return Response.json({ error: "拼接成片不能重新生成；如需重拼，请删除这条拼接成片，参与拼接的片段会回到待检查" }, { status: 409 });
+    }
+    if (['merging','merged'].includes(source.review_status)) {
+      return Response.json({ error: "这条视频已用于拼接，不能单独重做；删除拼接成片后它会回到待检查" }, { status: 409 });
+    }
     if (['approved','approving','deleting'].includes(source.review_status)) return Response.json({error:'成片正在删除、已送入发布流程或正在放行，不能直接重做删除'}, {status:409});
     if (!["video_ready", "scheduled"].includes(source.status)) {
       return Response.json({ error: "请等原任务成片完成后再重新生成；进行中的任务不会被中断" }, { status: 409 });
@@ -63,17 +72,38 @@ export async function POST(request: Request) {
       return Response.json({ error: "请先配置 Gemini，原任务未改动" }, { status: 409 });
     }
     const now = new Date().toISOString();
+    const remakeGuard = `WHERE EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status IN ('video_ready', 'scheduled') AND review_status='pending')
+        AND NOT EXISTS (SELECT 1 FROM tasks WHERE regenerated_from_task_id = ?
+          AND status NOT IN ('video_ready', 'scheduled', 'failed'))`;
+    // A clip of a code-block batch is remade from its own prompt: no Gemini
+    // round, same group and position, a fresh video from Seedance.
+    const remakeClip = source.task_role === "clip" && Boolean(source.batch_parent_id) && String(source.prompt || "").trim().length >= 300;
+    let clipStatement: ReturnType<typeof db.prepare> | null = null;
+    if (remakeClip) {
+      const seedance = await getProviderConfig("seedance");
+      const start = clipStart(Boolean(source.auto_queue), { mode: seedance.config.mode, secretConfigured: seedance.secretConfigured });
+      clipStatement = db.prepare(`INSERT OR IGNORE INTO tasks
+        (id, product_id, gem_id, title, status, prompt, provider, progress,
+         duration, region, shooting_style, callback_token, auto_queue,
+         gemini_account_id, tiktok_account_name, archive_directory,
+         gem_content_snapshot, product_external_id_snapshot, gemini_request_text, image_keys_snapshot,
+         task_role, batch_parent_id, batch_index, batch_round, batch_size, regenerated_from_task_id, created_at, updated_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'clip', ?, ?, ?, ?, ?, ?, ?
+        ${remakeGuard}`).bind(requestId, source.product_id, source.gem_id, source.title, start.status, source.prompt,
+          start.provider, start.progress, source.duration, source.region, source.shooting_style, crypto.randomUUID(),
+          source.auto_queue ? 1 : 0, source.tiktok_account_name, source.archive_directory || "", gemContent,
+          source.saved_product_id || "", source.gemini_request_text ?? null, JSON.stringify(images.results.map(image => image.object_key)),
+          source.batch_parent_id, source.batch_index, source.batch_round, source.batch_size, id, now, now, id, id);
+    }
     // A single conditional INSERT prevents concurrent clicks/tabs creating two
     // active remakes. requestId also makes a lost HTTP reply safe to retry.
-    const statements = await db.batch([db.prepare(`INSERT OR IGNORE INTO tasks
+    const statements = await db.batch([clipStatement || db.prepare(`INSERT OR IGNORE INTO tasks
       (id, product_id, gem_id, title, status, prompt, provider, progress,
        duration, region, shooting_style, callback_token, auto_queue,
        gemini_account_id, tiktok_account_name, archive_directory,
        gem_content_snapshot, product_external_id_snapshot, gemini_request_text, image_keys_snapshot, regenerated_from_task_id, created_at, updated_at)
       SELECT ?, ?, ?, ?, 'prompt_queued', '', ?, 5, ?, ?, ?, ?, 1, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?
-      WHERE EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status IN ('video_ready', 'scheduled') AND review_status='pending')
-        AND NOT EXISTS (SELECT 1 FROM tasks WHERE regenerated_from_task_id = ?
-          AND status NOT IN ('video_ready', 'scheduled', 'failed'))`)
+      ${remakeGuard}`)
       .bind(requestId, source.product_id, selectedGem?.id || source.gem_id, selectedGem ? `图片识别商品 · ${selectedGem.name}` : source.title,
         gemini.config.mode === "web" ? "gemini-web" : "gemini-api",
         source.duration, source.region, source.shooting_style, crypto.randomUUID(),

@@ -5,7 +5,7 @@ export function chooseGeminiAccount(
   pinnedAccountId: string | null | undefined,
   available: Set<string>,
 ): string | null {
-  const pin = kind === "standard" ? "" : pinnedAccountId;
+  const pin = kind === "standard" || kind === "variant" ? "" : pinnedAccountId;
   if (pin) return available.has(pin) ? pin : null;
   return available.values().next().value ?? null;
 }

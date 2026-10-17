@@ -9,6 +9,67 @@ import {
 } from "../../../lib/reference-remix";
 import { buildRewritePrompt } from "../../../lib/script-pipeline";
 import { ensureWorkspace, getDb, jsonError } from "../../../lib/storage";
+import { renderVariantRequest, splitPromptBlocks, type PromptBlockMode } from "../../../lib/prompt-blocks";
+import { clipInsertStatements, clipStart, clipTaskId } from "../../../lib/task-batches";
+
+type GeminiKind = "standard" | "variant" | "reference-remix" | "script-pipeline";
+
+// A group already split into clips is finished with Gemini: a late release,
+// retry or failure report from an old worker must not reopen it.
+const SPLIT_GUARD = " AND status <> 'split_done'";
+
+// Table and queue/active states for each Gemini job kind. A variant job is the
+// second round of a product task and lives in the tasks table.
+function kindState(kind: GeminiKind | undefined) {
+  if (kind === "reference-remix") {
+    return { table: "reference_remix_tasks", queued: "'reference_queued'", queuedProgress: "5", active: "'reference_analyzing'", activeProgress: "14", rawReply: false, guard: "" };
+  }
+  if (kind === "script-pipeline") {
+    return {
+      table: "script_pipeline_tasks",
+      queued: `CASE
+             WHEN raw_groups_json <> '[]' THEN 'optimization_queued'
+             WHEN storyboard_json <> '' THEN 'grouping'
+             WHEN extraction_json <> '' THEN 'storyboarding'
+             WHEN rewritten_script <> '' THEN 'extracting'
+             ELSE 'rewrite_queued'
+           END`,
+      queuedProgress: `CASE
+             WHEN raw_groups_json <> '[]' THEN 72
+             WHEN storyboard_json <> '' THEN 66
+             WHEN extraction_json <> '' THEN 48
+             WHEN rewritten_script <> '' THEN 30
+             ELSE 5
+           END`,
+      active: `CASE
+             WHEN raw_groups_json <> '[]' THEN 'optimizing'
+             WHEN storyboard_json <> '' THEN 'grouping'
+             WHEN extraction_json <> '' THEN 'storyboarding'
+             WHEN rewritten_script <> '' THEN 'extracting'
+             ELSE 'rewriting'
+           END`,
+      activeProgress: `CASE
+             WHEN raw_groups_json <> '[]' THEN 76
+             WHEN storyboard_json <> '' THEN 66
+             WHEN extraction_json <> '' THEN 48
+             WHEN rewritten_script <> '' THEN 30
+             ELSE 14
+           END`,
+      rawReply: false,
+      guard: "",
+    };
+  }
+  if (kind === "variant") {
+    return { table: "tasks", queued: "'variant_queued'", queuedProgress: "36", active: "'variant_generating'", activeProgress: "40", rawReply: true, guard: SPLIT_GUARD };
+  }
+  return { table: "tasks", queued: "'prompt_queued'", queuedProgress: "5", active: "'prompt_generating'", activeProgress: "14", rawReply: true, guard: SPLIT_GUARD };
+}
+
+// Gemini replies kept for the task detail when a split was refused.
+function rawReplyValue(value: unknown) {
+  const text = String(value || "").trim();
+  return text ? text.slice(0, 60_000) : null;
+}
 
 async function authorize(request: Request) {
   const configured = await getProviderConfig("seedance");
@@ -166,7 +227,8 @@ export async function GET(request: Request) {
       .prepare(
       `SELECT t.id, t.product_id, t.gemini_account_id, t.created_at, COALESCE(t.gemini_retry_at, t.created_at) AS queue_at,
                 t.duration, t.region, t.shooting_style, t.gemini_request_text, t.image_keys_snapshot, t.gem_id, g.name AS gem_name,
-                p.name, p.features, COALESCE(t.gem_content_snapshot, g.content) AS content
+                p.name, p.features, COALESCE(t.gem_content_snapshot, g.content) AS content,
+                t.variant_gem_snapshot IS NOT NULL AS variant_mode
          FROM tasks t
          JOIN products p ON p.id = t.product_id
          LEFT JOIN gems g ON g.id = t.gem_id
@@ -191,6 +253,39 @@ export async function GET(request: Request) {
         shooting_style: string;
         gemini_request_text: string | null;
         image_keys_snapshot: string | null;
+        created_at: string;
+        queue_at: string;
+        variant_mode: number;
+      }>();
+
+    // Second round of a two-round task: the mother prompt (saved as the
+    // group's prompt) goes to the variant Gem together with the same images.
+    const variantPending = await db
+      .prepare(
+        `SELECT t.id, t.product_id, t.gemini_account_id, t.created_at, COALESCE(t.gemini_retry_at, t.created_at) AS queue_at,
+                t.prompt AS mother_prompt, t.variant_request_text, t.image_keys_snapshot,
+                COALESCE(t.variant_gem_id, 'snapshot-variant-' || t.id) AS gem_id, COALESCE(vg.name, '变体 Gem') AS gem_name,
+                t.variant_gem_snapshot AS content
+         FROM tasks t
+         LEFT JOIN gems vg ON vg.id = t.variant_gem_id
+         WHERE t.provider = 'gemini-web'
+           AND t.status IN ('variant_queued', 'variant_generating')
+           AND t.variant_gem_snapshot IS NOT NULL
+           AND (t.bridge_claimed_at IS NULL OR t.bridge_claimed_at < ?)
+           AND (t.gemini_retry_at IS NULL OR t.gemini_retry_at <= ?)
+         ORDER BY queue_at ASC LIMIT 32`
+      )
+      .bind(staleBefore, retryReadyAt)
+      .all<{
+        id: string;
+        product_id: string;
+        gemini_account_id?: string | null;
+        mother_prompt: string;
+        variant_request_text: string | null;
+        image_keys_snapshot: string | null;
+        gem_id: string;
+        gem_name: string;
+        content: string;
         created_at: string;
         queue_at: string;
       }>();
@@ -246,8 +341,9 @@ export async function GET(request: Request) {
     const jobs: Array<{
       gem?: { id: string; name: string; content: string };
       id: string;
-      kind: "standard" | "reference-remix" | "script-pipeline";
+      kind: GeminiKind;
       accountId: string;
+      blockMode?: PromptBlockMode;
       prompt?: string;
       analysisPrompt?: string;
       adaptationPrompt?: string;
@@ -261,13 +357,14 @@ export async function GET(request: Request) {
     }> = [];
     const candidates = [
       ...pending.results.map((task) => ({ kind: "standard" as const, task })),
+      ...variantPending.results.map((task) => ({ kind: "variant" as const, task })),
       ...remixPending.results.map((task) => ({ kind: "reference-remix" as const, task })),
       ...scriptPending.results.map((task) => ({ kind: "script-pipeline" as const, task })),
     ].sort((left, right) => left.task.queue_at.localeCompare(right.task.queue_at));
     for (const candidate of candidates) {
       const task = candidate.task;
       if (jobs.length >= capacity) break;
-      const eligibleAccounts = candidate.kind === "standard"
+      const eligibleAccounts = candidate.kind === "standard" || candidate.kind === "variant"
         ? await availableGemAccounts(availableAccounts, blockedGemVersions, candidate.task.gem_id, candidate.task.content)
         : availableAccounts;
       const accountId = chooseGeminiAccount(candidate.kind, task.gemini_account_id, eligibleAccounts);
@@ -294,6 +391,15 @@ export async function GET(request: Request) {
            bridge_claimed_at = ?, bridge_worker_id = ?, gemini_retry_at = NULL,
            error = NULL, updated_at = ?
            WHERE id = ? AND provider = 'gemini-web'
+             AND status IN ('prompt_queued', 'prompt_generating')
+             AND (bridge_claimed_at IS NULL OR bridge_claimed_at < ?)`
+        ).bind(claimedAt, workerId, claimedAt, task.id, staleBefore).run()
+        : candidate.kind === "variant" ? await db.prepare(
+          `UPDATE tasks SET status = 'variant_generating', progress = 40,
+           bridge_claimed_at = ?, bridge_worker_id = ?, gemini_retry_at = NULL,
+           error = NULL, updated_at = ?
+           WHERE id = ? AND provider = 'gemini-web'
+             AND status IN ('variant_queued', 'variant_generating')
              AND (bridge_claimed_at IS NULL OR bridge_claimed_at < ?)`
         ).bind(claimedAt, workerId, claimedAt, task.id, staleBefore).run()
         : candidate.kind === "reference-remix" ? await db.prepare(
@@ -328,9 +434,26 @@ export async function GET(request: Request) {
           id: standardTask.id,
           kind: "standard",
           accountId,
+          blockMode: Number(standardTask.duration) === 30 ? "raw" : standardTask.variant_mode ? "single" : "split",
           gem: { id: standardTask.gem_id || `snapshot-${standardTask.id}`, name: standardTask.gem_name || "历史任务 Gem", content: standardTask.content },
           prompt: buildSavedGemPrompt(standardTask),
           imageUrls: (standardTask.image_keys_snapshot ? JSON.parse(standardTask.image_keys_snapshot) as string[] : images.results.map(image => image.object_key))
+            .map(key => mediaUrl(request.url, key)),
+        });
+      } else if (candidate.kind === "variant") {
+        const variantTask = task as (typeof variantPending.results)[number];
+        const images = variantTask.image_keys_snapshot ? null : await db
+          .prepare(`SELECT object_key FROM product_images WHERE product_id = ? ORDER BY sort_order ASC LIMIT 12`)
+          .bind(variantTask.product_id)
+          .all<{ object_key: string }>();
+        jobs.push({
+          id: variantTask.id,
+          kind: "variant",
+          accountId,
+          blockMode: "split",
+          gem: { id: variantTask.gem_id, name: variantTask.gem_name, content: variantTask.content },
+          prompt: renderVariantRequest(variantTask.variant_request_text || "", variantTask.mother_prompt),
+          imageUrls: (variantTask.image_keys_snapshot ? JSON.parse(variantTask.image_keys_snapshot) as string[] : (images?.results || []).map(image => image.object_key))
             .map(key => mediaUrl(request.url, key)),
         });
       } else if (candidate.kind === "reference-remix") {
@@ -396,9 +519,12 @@ export async function POST(request: Request) {
       modelInfo?: { model?: string; thinking?: string | null; checkedAt?: string; elapsedMs?: number };
       errorCode?: string;
       taskId?: string;
-      kind?: "standard" | "reference-remix" | "script-pipeline";
+      kind?: GeminiKind;
       stage?: "extracting" | "storyboarding" | "grouping" | "optimizing";
       prompt?: string;
+      codeBlocks?: string[];
+      codeBlockHint?: boolean;
+      rawReply?: string;
       analysis?: string;
       rewrittenScript?: string;
       extractionJson?: string;
@@ -463,7 +589,7 @@ export async function POST(request: Request) {
           .prepare(
             `UPDATE tasks SET bridge_claimed_at = ?, updated_at = ?
              WHERE id = ? AND bridge_worker_id = ?
-               AND status = 'prompt_generating'`
+               AND status IN ('prompt_generating', 'variant_generating')`
           )
           .bind(now, now, taskId, body.workerId || "gemini-web-desktop")
           .run();
@@ -494,7 +620,7 @@ export async function POST(request: Request) {
     if (body.action === 'model') {
       const info = body.modelInfo;
       if (!info || !String(info.model || '').trim() || String(info.model).length > 200 || String(info.thinking || '').length > 160) return Response.json({ error: '实际模型记录无效' }, { status: 400 });
-      const table = body.kind === 'reference-remix' ? 'reference_remix_tasks' : body.kind === 'script-pipeline' ? 'script_pipeline_tasks' : 'tasks';
+      const table = kindState(body.kind).table;
       const updated = await db.prepare(`UPDATE ${table} SET gemini_model_info = ?, gemini_error_code = NULL, updated_at = ? WHERE id = ? AND bridge_worker_id = ? AND bridge_claimed_at IS NOT NULL`)
         .bind(JSON.stringify({ model: info.model, thinking: info.thinking || null, checkedAt: now, elapsedMs: Math.max(0, Number(info.elapsedMs) || 0) }), now, body.taskId, body.workerId).run();
       if (!updated.meta.changes) return Response.json({ error: '任务领取已失效，禁止发送', ignorable: true }, { status: 409 });
@@ -663,7 +789,8 @@ export async function POST(request: Request) {
       }
       const task = await db
         .prepare(
-          `SELECT auto_queue, status, provider, prompt, bridge_worker_id
+          `SELECT auto_queue, status, provider, prompt, bridge_worker_id, duration,
+                  variant_gem_snapshot IS NOT NULL AS variant_mode
            FROM tasks WHERE id = ?`
         )
         .bind(body.taskId)
@@ -673,6 +800,8 @@ export async function POST(request: Request) {
           provider: string;
           prompt: string;
           bridge_worker_id?: string | null;
+          duration: number;
+          variant_mode: number;
         }>();
       if (!task) {
         return Response.json(
@@ -680,15 +809,26 @@ export async function POST(request: Request) {
           { status: 409 }
         );
       }
+      const variantRound = body.kind === "variant";
+      const expectedStatus = variantRound ? "variant_generating" : "prompt_generating";
+      const mode: PromptBlockMode = variantRound ? "split" : Number(task.duration) === 30 ? "raw" : task.variant_mode ? "single" : "split";
+      let parsed;
+      try {
+        parsed = splitPromptBlocks({ text: prompt, blocks: body.codeBlocks, hint: body.codeBlockHint === true, mode });
+      } catch (error) {
+        return Response.json({ error: error instanceof Error ? error.message : "代码块校验失败" }, { status: 400 });
+      }
+      const split = parsed.prompts.length > 1 || variantRound;
+      const appliedPrompt = split ? prompt : parsed.prompts[0];
       if (
-        String(task.prompt || "").trim() === prompt &&
-        !["prompt_queued", "prompt_generating"].includes(task.status)
+        String(task.prompt || "").trim() === appliedPrompt &&
+        !["prompt_queued", "prompt_generating", "variant_queued", "variant_generating"].includes(task.status)
       ) {
         return Response.json({ ok: true, alreadyApplied: true });
       }
       if (
         task.provider !== "gemini-web" ||
-        task.status !== "prompt_generating" ||
+        task.status !== expectedStatus ||
         (task.bridge_worker_id &&
           body.workerId &&
           task.bridge_worker_id !== body.workerId)
@@ -701,16 +841,82 @@ export async function POST(request: Request) {
           { status: 409 }
         );
       }
+      const workerId = body.workerId || "";
+      const rawReply = rawReplyValue(prompt);
+      const note = parsed.note || null;
+
+      if (mode === "single") {
+        // Round 1 of a two-round task: keep the mother prompt and queue round 2.
+        const updated = await db
+          .prepare(
+            `UPDATE tasks SET prompt = ?, prompt_note = ?, gemini_raw_reply = ?, task_role = 'group',
+             status = 'variant_queued', progress = 36,
+             error = NULL, bridge_claimed_at = NULL, bridge_worker_id = NULL,
+             gemini_failures = 0, gemini_retry_at = NULL,
+             updated_at = ? WHERE id = ? AND provider = 'gemini-web'
+               AND status = 'prompt_generating'
+               AND (bridge_worker_id IS NULL OR bridge_worker_id = ?)`
+          )
+          .bind(parsed.prompts[0], note, rawReply, now, body.taskId, workerId)
+          .run();
+        if (!updated.meta.changes) {
+          return Response.json({ error: "任务阶段已变化，忽略过期 Gemini 结果", ignorable: true }, { status: 409 });
+        }
+        return Response.json({ ok: true, variantQueued: true });
+      }
+
+      if (split) {
+        const seedance = await getProviderConfig("seedance");
+        const start = clipStart(Boolean(task.auto_queue), { mode: seedance.config.mode, secretConfigured: seedance.secretConfigured });
+        const latest = await db
+          .prepare("SELECT COALESCE(MAX(batch_round), 0) AS round FROM tasks WHERE batch_parent_id = ?")
+          .bind(body.taskId)
+          .first<{ round: number }>();
+        const round = Number(latest?.round || 0) + 1;
+        const results = await db.batch([
+          ...clipInsertStatements(db, { groupId: body.taskId, round, prompts: parsed.prompts, start, expectedStatus, workerId, now }),
+          db.prepare(
+            `UPDATE tasks SET task_role = 'group', status = 'split_done', progress = 100,
+             ${variantRound ? "" : "prompt = ?, "}gemini_raw_reply = ?, prompt_note = NULL,
+             batch_size = ?, batch_round = ?,
+             error = NULL, bridge_claimed_at = NULL, bridge_worker_id = NULL,
+             gemini_failures = 0, gemini_retry_at = NULL, updated_at = ?
+             WHERE id = ? AND provider = 'gemini-web' AND status = ?
+               AND (bridge_worker_id IS NULL OR bridge_worker_id = ?)`
+          ).bind(
+            ...(variantRound ? [] : [prompt]),
+            rawReply, parsed.prompts.length, round, now, body.taskId, expectedStatus, workerId,
+          ),
+        ]);
+        if (!results.at(-1)?.meta.changes) {
+          return Response.json({ error: "任务阶段已变化，忽略过期 Gemini 结果", ignorable: true }, { status: 409 });
+        }
+        if (start.status === "prompt_ready" && task.auto_queue) {
+          for (let index = 1; index <= parsed.prompts.length; index += 1) {
+            const clipId = clipTaskId(body.taskId, round, index);
+            try {
+              await queueSeedance(clipId, request.url);
+            } catch (error) {
+              await db.prepare(
+                `UPDATE tasks SET status = 'seedance_blocked', progress = 40, error = ?, updated_at = ? WHERE id = ?`
+              ).bind(error instanceof Error ? error.message : "Seedance 自动提交失败", new Date().toISOString(), clipId).run();
+            }
+          }
+        }
+        return Response.json({ ok: true, clips: parsed.prompts.length, round });
+      }
+
       const updated = await db
         .prepare(
-          `UPDATE tasks SET prompt = ?, status = 'prompt_ready', progress = 32,
+          `UPDATE tasks SET prompt = ?, prompt_note = ?, gemini_raw_reply = ?,
+           status = 'prompt_ready', progress = 32,
            error = NULL, bridge_claimed_at = NULL, bridge_worker_id = NULL,
            gemini_failures = 0, gemini_retry_at = NULL,
            updated_at = ? WHERE id = ? AND provider = 'gemini-web'
              AND status = 'prompt_generating'
              AND (bridge_worker_id IS NULL OR bridge_worker_id = ?)`
         )
-        .bind(prompt, now, body.taskId, body.workerId || "")
+        .bind(appliedPrompt, note, mode === "raw" ? null : rawReply, now, body.taskId, workerId)
         .run();
       if (!updated.meta.changes) {
         return Response.json(
@@ -737,30 +943,12 @@ export async function POST(request: Request) {
     }
 
     if (body.action === "release") {
-      const table = body.kind === "reference-remix" ? "reference_remix_tasks" : body.kind === "script-pipeline" ? "script_pipeline_tasks" : "tasks";
-      const queuedStatusSql = body.kind === "script-pipeline"
-        ? `CASE
-             WHEN raw_groups_json <> '[]' THEN 'optimization_queued'
-             WHEN storyboard_json <> '' THEN 'grouping'
-             WHEN extraction_json <> '' THEN 'storyboarding'
-             WHEN rewritten_script <> '' THEN 'extracting'
-             ELSE 'rewrite_queued'
-           END`
-        : `'${body.kind === "reference-remix" ? "reference_queued" : "prompt_queued"}'`;
-      const queuedProgressSql = body.kind === "script-pipeline"
-        ? `CASE
-             WHEN raw_groups_json <> '[]' THEN 72
-             WHEN storyboard_json <> '' THEN 66
-             WHEN extraction_json <> '' THEN 48
-             WHEN rewritten_script <> '' THEN 30
-             ELSE 5
-           END`
-        : "5";
+      const state = kindState(body.kind);
       await db
         .prepare(
-          `UPDATE ${table} SET status = ${queuedStatusSql}, progress = ${queuedProgressSql},
+          `UPDATE ${state.table} SET status = ${state.queued}, progress = ${state.queuedProgress},
            bridge_claimed_at = NULL, bridge_worker_id = NULL,
-           gemini_retry_at = NULL, error = ?, gemini_error_code = ?, updated_at = ? WHERE id = ?`
+           gemini_retry_at = NULL, error = ?, gemini_error_code = ?, updated_at = ? WHERE id = ?${state.guard}`
         )
         .bind(body.error || null, body.errorCode || null, now, body.taskId)
         .run();
@@ -768,28 +956,12 @@ export async function POST(request: Request) {
     }
 
     if (body.action === "defer") {
-      const table = body.kind === "reference-remix" ? "reference_remix_tasks" : body.kind === "script-pipeline" ? "script_pipeline_tasks" : "tasks";
-      const queuedStatusSql = body.kind === "script-pipeline"
-        ? `CASE
-             WHEN raw_groups_json <> '[]' THEN 'optimization_queued'
-             WHEN storyboard_json <> '' THEN 'grouping'
-             WHEN extraction_json <> '' THEN 'storyboarding'
-             WHEN rewritten_script <> '' THEN 'extracting'
-             ELSE 'rewrite_queued'
-           END`
-        : `'${body.kind === "reference-remix" ? "reference_queued" : "prompt_queued"}'`;
-      const queuedProgressSql = body.kind === "script-pipeline"
-        ? `CASE
-             WHEN raw_groups_json <> '[]' THEN 72
-             WHEN storyboard_json <> '' THEN 66
-             WHEN extraction_json <> '' THEN 48
-             WHEN rewritten_script <> '' THEN 30
-             ELSE 5
-           END`
-        : "5";
+      const state = kindState(body.kind);
+      const rawReplySql = state.rawReply ? ", gemini_raw_reply = COALESCE(?, gemini_raw_reply)" : "";
+      const rawReplyArgs = state.rawReply ? [rawReplyValue(body.rawReply)] : [];
       const task = await db
         .prepare(
-          `SELECT gemini_failures FROM ${table} WHERE id = ? AND provider = 'gemini-web'`
+          `SELECT gemini_failures FROM ${state.table} WHERE id = ? AND provider = 'gemini-web'${state.guard}`
         )
         .bind(body.taskId)
         .first<{ gemini_failures: number }>();
@@ -802,15 +974,16 @@ export async function POST(request: Request) {
         const retryAt = new Date(Date.now() + retry.delayMs).toISOString();
         await db
           .prepare(
-            `UPDATE ${table} SET status = ${queuedStatusSql}, progress = ${queuedProgressSql},
+            `UPDATE ${state.table} SET status = ${state.queued}, progress = ${state.queuedProgress},
              bridge_claimed_at = NULL, bridge_worker_id = NULL,
              gemini_failures = ?, gemini_retry_at = ?,
-             error = ?, updated_at = ? WHERE id = ?`
+             error = ?${rawReplySql}, updated_at = ? WHERE id = ?${state.guard}`
           )
           .bind(
             failures,
             retryAt,
             `Gemini ${body.accountLimited ? "账号限流，稍后重试" : "任务暂时失败，先处理后续任务"}；${retry.label}后可重试（${failures}/${retry.maxFailures}）：${body.error || "页面未确认任务完成"}`,
+            ...rawReplyArgs,
             now,
             body.taskId
           )
@@ -825,14 +998,15 @@ export async function POST(request: Request) {
       }
       await db
         .prepare(
-          `UPDATE ${table} SET status = 'failed', progress = 0,
+          `UPDATE ${state.table} SET status = 'failed', progress = 0,
            bridge_claimed_at = NULL, bridge_worker_id = NULL,
            gemini_failures = ?, gemini_retry_at = NULL,
-           error = ?, updated_at = ? WHERE id = ?`
+           error = ?${rawReplySql}, updated_at = ? WHERE id = ?${state.guard}`
         )
         .bind(
           failures,
           `${body.error || "Gemini 网页生成失败"}（后台恢复已尝试 ${retry.maxFailures} 轮）`,
+          ...rawReplyArgs,
           now,
           body.taskId
         )
@@ -846,30 +1020,12 @@ export async function POST(request: Request) {
     }
 
     if (body.action === "retrying") {
-      const table = body.kind === "reference-remix" ? "reference_remix_tasks" : body.kind === "script-pipeline" ? "script_pipeline_tasks" : "tasks";
-      const activeStatusSql = body.kind === "script-pipeline"
-        ? `CASE
-             WHEN raw_groups_json <> '[]' THEN 'optimizing'
-             WHEN storyboard_json <> '' THEN 'grouping'
-             WHEN extraction_json <> '' THEN 'storyboarding'
-             WHEN rewritten_script <> '' THEN 'extracting'
-             ELSE 'rewriting'
-           END`
-        : `'${body.kind === "reference-remix" ? "reference_analyzing" : "prompt_generating"}'`;
-      const activeProgressSql = body.kind === "script-pipeline"
-        ? `CASE
-             WHEN raw_groups_json <> '[]' THEN 76
-             WHEN storyboard_json <> '' THEN 66
-             WHEN extraction_json <> '' THEN 48
-             WHEN rewritten_script <> '' THEN 30
-             ELSE 14
-           END`
-        : "14";
+      const state = kindState(body.kind);
       await db
         .prepare(
-          `UPDATE ${table} SET status = ${activeStatusSql}, progress = ${activeProgressSql},
+          `UPDATE ${state.table} SET status = ${state.active}, progress = ${state.activeProgress},
            bridge_claimed_at = ?, error = ?, updated_at = ?
-           WHERE id = ? AND provider = 'gemini-web'`
+           WHERE id = ? AND provider = 'gemini-web'${state.guard}`
         )
         .bind(
           now,
@@ -882,14 +1038,15 @@ export async function POST(request: Request) {
     }
 
     if (body.action === "error") {
-      const table = body.kind === "reference-remix" ? "reference_remix_tasks" : body.kind === "script-pipeline" ? "script_pipeline_tasks" : "tasks";
+      const state = kindState(body.kind);
+      const rawReplySql = state.rawReply ? ", gemini_raw_reply = COALESCE(?, gemini_raw_reply)" : "";
       await db
         .prepare(
-          `UPDATE ${table} SET status = 'failed', progress = 0,
+          `UPDATE ${state.table} SET status = 'failed', progress = 0,
            bridge_claimed_at = NULL, bridge_worker_id = NULL,
-           error = ?, updated_at = ? WHERE id = ?`
+           error = ?${rawReplySql}, updated_at = ? WHERE id = ?${state.guard}`
         )
-        .bind(body.error || "Gemini 网页生成失败", now, body.taskId)
+        .bind(body.error || "Gemini 网页生成失败", ...(state.rawReply ? [rawReplyValue(body.rawReply)] : []), now, body.taskId)
         .run();
       return Response.json({ ok: true });
     }

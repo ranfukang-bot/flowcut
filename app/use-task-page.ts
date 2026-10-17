@@ -22,11 +22,11 @@ export function useTaskPage<T extends { id: string }>(initial: T[], status: stri
       const tasks: T[] = [];
       let nextCursor: string | null = null;
       for (let index = 0; index < pages; index++) {
-        const params = new URLSearchParams({ ...filters, limit: '50', ...(nextCursor ? { cursor: nextCursor } : {}) });
-        const response = await fetch('/api/tasks?' + params, { cache: 'no-store', signal: controller.signal });
-        const result = await response.json();
+        const params: URLSearchParams = new URLSearchParams({ ...filters, limit: '50', ...(nextCursor ? { cursor: nextCursor } : {}) });
+        const response: Response = await fetch('/api/tasks?' + params, { cache: 'no-store', signal: controller.signal });
+        const result: { tasks?: T[]; nextCursor?: string | null; error?: string } = await response.json();
         if (!response.ok || !Array.isArray(result.tasks)) throw new Error(result.error || '任务列表加载失败，下面保留上次已加载的任务');
-        tasks.push(...result.tasks);
+        tasks.push(...(result.tasks as T[]));
         nextCursor = result.nextCursor || null;
         if (!nextCursor) break;
       }

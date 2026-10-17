@@ -117,7 +117,9 @@ const geminiPageRuntime = `(() => {
         extractionJson: result.extractionJson || "",
         storyboardJson: result.storyboardJson || "",
         rawGroupsJson: result.rawGroupsJson || "",
-        optimizedGroupsJson: result.optimizedGroupsJson || ""
+        optimizedGroupsJson: result.optimizedGroupsJson || "",
+        codeBlocks: Array.isArray(result.codeBlocks) ? result.codeBlocks : [],
+        codeBlockHint: result.codeBlockHint === true
       };
     } catch (error) {
       return {

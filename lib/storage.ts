@@ -180,6 +180,26 @@ async function initializeWorkspace() {
     "shooting_style",
     "TEXT NOT NULL DEFAULT 'iPhone实拍质感'"
   );
+  // Code-block batches: one reply split into several clip tasks under a group,
+  // an optional second "variant" round, and locally concatenated clips.
+  for (const [column, type] of [
+    ["task_role", "TEXT"],
+    ["batch_parent_id", "TEXT"],
+    ["batch_index", "INTEGER"],
+    ["batch_round", "INTEGER"],
+    ["batch_size", "INTEGER"],
+    ["variant_gem_id", "TEXT"],
+    ["variant_gem_snapshot", "TEXT"],
+    ["variant_request_text", "TEXT"],
+    ["gemini_raw_reply", "TEXT"],
+    ["prompt_note", "TEXT"],
+    ["merged_into_task_id", "TEXT"],
+    ["concat_source_ids", "TEXT"],
+  ]) {
+    await ensureColumn("tasks", column, type);
+  }
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_tasks_batch_parent ON tasks(batch_parent_id, batch_round, batch_index)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_tasks_merged_into ON tasks(merged_into_task_id)").run();
 
   // 旧版本曾自动注入一个“内置模板”。Gem 现在完全由用户维护，
   // 因此升级时清理旧内置记录，之后也不再自动创建。

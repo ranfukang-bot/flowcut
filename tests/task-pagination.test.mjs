@@ -13,7 +13,9 @@ function fixture(t) {
       duration INTEGER,region TEXT,shooting_style TEXT,provider_job_id TEXT,provider_status_url TEXT,output_url TEXT,error TEXT,
       gemini_account_id TEXT,tiktok_account_name TEXT,archive_directory TEXT,download_path TEXT,review_status TEXT,approved_path TEXT,
       segment_progress TEXT,download_error TEXT,created_at TEXT,updated_at TEXT,prompt TEXT,image_keys_snapshot TEXT,
-      product_external_id_snapshot TEXT,gem_content_snapshot TEXT,gemini_request_text TEXT,gemini_model_info TEXT);
+      product_external_id_snapshot TEXT,gem_content_snapshot TEXT,gemini_request_text TEXT,gemini_model_info TEXT,
+      task_role TEXT,batch_parent_id TEXT,batch_index INTEGER,batch_round INTEGER,batch_size INTEGER,merged_into_task_id TEXT,
+      prompt_note TEXT,variant_gem_snapshot TEXT);
     INSERT INTO gems VALUES('gem','测试 Gem');`);
   const insertProduct = sqlite.prepare('INSERT INTO products VALUES(?,?,?,NULL)');
   const insertTask = sqlite.prepare(`INSERT INTO tasks(id,product_id,gem_id,title,status,provider,tiktok_account_name,review_status,created_at,updated_at,prompt,gem_content_snapshot,gemini_request_text,image_keys_snapshot)
@@ -85,4 +87,29 @@ test('equal creation timestamps have deterministic id order without cursor gaps 
   assert.deepEqual(ids.slice(0, 16), Array.from({ length: 16 }, (_, index) => 'task-' + (195 - index)));
   await assert.rejects(listTasks(db, { cursor: 'not-a-valid-cursor' }), /分页游标无效/);
   await assert.rejects(listTasks(db, { status: 'unknown' }), /筛选状态/);
+});
+test('a split group is listed once with its clips; counts treat clips as videos, never the container or merged clips', async t => {
+  const { db, sqlite } = fixture(t);
+  const at = '2026-10-16T00:00:00.000Z';
+  const add = sqlite.prepare(`INSERT INTO tasks(id,product_id,gem_id,title,status,provider,tiktok_account_name,review_status,created_at,updated_at,
+    task_role,batch_parent_id,batch_index,batch_round,batch_size,merged_into_task_id,download_path) VALUES(?,'product-000','gem',?,?,'gemini-web','归档账号0',?,?,?,?,?,?,?,?,?,?)`);
+  add.run('group', '分条任务', 'split_done', 'pending', at, at, 'group', null, null, 1, 3, null, null);
+  add.run('group-r1-1', '第 1/3 条', 'video_ready', 'merged', at, at, 'clip', 'group', 1, 1, 3, 'joined', 'a.mp4');
+  add.run('group-r1-2', '第 2/3 条', 'video_ready', 'merged', at, at, 'clip', 'group', 2, 1, 3, 'joined', 'b.mp4');
+  add.run('group-r1-3', '第 3/3 条', 'video_generating', 'pending', at, at, 'clip', 'group', 3, 1, 3, null, null);
+  add.run('joined', '拼接成片', 'video_ready', 'pending', at, at, 'concat', 'group', null, null, 2, null, 'joined.mp4');
+  const before = { total: 200, active: 125, review: 30, completed: 25, attention: 20 };
+  assert.deepEqual(await countTasks(db), { ...before, total: 204, active: 126, review: 31 });
+
+  const page = await listTasks(db, { limit: 1 });
+  assert.deepEqual(page.tasks.map(row => row.id), ['group']);
+  assert.deepEqual(page.tasks[0].children.map(row => row.id), ['group-r1-1', 'group-r1-2', 'group-r1-3', 'joined'], 'clips in batch order, joined video last');
+  for (const [status, expected] of [['review', true], ['active', true], ['attention', false], ['completed', false]]) {
+    assert.equal((await listTasks(db, { status })).tasks.some(row => row.id === 'group'), expected, status);
+  }
+  assert.equal((await listTasks(db, { limit: 200 })).tasks.some(row => row.batch_parent_id), false, 'clips never appear as separate rows');
+  assert.deepEqual((await taskDetail(db, 'group')).children.map(row => row.id).at(-1), 'joined');
+  sqlite.prepare("UPDATE tasks SET variant_gem_snapshot='变体设定' WHERE id='group'").run();
+  assert.equal((await taskDetail(db, 'group')).variant_mode, 1, 'the detail view knows a two-round task');
+  assert.equal((await listTasks(db, { limit: 1 })).tasks[0].variant_mode, 1);
 });

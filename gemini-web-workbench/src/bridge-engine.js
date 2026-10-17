@@ -2,6 +2,7 @@ const { randomUUID } = require("node:crypto");
 const { gemVersion } = require("./saved-gems");
 const { modelSettingsKey } = require('./gemini-model-selection');
 const { MODEL_SELECTION_RETRYABLE, modelFailure, modelSucceeded } = require('./model-selection-errors');
+const { splitPromptBlocks } = require('../../lib/prompt-blocks.ts');
 
 const RETRYABLE_JOB_CODES = new Set([
   "GEM_SETUP_RETRYABLE",
@@ -23,6 +24,9 @@ const RETRYABLE_JOB_CODES = new Set([
   "SUBMIT_NOT_CONFIRMED",
   "UPLOAD_NOT_CONFIRMED",
   "UPLOAD_PROCESSING_TIMEOUT",
+  // The reply's code blocks could not be used (none read, too short, repeated,
+  // too many). Nothing was submitted; a fresh conversation may answer properly.
+  "PROMPT_BLOCKS_INVALID",
 ]);
 const ACCOUNT_COOLDOWN_MS = 12_000;
 const ACCOUNT_FAILURE_BACKOFF_MS = [2 * 60_000, 5 * 60_000, 15 * 60_000];
@@ -320,6 +324,8 @@ class BridgeEngine {
               storyboardJson: pending.storyboardJson || "",
               rawGroupsJson: pending.rawGroupsJson || "",
               optimizedGroupsJson: pending.optimizedGroupsJson || "",
+              codeBlocks: Array.isArray(pending.codeBlocks) ? pending.codeBlocks : [],
+              codeBlockHint: pending.codeBlockHint === true,
               workerId: pending.workerId,
             },
             { retries: 3, timeoutMs: 10_000 }
@@ -355,7 +361,7 @@ class BridgeEngine {
           if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
             const reason = `Gemini 结果被服务端拒绝（HTTP ${status}）：${message}`;
             try {
-              await this.report(pending.taskId, 'error', { kind: pending.kind || 'standard', workerId: pending.workerId, error: reason });
+              await this.report(pending.taskId, 'error', { kind: pending.kind || 'standard', workerId: pending.workerId, error: reason, rawReply: pending.prompt });
               this.store.removePendingResult(pending.taskId);
             } catch {
               // Failure reporting has its own durable outbox, so a temporary
@@ -431,6 +437,15 @@ class BridgeEngine {
       const result = typeof runResult === "string"
         ? { prompt: runResult, analysis: "" }
         : { ...runResult, prompt: String(runResult?.prompt || ""), analysis: String(runResult?.analysis || "") };
+      if ((!job.kind || job.kind === "standard" || job.kind === "variant") && job.blockMode && job.blockMode !== "raw") {
+        // One code block is one video. Check before anything is written back:
+        // a reply that cannot be split is retried, never sent as one prompt.
+        try {
+          splitPromptBlocks({ text: result.prompt, blocks: result.codeBlocks, hint: result.codeBlockHint === true, mode: job.blockMode });
+        } catch (error) {
+          throw Object.assign(error, { rawReply: result.prompt });
+        }
+      }
       this.assertTaskActive(job.id);
       active.stage = "回传提示词";
       this.onChange();
@@ -442,6 +457,8 @@ class BridgeEngine {
         storyboardJson: result.storyboardJson,
         rawGroupsJson: result.rawGroupsJson,
         optimizedGroupsJson: result.optimizedGroupsJson,
+        codeBlocks: result.codeBlocks,
+        codeBlockHint: result.codeBlockHint,
       });
       const written = await this.flushPendingResults();
       if (
@@ -483,7 +500,7 @@ class BridgeEngine {
         });
         await this.report(job.id, "release", { kind: job.kind, error: message }).catch(() => {});
         this.store.log(`任务 ${job.id} 等待账号重新登录：${message}`, "warn");
-      } else if (code === "GEM_SETUP_REQUIRED" && error.bindingUnavailable && job.gem && (!job.kind || job.kind === "standard")) {
+      } else if (code === "GEM_SETUP_REQUIRED" && error.bindingUnavailable && job.gem && (!job.kind || job.kind === "standard" || job.kind === "variant")) {
         // No product prompt was submitted. Hold only this account/template
         // version and release the original job for another account. Persist
         // the hold so restarting cannot repeat the failure for every job.
@@ -498,9 +515,10 @@ class BridgeEngine {
           kind: job.kind,
           error: message,
           accountLimited,
+          rawReply: error?.rawReply || "",
         }).catch(() => null);
         if (!recovery) {
-          await this.report(job.id, "error", { kind: job.kind, error: message }).catch(() => {});
+          await this.report(job.id, "error", { kind: job.kind, error: message, rawReply: error?.rawReply || "" }).catch(() => {});
           this.store.log(`任务 ${job.id} 失败：${message}`, "error");
         } else if (recovery.deferred) {
           this.store.log(

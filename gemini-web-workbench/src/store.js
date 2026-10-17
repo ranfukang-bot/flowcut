@@ -191,7 +191,7 @@ class Store {
       taskId: String(taskId || ""),
       prompt: String(prompt || ""),
       workerId: String(workerId || ""),
-      kind: ["reference-remix", "script-pipeline"].includes(detail.kind)
+      kind: ["reference-remix", "script-pipeline", "variant"].includes(detail.kind)
         ? detail.kind
         : "standard",
       analysis: String(detail.analysis || ""),
@@ -200,6 +200,10 @@ class Store {
       storyboardJson: String(detail.storyboardJson || ""),
       rawGroupsJson: String(detail.rawGroupsJson || ""),
       optimizedGroupsJson: String(detail.optimizedGroupsJson || ""),
+      // Code blocks decide how many videos a reply becomes; they must survive
+      // a restart together with the reply until written back.
+      codeBlocks: Array.isArray(detail.codeBlocks) ? detail.codeBlocks.slice(0, 50).map(String) : [],
+      codeBlockHint: detail.codeBlockHint === true,
       createdAt: new Date().toISOString(),
     };
     if (!result.taskId || result.prompt.trim().length < 300) {

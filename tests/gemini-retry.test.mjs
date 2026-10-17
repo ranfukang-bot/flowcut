@@ -42,7 +42,7 @@ test('real claim SELECT skips waiting tasks and places ready retries behind alre
   const sql = source.match(/`(SELECT t.id, t.product_id,[\s\S]*?LIMIT 32)`/)[1];
   const db = new DatabaseSync(':memory:');
   try {
-    db.exec(`CREATE TABLE tasks (id TEXT, product_id TEXT, gemini_account_id TEXT, created_at TEXT, duration INTEGER, region TEXT, shooting_style TEXT, gemini_request_text TEXT, gem_id TEXT, gem_content_snapshot TEXT, image_keys_snapshot TEXT, provider TEXT, status TEXT, bridge_claimed_at TEXT, gemini_retry_at TEXT);
+    db.exec(`CREATE TABLE tasks (id TEXT, product_id TEXT, gemini_account_id TEXT, created_at TEXT, duration INTEGER, region TEXT, shooting_style TEXT, gemini_request_text TEXT, gem_id TEXT, gem_content_snapshot TEXT, image_keys_snapshot TEXT, provider TEXT, status TEXT, bridge_claimed_at TEXT, gemini_retry_at TEXT, variant_gem_snapshot TEXT);
       CREATE TABLE products (id TEXT, name TEXT, features TEXT);
       CREATE TABLE gems (id TEXT, name TEXT, content TEXT);
       INSERT INTO products VALUES ('p','fixture','');`);

@@ -22,6 +22,7 @@ const desktopApi = {
   deletePendingReviewVideo: (id, confirmed) => ipcRenderer.invoke('video-review:delete-pending', { id, confirmed }),
   approveReviewVideo: (id, confirmed) => ipcRenderer.invoke('video-review:approve', { id, confirmed }),
   discardReviewVideo: (id, replacementId) => ipcRenderer.invoke('video-review:discard', { id, replacementId }),
+  concatReviewVideos: (groupId, ids, confirmed) => ipcRenderer.invoke('video-review:concat', { groupId, ids, confirmed }),
   publisherImport: (rows) => ipcRenderer.invoke("publisher:import", rows),
   publisherOpenExtension: () => ipcRenderer.invoke("publisher:open-extension"),
   publisherRelease: (taskId, confirmed) => ipcRenderer.invoke("publisher:release", { taskId, confirmed }),

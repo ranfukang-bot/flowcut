@@ -101,4 +101,4 @@ class DualVideoComposer {
     }
   }
 }
-module.exports={DualVideoComposer,segmentDirectory,probe,segmentTiming};
+module.exports={DualVideoComposer,segmentDirectory,probe,segmentTiming,mediaTool};

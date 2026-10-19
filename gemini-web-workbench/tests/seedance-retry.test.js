@@ -227,14 +227,14 @@ test("when the original task cannot be checked, nothing is resubmitted and FlowC
 
 test("a submit that never got an answer is not resent by a retry", async (t) => {
   const { bridge, engine, site, client, store } = setup(t, {
-    local: { taskId: "", taskIds: [], errorCode: "", errorMessage: "提交失败：fetch failed" },
+    local: { taskId: "", taskIds: [], submitStartedAt: Date.now(), errorCode: "", errorMessage: "提交失败：fetch failed" },
   });
   site.queueAgain();
   await settle(bridge, engine);
   assert.equal(client.submitted.length, 0);
   assert.equal(store.getTask("local-1").status, "submit_unconfirmed");
   assert.equal(site.status, "failed");
-  assert.match(site.error, /提交结果不确定/);
+  assert.match(site.error, /正在核对 TikTok 生成历史/);
 });
 
 test("a retry that needs the original images fails clearly when they are gone", async (t) => {

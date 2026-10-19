@@ -1,47 +1,34 @@
-# Gemini 全局生成模型验证
+# Gemini 全局生成模型验证（1.4.43）
 
-设置位于「账号与设置 → Gemini 生成模型」，覆盖商品提示词、爆款复刻和剧本流水线，包括重试和重新生成。新安装和旧资料没有模型配置时，默认“不指定：沿用网页当前选择”和思考等级“不改动”，手动选择并保存后生效。升级保留已有模型设置、账号及登录会话，不重置已保存的选择。指定名称不存在、已识别菜单的列表为空/重名或勾选核对失败时，在上传和发送前返回 `MODEL_SELECTION_FAILED`，原任务退回队列，该账号在相同设置下停止领取。尚未加载、超时和页面异常先走退避，连续三次才暂停。
+设置位于「账号与设置 → Gemini 生成模型」，覆盖商品提示词、爆款复刻、剧本流水线及其重试。应用默认仍为“不指定 / 不改动”，保留用户已保存设置。本轮用户明确要求将本机保存为“自动：最新 Flash（不含 Lite） / 中等”；其他安装不自动覆盖设置。
 
-思考等级支持不改动或使用读取到的选项。切换模型后重新检查；同一账号在本次启动的第一个任务、设置变化后以及距上次检查满一小时后检查。相同模型且不需要检查思考等级时只读按钮，不打开菜单。不指定模型且不改动思考等级时完全保留原行为，不打开菜单；因此任务详情会如实标记未读取的思考等级。
+## 真实页面结构已核实
 
-## 自动验证与当前边界
+2026-10-19 复用本机已登录账号执行“读取模型列表”，再核对真实菜单结构；仅检查模型控件，不记录会话、Cookie 或网址。
 
-```powershell
-npm run verify
-npm run test:model-electron --prefix gemini-web-workbench
-```
+| 控件 | 实际结构 |
+| --- | --- |
+| 模型按钮 | 宽窗口为 button[data-test-id="bard-mode-menu-button"]，aria-haspopup="true"，role/aria-checked 未设置；窄窗口为带相同 test-id 的 gem-button 包含 button |
+| 按钮内容 | Flash 与 中等 分列在 .picker-primary-text/.picker-secondary-text，文本可能换行；图标为 mat-icon[data-mat-icon-name="keyboard_arrow_down"] |
+| 模型菜单 | gem-menu[role="menu"]；gem-menu-item[role="menuitem"][aria-haspopup="false"]，名称 .label，下一行 .sublabel 是说明 |
+| 模型选中 | 无 aria-checked；行含 selected 类，内部 gem-icon[aria-label="已选中"] 包含 mat-icon[data-mat-icon-name="check"]。图标可无布局框，不能靠其矩形判断选中 |
+| 思考入口 | gem-menu-item[value="thinking_level"]，宽窗口 aria-haspopup="true"、arrow_right 图标，展开后嵌套另一个 gem-menu；窄窗口 expandable 类、aria-haspopup="false"，aria-expanded 切换，在 .expand-content 行内展开 |
+| 思考选项 | 低点 / 中等 / 高点；同样是 gem-menu-item、role=menuitem，首行 .label、次行说明。selected/check 表示选中，未设置 aria-checked |
 
-行为夹具将 `3.5 Flash-Lite` 放在首位，包含 `3.8 Flash`、`3.1 Pro`、`4 Argon` 和「低」「高」思考等级；另测 `3.9 Flash`、`3.10 Flash`、仅 Lite、缺失目标、切换后思考重置及核对不一致。普通 `/app` 和保存的 `/gem/…` 页面通过路由夹具验证。
+实际目录：3.5 Flash-Lite、3.8 Flash、3.1 Pro、4 Argon；思考等级：低点、中等、高点。读取目录不改变选项。目录按账号保存，列表改变须重新读取。
 
-实际 Windows Electron 隐藏窗口的夹具测量：匹配模型路径约 1.62ms，复用隐藏激活机制的模型切换及思考等级设置约 520.06ms。它们验证本机执行开销，不能代表 Google 网页的网络和渲染耗时。
+## 选择和发送边界
 
-尚未使用真实 Gemini 账号读取菜单或验证保存的 Gem 页面。当前选择器是候选实现，已通过夹具测试，仍需按下文核实：
+用目录思考选项拆分按钮完整文字，忽略图标文字和说明。模型简称必须唯一对应目标，思考等级也须一致，才能零点击通过；按按钮结果记录“已核对”，取消每小时开菜单。真实页面单次 DOM 检查约 0.5ms；产品任务主进程耗时另以日志为准。
 
-- 模型按钮：`[data-test-id="bard-mode-menu-button"]`、`[data-test-id="model-selector-button"]`，或带 `aria-haspopup="menu"` 且模型标签明确的按钮。
-- 菜单容器：`[role="menu"]`、`.mat-mdc-menu-panel`、`[role="listbox"]`。
-- 菜单项：`[role="menuitem"]`、`[role="menuitemradio"]`、`[role="option"]`、`[data-test-id="model-option"]`。
-- 名称优先读取 `data-model-name` 或菜单内的 `[data-test-id="model-name"]`、`.mode-title`、`.model-name`、`.model-title`，否则使用首行文本。
-- 思考等级入口按菜单项的 `aria-haspopup="menu"` 识别，选中状态按 `aria-checked`、`aria-selected` 或勾选图标识别。任何歧义都停止执行，不猜选其他模型。
+不能直接证明时打开菜单，必要时先选模型，再设思考等级（切换模型可能重置它），用唯一勾选核对，再关闭菜单核对组合按钮。只取菜单首行名称。没有请求思考等级时不主动改动；完全“不指定 / 不改动”保持零菜单行为。
 
-## 真实账号人工验证
+缺失目标、目录重名、勾选或最终按钮不一致时，在上传发送前停止，不降级、不换其他模型、不改 Gem。确定性 MODEL_SELECTION_FAILED 退回任务，该账号停止领取相同设置；临时 MODEL_SELECTION_RETRYABLE 走原退避，连续三次才暂停，成功清零。
 
-确定性失败（目标缺失、名称/列表不明确、菜单勾选或思考核对不一致）立即暂停。模型脚本异常、超时、崩溃、导航中断和窗口销毁使用 MODEL_SELECTION_RETRYABLE，走原有 defer 退避；同一账号、同一设置连续三次才暂停，成功核对或成功重新读取后清零。计数和暂停随账号持久保存。inspect 和读取列表先等待按钮最多十秒；读取列表随后有独立的八秒菜单 session。主进程等待检查最多十二秒、读取列表最多二十秒，保证页面有机会返回诊断。按钮已经出现时仍以匹配路径低于 500ms、切换路径低于五秒为目标；默认不指定且不改动思考时不等待按钮。两类失败都不上传、不发送、不降级模型。
+inspect / readCatalog 最多先等按钮十秒；菜单另有八秒预算。等待超时显示按钮 data-test-id、aria-label、aria-haspopup、前三个 class、最多三十字文字；屏蔽会话区域、Cookie、网址参数。
 
-等待按钮超时后，日志和读取列表错误列出可见按钮的 data-test-id、aria-label、aria-haspopup、前三个 class 和最多三十字的文字。诊断不读取输入框、页面正文、Cookie 或当前网址；会话/历史区域的按钮标签会省略，属性中的 Cookie 和网址参数也会屏蔽。首次延后重试即记录诊断，不必等到第三次暂停。
+## 验证
 
-先从仓库打包，再在一个新的 PowerShell 窗口中启动独立资料实例：
+npm run verify 包含浏览器行为夹具：嵌套菜单、行内展开、两行文字、无 aria-checked 的勾选、组合按钮、零点击、仅改思考等级、先改模型再恢复思考等级、缺失目标时零上传零发送，以及三个执行入口的发送边界。
 
-```powershell
-$env:FLOWCUT_SMOKE_USER_DATA = Join-Path $env:TEMP ('FlowCut-model-check-' + [guid]::NewGuid().ToString('N'))
-& '.\gemini-web-workbench\release\win-unpacked\FlowCut全自动AI视频工作台.exe'
-```
-
-该变量会隔离 userData 和 appData、停用旧资料迁入，并使用测试端口；主窗口正常显示。也可直接运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-isolated-test.ps1`。只有同时设置 `FLOWCUT_DESKTOP_SMOKE_FILE` 才隐藏窗口、执行自动 smoke 并退出；单独的报告路径不会启用 smoke。普通启动不设置这两个变量，仍使用原本的资料目录。
-
-1. 在隔离实例中新加测试用 Gemini 账号并登录；不要复制原程序的 Partitions、状态文件或数据库。保持 Gemini 队列暂停，点击「读取模型列表」。逐个核对账号可选模型、思考等级和读取时间；列表变化时记录当前页面的实际选择器。
-2. 设置自动 Flash 和「高」（以实际列表名称为准），保存。创建测试商品、Gem 和一条商品提示词任务。确认保存的 `/gem/…` 页面上先确认模型、再上传图片和发送；详情与日志应显示所用完整模型、思考等级和检查耗时。
-3. 分别创建一条爆款复刻和剧本流水线测试，确认普通对话及后续新对话使用相同设置。切换前把测试账号网页模型改为 Pro 或 Lite，确认恢复目标 Flash 后才上传；核对切换后的思考等级。
-4. 连续执行模型已匹配的任务，记录日志中的耗时；无需思考检查时应小于 500ms。切换路径应小于 5 秒。重启隔离实例后，第一个任务应重新核对思考等级；间隔超过一小时后再做一次核对。
-5. 设置「不指定」和「不改动」，把网页切到一个可用模型。执行后应保持该模型和思考等级，且不打开模型菜单；记录中未知的思考等级应显示为未读取。
-6. 指定只有部分账号提供的模型，检查不具备该模型的账号：任务应退回队列、显示 `MODEL_SELECTION_FAILED`，不上传或发送，该账号停止领取，其他可用账号继续。重新读取成功或更改设置后可恢复领取。
-7. 指定 Pro 并核对确实选中 Pro。改变全局设置后重试或重新生成，确认使用新设置。若真实页面结构不匹配，保留错误，停止该账号测试，反馈实际菜单 DOM；不要放宽核对或增加降级模型。
+npm run test:model-electron --prefix gemini-web-workbench 验证实际隐藏 Electron 激活与调用边界。自动测试使用隔离目录和假网页；用户授权的本机真实验证复用原登录会话，不重新登录、不删除账号、不修改 Gem，结束恢复原队列状态。

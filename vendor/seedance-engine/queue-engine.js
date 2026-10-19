@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { AuthRequiredError, isTransientRequestError } = require('./tiktok-client');
 const { FAST_MODEL, STANDARD_MODEL, requireModel, modelLabel } = require('./models');
+const { CHECK_DELAYS, UNCONFIRMED_SUBMIT_HINT, MISSING_MESSAGE, matchSubmissionHistory } = require('./submission-history');
 
 const EDITABLE_STATUSES = new Set(['draft', 'queued', 'upload_wait', 'retry_wait', 'failed']);
 const TRANSIENT_NETWORK_PATTERN =
@@ -30,6 +31,7 @@ const SNAPSHOT_FIELDS = [
   'accountId', 'accountName', 'source', 'flowcutTaskId', 'flowcutTaskKind',
   'tiktokAccountName', 'archiveDirectory', 'productExternalId',
   'segmentIndex', 'dualSignature', 'segmentRetryOf', 'segmentRegeneration', 'managedLocalFiles', 'excelRow', 'folderIndex', 'createdAt', 'taskIds', 'attempts',
+  'submitStartedAt', 'historyRecovery',
 ];
 
 function submissionSnapshot(task) {
@@ -45,6 +47,7 @@ const REFUSAL_FIELDS = [
   'status', 'errorCode', 'errorMessage', 'submitOutcome', 'completedAt',
   'nextRetryAt', 'nextUploadRetryAt', 'accountId', 'accountName', 'taskId',
   'imageItems', 'uploadProgress', 'model',
+  'historyRecovery', 'submitIntents', 'submitStartedAt',
 ];
 
 function refusalResult(task) {
@@ -52,9 +55,6 @@ function refusalResult(task) {
   for (const field of REFUSAL_FIELDS) result[field] = task[field] === undefined ? null : task[field];
   return JSON.parse(JSON.stringify(result));
 }
-
-const UNCONFIRMED_SUBMIT_HINT =
-  '为避免重复生成，没有自动重新提交。请到 TikTok Symphony 生成历史核对：已生成可在历史中取回视频；确认没有生成时，请为该商品重新创建任务。';
 
 // Tasks that failed before this version recorded an unanswered submit as
 // "提交失败：<network error>"; those are just as unconfirmed.
@@ -86,6 +86,7 @@ class QueueEngine {
     this.activeUploads = new Set();
     this.remotePollState = new Map();
     this.submitCooldowns = new Map();
+    this.historyChecks = new Map();
     // Called when an accepted generation's Task ID could not be stored durably.
     this.onUnsavedSubmission = () => {};
     this.submitsPausedForPersistence = false;
@@ -144,6 +145,10 @@ class QueueEngine {
   recoverInterruptedTasks() {
     let recovered = 0;
     for (const task of this.store.tasks) {
+      if (!task.taskId && !task.backupRestoreHold && (task.status === 'submit_unconfirmed' || isUncertainLegacyFailure(task))) {
+        this.markSubmitUnconfirmed(task, '恢复历史提交核对');
+        continue;
+      }
       if (
         task.status === 'failed' &&
         task.imageItems?.some((item) => !item.uploadedUrl) &&
@@ -348,11 +353,15 @@ class QueueEngine {
     this.log('任务已删除');
   }
 
-  retryTask(id) {
+  async retryTask(id) {
     const task = this.store.getTask(id);
     if (!task) throw new Error('任务不存在');
-    if (task.status === 'submit_unconfirmed') {
-      throw new Error(`这条任务的提交结果尚未确认。${UNCONFIRMED_SUBMIT_HINT}`);
+    if (task.taskId && task.status === 'failed') return this.retryFailedTask(id);
+    if (task.status === 'submit_unconfirmed' || task.historyRecovery?.resolution === 'missing' || isUncertainLegacyFailure(task)) {
+      const outcome = await this.retryUnconfirmedTask(task);
+      if (outcome.action !== 'resubmitting') return outcome;
+      this.tick();
+      return outcome;
     }
     task.errorCode = '';
     task.errorMessage = '';
@@ -378,6 +387,7 @@ class QueueEngine {
   async retryFailedTask(id) {
     const task = this.store.getTask(id);
     if (!task || task.status !== 'failed') return { action: 'none' };
+    if (!task.taskId && (task.historyRecovery?.resolution === 'missing' || isUncertainLegacyFailure(task))) return this.retryUnconfirmedTask(task);
     const hold = (action, message) => {
       task.errorMessage = message;
       this.recordTask(task, message, 'error');
@@ -436,6 +446,10 @@ class QueueEngine {
         'images-missing',
         `原任务的图片文件已不存在（${missing.map((item) => item.localPath || item.name).join('、')}），无法按原图片重试；不会改用商品库当前图片。请为该商品重新创建任务。`,
       );
+    }
+    if (task.historyRecovery?.resolution === 'found') {
+      task.previousHistoryRecovery = task.historyRecovery;
+      delete task.historyRecovery;
     }
     task.taskId = '';
     task.errorCode = '';
@@ -866,7 +880,7 @@ class QueueEngine {
             })
           ) {
             this.switchAfterQuota(task, accountId, task.errorMessage);
-          } else if (this.shouldRetry(task, task.errorCode, task.errorMessage)) {
+          } else if (task.historyRecovery?.resolution !== 'found' && this.shouldRetry(task, task.errorCode, task.errorMessage)) {
             task.status = 'retry_wait';
             task.nextRetryAt = Date.now() + this.store.settings.retryDelaySeconds * 1000;
             this.recordTask(
@@ -896,17 +910,175 @@ class QueueEngine {
     }
   }
 
+  historyPendingMessage(task) {
+    const start = task.historyRecovery?.submitStartedAt || Date.now();
+    const minutes = Math.max(1, Math.ceil((start + CHECK_DELAYS.at(-1) - Date.now()) / 60_000));
+    return `正在核对 TikTok 生成历史，约 ${minutes} 分钟后有结果，不需要删除任务`;
+  }
+
+  async retryUnconfirmedTask(task) {
+    if (task.backupRestoreHold || task.taskId) return { action: 'unconfirmed', message: task.errorMessage };
+    if (!task.historyRecovery) this.markSubmitUnconfirmed(task, '用户请求恢复旧提交');
+    if (task.historyRecovery.resolution !== 'missing') {
+      const outcome = await this.checkSubmissionHistory(task, { manual: true });
+      if (outcome.action !== 'missing') {
+        if (outcome.action === 'checking' && task.status === 'submit_unconfirmed' && !task.historyRecovery.candidateTaskIds?.length) {
+          task.errorMessage = this.historyPendingMessage(task);
+          this.recordTask(task, task.errorMessage, 'warn');
+        }
+        return outcome;
+      }
+    }
+    // Durable human intent is separate from automatic reconciliation. No
+    // automatic missing outcome ever sets this grant.
+    task.historyRecovery.manualRetryRequested = true;
+    task.status = 'queued';
+    task.completedAt = 0;
+    task.errorCode = '';
+    task.errorMessage = '';
+    task.nextRetryAt = 0;
+    this.recordTask(task, '已恢复任务；提交前将最后核对一次原账号生成历史');
+    if (this.store.save?.() === false) {
+      task.historyRecovery.manualRetryRequested = false;
+      task.status = 'failed';
+      return { action: 'check-failed', message: '恢复请求尚未保存，没有重新提交' };
+    }
+    return { action: 'resubmitting' };
+  }
+
+  async syncUnconfirmedSubmissions() {
+    for (const task of this.store.tasks) {
+      if (this.store.isFlowcutTaskCleared?.(task.flowcutTaskId) || task.backupRestoreHold || task.taskId) continue;
+      if (isUncertainLegacyFailure(task)) this.markSubmitUnconfirmed(task, '核对旧版网络错误提交');
+      if (task.status !== 'submit_unconfirmed') continue;
+      if (!task.historyRecovery) this.markSubmitUnconfirmed(task, '恢复提交核对');
+      if (Number(task.historyRecovery.nextCheckAt || 0) <= Date.now()) await this.checkSubmissionHistory(task);
+    }
+  }
+
+  async checkSubmissionHistory(task, options = {}) {
+    const pending = this.historyChecks.get(task.id);
+    if (pending) {
+      await pending;
+      return options.final ? this.checkSubmissionHistory(task, options) : { action: task.historyRecovery?.resolution || 'checking' };
+    }
+    const check = this.performHistoryCheck(task, options);
+    this.historyChecks.set(task.id, check);
+    try { return await check; } finally { this.historyChecks.delete(task.id); }
+  }
+
+  async performHistoryCheck(task, { manual = false, final = false } = {}) {
+    const recovery = task.historyRecovery;
+    if (!recovery || task.taskId || task.backupRestoreHold) return { action: 'unconfirmed' };
+    if (recovery.resolution === 'found') return { action: 'found' };
+    if (!final && recovery.resolution === 'missing') return { action: 'missing' };
+    if (!recovery.submitStartedAt) {
+      task.errorMessage = '缺少原始提交开始时间，无法自动确认生成历史；没有重新提交';
+      this.recordTask(task, task.errorMessage, 'warn');
+      return { action: 'check-failed', message: task.errorMessage };
+    }
+    if (Date.now() < recovery.submitStartedAt + CHECK_DELAYS[0]) return { action: 'checking' };
+    if (!manual && !final && recovery.nextCheckAt > Date.now()) return { action: 'checking' };
+    try {
+      const history = await this.accounts.client(recovery.accountId || task.accountId).fetchHistory([], { exhaustive: true });
+      const matches = matchSubmissionHistory(task, history);
+      if (this.store.isFlowcutTaskCleared?.(task.flowcutTaskId) || this.store.getTask(task.id) !== task) return { action: 'removed' };
+      recovery.checkedAt = Date.now();
+      recovery.failures = 0;
+      recovery.candidateTaskIds = [...new Set([...(recovery.candidateTaskIds || []), ...matches.map(row => String(row.taskId))])];
+      if (matches.length === 1 && recovery.candidateTaskIds.length === 1) {
+        const remote = matches[0];
+        const remoteId = String(remote.taskId);
+        recovery.resolution = 'found';
+        recovery.manualRetryRequested = false;
+        task.accountId = recovery.accountId || task.accountId;
+        task.accountName = this.accounts.accountName(task.accountId);
+        task.taskId = remoteId;
+        task.taskIds = [...new Set([...(task.taskIds || []), remoteId])];
+        task.lastSubmittedAt = recovery.submitStartedAt;
+        task.attempts = Number(task.attempts || 0) + 1;
+        task.status = this.isRemoteSuccess(remote) ? 'success' : this.isRemoteFailure(remote) ? 'failed' : 'generating';
+        task.errorCode = task.status === 'failed' ? remote.generateErrorCode || 'REMOTE_FAILED' : '';
+        task.errorMessage = task.status === 'failed' ? remote.generateErrorMessage || '生成失败' : '';
+        task.completedAt = ['success', 'failed'].includes(task.status) ? Date.now() : 0;
+        if (task.status === 'success') this.applyVideoResult(task, remote);
+        this.persistHistoryOutcome(task, { type: 'accepted', taskId: remoteId, submittedAt: recovery.submitStartedAt, recovery: { ...recovery }, result: refusalResult(task) });
+        this.recordTask(task, `找回超时那次提交 Task ID ${remoteId}，没有重复生成`, 'success');
+        return { action: 'found', taskId: remoteId };
+      }
+      recovery.stage = CHECK_DELAYS.filter(delay => recovery.submitStartedAt + delay <= Date.now()).length;
+      recovery.nextCheckAt = recovery.stage < CHECK_DELAYS.length ? recovery.submitStartedAt + CHECK_DELAYS[recovery.stage] : Date.now() + 60_000;
+      if (recovery.candidateTaskIds.length > 1) {
+        recovery.resolution = 'pending';
+        recovery.manualRetryRequested = false;
+        task.status = 'submit_unconfirmed';
+        task.errorCode = 'SUBMIT_UNCONFIRMED';
+        task.errorMessage = `生成历史找到多条可能的提交，请核对 Task ID：${recovery.candidateTaskIds.join('、')}。${UNCONFIRMED_SUBMIT_HINT}`;
+        this.recordTask(task, task.errorMessage, 'warn');
+        return { action: 'ambiguous' };
+      }
+      if (Date.now() >= recovery.submitStartedAt + CHECK_DELAYS.at(-1)) {
+        recovery.resolution = 'missing';
+        if (!final) {
+          recovery.manualRetryRequested = false;
+          task.status = 'failed';
+          task.completedAt = Date.now();
+          task.errorCode = 'SUBMISSION_HISTORY_MISSING';
+          task.errorMessage = MISSING_MESSAGE;
+        }
+        this.persistHistoryOutcome(task, { type: 'resolved', outcome: 'history-missing', result: refusalResult(task) });
+        this.recordTask(task, final ? '提交前最后核对：原提交仍未出现在生成历史中' : MISSING_MESSAGE, 'warn');
+        return { action: 'missing' };
+      }
+      this.recordTask(task, this.historyPendingMessage(task), 'warn');
+      return { action: 'checking' };
+    } catch (error) {
+      // Failed/incomplete history is never proof of absence, including the
+      // final check after a human restore. Preserve the one-time retry grant.
+      recovery.failures = Number(recovery.failures || 0) + 1;
+      recovery.nextCheckAt = Date.now() + backoffDelayMs(recovery.failures, 30, 120);
+      this.recordTask(task, 'TikTok 生成历史暂时无法核对，稍后继续；没有重新提交', 'warn');
+      return { action: 'check-failed', message: error.message };
+    }
+  }
+
+  persistHistoryOutcome(task, entry) {
+    const recovery = task.historyRecovery;
+    if (!(task.submitIntents || []).includes(recovery.intentId)) task.submitIntents = [...(task.submitIntents || []), recovery.intentId];
+    const journaled = this.store.recordSubmission?.({ ...entry, intentId: recovery.intentId, localTaskId: task.id,
+      ...(entry.result ? { result: refusalResult(task) } : {}),
+      accountId: task.accountId, flowcutTaskId: task.flowcutTaskId || '', snapshot: submissionSnapshot(task) }) === true;
+    this.store.upsertTask(task);
+    const saved = typeof this.store.save === 'function' ? this.store.save() !== false : true;
+    if (!journaled && !saved) throw new Error('历史核对结果无法持久保存，已停止提交');
+  }
+
   markSubmitUnconfirmed(task, reason) {
     task.status = 'submit_unconfirmed';
     task.errorCode = 'SUBMIT_UNCONFIRMED';
     task.errorMessage = `提交结果不确定（${reason}）。${UNCONFIRMED_SUBMIT_HINT}`;
     task.completedAt = Date.now();
+    if (!task.taskId && !task.backupRestoreHold && !task.historyRecovery) {
+      const start = Number(task.submitStartedAt || 0);
+      task.historyRecovery = { intentId: task.submitIntents?.at(-1) || `legacy:${task.id}`, submitStartedAt: start,
+        accountId: task.accountId, prompt: task.prompt, imageUrls: (task.imageItems || []).map(i => i.uploadedUrl).filter(Boolean),
+        resolution: 'pending', stage: 0, nextCheckAt: start ? start + CHECK_DELAYS[0] : Date.now() + 60_000 };
+    }
     this.recordTask(task, task.errorMessage, 'error');
     this.store.log(`任务“${task.imageName || task.id}”提交结果不确定，未自动重发：${reason}`, 'error');
   }
 
   async submitTask(task, account) {
     if (this.store.isFlowcutTaskCleared?.(task.flowcutTaskId)) return;
+    if (task.status === 'submit_unconfirmed' || task.backupRestoreHold) return;
+    if (task.historyRecovery?.resolution === 'pending') return;
+    // A manual restore grants one retry only. Check the ORIGINAL account and
+    // original upload URLs immediately before any reassignment or new intent.
+    if (task.historyRecovery?.resolution === 'missing') {
+      if (!task.historyRecovery.manualRetryRequested) return;
+      const outcome = await this.checkSubmissionHistory(task, { final: true });
+      if (outcome.action !== 'missing' || task.status !== 'queued') return;
+    }
     if (account.enabled === false) return;
     this.assignTaskAccount(task, account, false);
     const selectedModel = this.accounts.effectiveModel ? this.accounts.effectiveModel(account) : requireModel(account.preferredModel);
@@ -918,6 +1090,10 @@ class QueueEngine {
     task.model = requireModel(selectedModel);
     const previousStatus = task.status;
     const intentId = crypto.randomUUID();
+    if (task.historyRecovery?.resolution === 'missing') {
+      task.previousHistoryRecovery = { ...task.historyRecovery };
+      delete task.historyRecovery;
+    }
     task.status = 'submitting';
     task.errorCode = '';
     task.errorMessage = '';
@@ -939,6 +1115,7 @@ class QueueEngine {
     const stateSaved = typeof this.store.save === 'function' ? this.store.save() !== false : true;
     if (!intentRecorded && !stateSaved) {
       task.status = previousStatus;
+      if (task.previousHistoryRecovery?.manualRetryRequested) task.historyRecovery = { ...task.previousHistoryRecovery };
       task.submitIntents = task.submitIntents.filter((id) => id !== intentId);
       const message = `本机无法保存提交记录（${this.store.persistError?.message || '写入失败'}），为避免重启后重复生成，已暂停提交新任务；已提交的任务继续查询，恢复保存后自动继续`;
       if (!this.submitsPausedForPersistence) this.store.log(message, 'error');
@@ -1053,6 +1230,7 @@ class QueueEngine {
     this.tickBusy = true;
     try {
       this.resumeModelWaiters();
+      await this.syncUnconfirmedSubmissions();
       this.pumpUploads();
       const hasNetworkWork =
         this.store.settings.running ||

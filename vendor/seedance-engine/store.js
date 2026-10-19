@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { FAST_MODEL, STANDARD_MODEL, requireModel } = require('./models');
+const { UNCONFIRMED_SUBMIT_HINT } = require('./submission-history');
 const {
   QUICK_RETRY_DELAYS_MS,
   describeBlockedState,
@@ -14,7 +15,7 @@ const {
 const JOURNAL_READ_RETRY_DELAYS_MS = [100, 200, 400, 800, 1600, 3200];
 
 const UNCONFIRMED_RESTART_MESSAGE =
-  '软件重新启动时这条任务正在提交，无法确认 TikTok 是否已经收到。为避免重复生成，没有自动重新提交。请到 TikTok Symphony 生成历史核对：已生成可在历史中取回视频；确认没有生成时，请为该商品重新创建任务。';
+  `软件重新启动时这条任务正在提交，无法确认 TikTok 是否已经收到。${UNCONFIRMED_SUBMIT_HINT}`;
 
 // A record counts as saved only if it reads back as its own complete line:
 // fsync alone does not prove that. The leading newline separates it from a
@@ -325,12 +326,14 @@ class WorkbenchStore {
     if (position < 0) return false;
     if (position < intents.length - 1) return true;
     if (attempt.accepted) return (task.taskIds || []).map(String).includes(String(attempt.accepted.taskId));
+    if (attempt.resolved?.outcome === 'history-missing') return task.historyRecovery?.resolution === 'missing' && task.historyRecovery?.intentId === attempt.intentId;
     if (attempt.resolved) return task.status !== 'submitting';
     // Only the attempt itself was saved: "submitting" becomes unconfirmed below.
     return true;
   }
 
   applyAttemptOutcome(task, attempt) {
+    if (!task.submitStartedAt) task.submitStartedAt = Number(attempt.entries.find(entry => entry.type === 'intent')?.at || 0);
     const labels = { rejected: '平台已明确拒绝', 'rate-limited': '平台限流，稍后自动重试', auth: '等待 TikTok 登录', quota: '模型额度不足' };
     let message;
     let level = 'info';
@@ -355,6 +358,12 @@ class WorkbenchStore {
         // A snapshot is taken after the attempt was already counted.
         if (!task.restoredFromJournal) task.attempts = Number(task.attempts || 0) + 1;
         task.lastSubmittedAt = Number(entry.submittedAt || Date.now());
+        if (entry.recovery) {
+          task.historyRecovery = entry.recovery;
+          for (const [field, value] of Object.entries(entry.result || {})) {
+            if (value === null) delete task[field]; else task[field] = value;
+          }
+        }
       }
     } else if (attempt.resolved) {
       const entry = attempt.resolved;
@@ -407,6 +416,8 @@ class WorkbenchStore {
     const task = this.getTask(entry.localTaskId);
     const intents = task?.submitIntents || [];
     if (entry.type === 'resolved') {
+      if (entry.outcome === 'history-missing') return Boolean(task && intents.includes(entry.intentId) &&
+        (intents.indexOf(entry.intentId) < intents.length - 1 || (task.historyRecovery?.resolution === 'missing' && task.historyRecovery?.intentId === entry.intentId)));
       // Held until a saved list shows this attempt with its outcome applied.
       const stillSubmitting = task?.status === 'submitting' && intents[intents.length - 1] === entry.intentId;
       return Boolean(task && intents.includes(entry.intentId) && !stillSubmitting);

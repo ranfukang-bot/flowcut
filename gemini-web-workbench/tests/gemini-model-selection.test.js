@@ -12,40 +12,45 @@ test.after(async () => browser?.close());
 
 const names = ['3.5 Flash-Lite', '3.8 Flash', '3.1 Pro', '4 Argon'];
 const config = (mode = 'auto', name = '', thinking = '') => ({ mode, name, thinking });
-async function fixture(t, { models = names, current = '3.1 Pro', short = false, wrong = false, url = 'https://gemini.google.com/app' } = {}) {
+async function fixture(t, { models = names, current = '3.1 Pro', short = false, wrong = false, inline = false, level = '低点', levels = ['低点', '中等', '高点'], url = 'https://gemini.google.com/app' } = {}) {
   const page = await browser.newPage();
   t.after(() => page.close());
   await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<button data-test-id="bard-mode-menu-button" aria-haspopup="menu"></button><div role="menu" id="models" hidden></div><div role="menu" id="thinking" hidden></div>' }));
   await page.goto(url);
-  await page.evaluate(({ models, current, short, wrong }) => {
+  await page.evaluate(({ models, current, short, wrong, level, levels, inline }) => {
     globalThis.clicks = []; globalThis.sent = 0; globalThis.uploads = 0;
-    let choice = current, level = '低';
+    let choice = current;
     const button = document.querySelector('button'), menu = document.querySelector('#models'), thought = document.querySelector('#thinking');
     const close = () => { menu.hidden = thought.hidden = true; };
     function render() {
-      button.textContent = short ? choice.replace(/^\d+(?:\.\d+)*\s*/, '') : choice;
+      button.innerHTML = `<span>${short ? choice.replace(/^\d+(?:\.\d+)*\s*/, '') : choice}</span> <span>${level}</span><mat-icon>keyboard_arrow_up</mat-icon>`;
       menu.replaceChildren(); thought.replaceChildren();
       for (const name of models) {
-        const item = document.createElement('button'); item.setAttribute('role', 'menuitemradio'); item.setAttribute('aria-checked', String(name === choice)); item.textContent = name;
-        item.onclick = () => { clicks.push(name); if (!wrong) choice = name; level = '低'; close(); render(); }; menu.append(item);
+        const item = document.createElement('gem-menu-item'); item.setAttribute('role', 'menuitem'); item.setAttribute('aria-haspopup', 'false'); item.classList.toggle('selected', name === choice);
+        item.setAttribute('data-model-name', name);
+        item.innerHTML = `<span class="label">${name}</span><div>全方位帮助</div>${name === choice ? '<mat-icon data-mat-icon-name="check" style="display:contents"></mat-icon>' : ''}`;
+        item.onclick = () => { clicks.push(name); if (!wrong) choice = name; level = '低点'; close(); render(); }; menu.append(item);
       }
-      const trigger = document.createElement('button'); trigger.setAttribute('role', 'menuitem'); trigger.setAttribute('aria-haspopup', 'menu'); trigger.textContent = '思考等级';
-      trigger.onclick = () => { clicks.push('思考等级'); thought.hidden = false; }; menu.append(trigger);
-      for (const name of ['低', '高']) {
-        const item = document.createElement('button'); item.setAttribute('role', 'menuitemradio'); item.setAttribute('aria-checked', String(name === level)); item.textContent = name;
+      const trigger = document.createElement('gem-menu-item'); trigger.setAttribute('role', 'menuitem'); trigger.setAttribute('aria-haspopup', 'true'); trigger.textContent = '思考等级';
+      if (inline) { trigger.setAttribute('aria-haspopup', 'false'); trigger.setAttribute('value', 'thinking_level'); trigger.setAttribute('aria-expanded', 'false'); trigger.className = 'expandable'; thought.removeAttribute('role'); thought.className = 'expand-content'; }
+      trigger.onclick = event => { if (event.target.closest('.expand-content')) return; clicks.push('思考等级'); trigger.setAttribute('aria-expanded', 'true'); thought.hidden = false; }; menu.append(trigger);
+      for (const name of levels) {
+        const item = document.createElement('gem-menu-item'); item.setAttribute('role', 'menuitem'); item.setAttribute('aria-haspopup', 'false'); item.classList.toggle('selected', name === level);
+        item.innerHTML = `<span class="label">${name}</span><div>深度适中</div>${name === level ? '<mat-icon data-mat-icon-name="check" style="display:contents"></mat-icon>' : ''}`;
         item.onclick = () => { clicks.push(name); level = name; close(); render(); }; thought.append(item);
       }
+      (inline ? trigger : menu).append(thought);
     }
     button.onclick = () => { clicks.push('模型菜单'); menu.hidden = false; };
     document.addEventListener('keydown', event => { if (event.key === 'Escape') close(); });
     render();
-  }, { models, current, short, wrong });
+  }, { models, current, short, wrong, level, levels, inline });
   await page.addScriptTag({ content: modelRuntimeSource });
-  const select = (settings, checkThinking = false, catalog = { models }) => page.evaluate(async ({ settings, checkThinking, catalog }) => {
+  const select = (settings, checkThinking = false, catalog = { models, thinking: levels }) => page.evaluate(async ({ settings, checkThinking, catalog }) => {
     const started = performance.now();
     try {
       const inspect = await __flowcutModelPicker.inspect(settings, catalog, checkThinking);
-      const result = inspect.needsMenu ? await __flowcutModelPicker.ensure(settings, { checkThinking }) : inspect;
+      const result = inspect.needsMenu ? await __flowcutModelPicker.ensure(settings, { checkThinking, catalog }) : inspect;
       // Exercise the send boundary: rejection must prevent both actions.
       uploads++; sent++;
       return { ...result, elapsedMs: performance.now() - started, clicks, sent, uploads };
@@ -59,6 +64,38 @@ test('target button takes the fast path without opening a menu or clicking', asy
   const result = await select(config());
   assert.deepEqual(result.clicks, []); assert.equal(result.model, '3.8 Flash'); assert.ok(result.elapsedMs < 500);
   t.diagnostic(`fast path: ${result.elapsedMs.toFixed(2)}ms (browser fixture)`);
+});
+
+test('Flash 中等 plus icon verifies thinking with zero clicks even when a check is due', async t => {
+  const { select } = await fixture(t, { current: '3.8 Flash', short: true, level: '中等' });
+  const result = await select(config('auto', '', '中等'), true);
+  assert.deepEqual(result.clicks, []); assert.equal(result.thinking, '中等'); assert.equal(result.thinkingChecked, true); assert.ok(result.elapsedMs < 500);
+});
+
+test('Flash 低点 changes only thinking and accepts the combined final button', async t => {
+  const { select, page } = await fixture(t, { current: '3.8 Flash', short: true });
+  const result = await select(config('auto', '', '中等'));
+  assert.equal(result.thinking, '中等'); assert.equal(result.clicks.includes('3.8 Flash'), false); assert.ok(result.clicks.includes('中等'));
+  assert.match(await page.locator('button').innerText(), /Flash.*中等/s); assert.equal(result.sent, 1);
+});
+
+test('Pro 高点 switches to latest Flash before restoring 中等', async t => {
+  const { select } = await fixture(t, { short: true, level: '高点' });
+  const result = await select(config('auto', '', '中等'));
+  assert.equal(result.model, '3.8 Flash'); assert.equal(result.thinking, '中等'); assert.equal(result.thinkingChecked, true);
+  assert.ok(result.clicks.indexOf('3.8 Flash') < result.clicks.indexOf('中等')); assert.equal(result.sent, 1);
+});
+
+test('missing 中等 deterministically prevents upload and send', async t => {
+  const { select } = await fixture(t, { current: '3.8 Flash', short: true, levels: ['低点', '高点'] });
+  const result = await select(config('auto', '', '中等'));
+  assert.equal(result.code, 'MODEL_SELECTION_FAILED'); assert.equal(result.sent, 0); assert.equal(result.uploads, 0);
+});
+
+test('narrow Gemini layout expands thinking inline instead of opening a second menu', async t => {
+  const { select } = await fixture(t, { current: '3.8 Flash', short: true, inline: true });
+  const result = await select(config('auto', '', '中等'));
+  assert.equal(result.thinking, '中等'); assert.equal(result.sent, 1);
 });
 test('automatic Flash selection skips Lite even when Lite is first', async t => {
   const { select } = await fixture(t);
@@ -91,9 +128,9 @@ test('exact Pro name is honored without model fallback', async t => {
 });
 test('model switch resets thinking and the chosen thinking level is restored and verified', async t => {
   const { select } = await fixture(t);
-  const result = await select(config('auto', '', '高'));
-  assert.equal(result.model, '3.8 Flash'); assert.equal(result.thinking, '高'); assert.equal(result.thinkingChecked, true);
-  assert.ok(result.clicks.indexOf('高') > result.clicks.indexOf('3.8 Flash'));
+  const result = await select(config('auto', '', '高点'));
+  assert.equal(result.model, '3.8 Flash'); assert.equal(result.thinking, '高点'); assert.equal(result.thinkingChecked, true);
+  assert.ok(result.clicks.indexOf('高点') > result.clicks.indexOf('3.8 Flash'));
 });
 test('mismatched model verification prevents upload and send', async t => {
   const { select } = await fixture(t, { wrong: true });
@@ -129,8 +166,8 @@ test('an identified empty model menu fails deterministically without upload or s
 test('menu reader returns per-account labels and thinking options without changing choices', async t => {
   const { page } = await fixture(t);
   const catalog = await page.evaluate(() => __flowcutModelPicker.readCatalog());
-  assert.deepEqual(catalog.models, names); assert.deepEqual(catalog.thinking, ['低', '高']);
-  assert.equal(catalog.current, '3.1 Pro'); assert.equal(catalog.currentThinking, '低');
+  assert.deepEqual(catalog.models, names); assert.deepEqual(catalog.thinking, ['低点', '中等', '高点']);
+  assert.equal(catalog.current, '3.1 Pro'); assert.equal(catalog.currentThinking, '低点');
   assert.equal(await page.locator('[role="menu"]:visible').count(), 0);
   assert.deepEqual(await page.evaluate(() => clicks), ['模型菜单', '思考等级']);
 });
@@ -147,7 +184,7 @@ test('saved Gem conversation uses the same selectors and selection behavior', as
 test('preserve mode leaves model and thinking menus untouched', async t => {
   const { select } = await fixture(t, { current: '4 Argon' });
   const result = await select(config('preserve'), true);
-  assert.equal(result.model, '4 Argon'); assert.deepEqual(result.clicks, []);
+  assert.equal(result.model, '4 Argon 低点'); assert.deepEqual(result.clicks, []);
 });
 
 for (const method of ['inspect', 'readCatalog']) {
@@ -167,7 +204,7 @@ for (const method of ['inspect', 'readCatalog']) {
       };
     });
     const result = await page.evaluate(async method => {
-      const result = await (method === 'inspect' ? __flowcutModelPicker.inspect({ mode: 'auto', thinking: '' }, { models: ['3.8 Flash'] }) : __flowcutModelPicker.readCatalog());
+      const result = await (method === 'inspect' ? __flowcutModelPicker.inspect({ mode: 'auto', thinking: '' }, { models: ['3.8 Flash'], thinking: ['低点', '中等', '高点'] }) : __flowcutModelPicker.readCatalog());
       return { result, clock: readinessClock, clicks, sent, uploads };
     }, method);
     assert.equal(result.clock, 9500); assert.equal(result.sent, 0); assert.equal(result.uploads, 0);
@@ -210,11 +247,11 @@ test('default preserve mode does not wait, open menus, upload or send when no mo
   const result = await page.evaluate(async settings => ({ ...await __flowcutModelPicker.inspect(settings, {}, true), clicks, sent, uploads }), normalizeModelSettings());
   assert.equal(result.needsMenu, false); assert.deepEqual(result.clicks, []); assert.equal(result.sent, 0); assert.equal(result.uploads, 0);
 });
-test('thinking checks are due at startup, after one hour, and after a settings change', () => {
+test('thinking check metadata is invalidated by settings, not an hourly menu timer', () => {
   const value = config('auto', '', '高'), prior = { settingsKey: modelSettingsKey(value), checkedAt: 1000 };
   assert.equal(needsThinkingCheck(undefined, value, 2000), true);
   assert.equal(needsThinkingCheck(prior, value, 2000), false);
-  assert.equal(needsThinkingCheck(prior, value, 3601000), true);
+  assert.equal(needsThinkingCheck(prior, value, 3601000), false);
   assert.equal(needsThinkingCheck(prior, config('exact', '3.1 Pro'), 2000), true);
   assert.deepEqual(normalizeModelSettings(), config('preserve'));
 });

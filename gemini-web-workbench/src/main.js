@@ -1028,8 +1028,8 @@ async function selectJobModel(event) {
     const inspected = await modelPageCall(window, 'inspect', [settings, account.modelCatalog, checkThinking]);
     selected = inspected.needsMenu
       ? await runWithActivatedGeminiWorker({ workerWindow: window, ownerWindow: mainWindow, debugVisible: showGeminiWorkerForDebug,
-          action: () => modelPageCall(window, 'ensure', [settings, { checkThinking, previousThinking: prior?.thinking || null }]) })
-      : { model: inspected.model, thinking: prior?.settingsKey === settingsKey ? prior.thinking : null, thinkingChecked: false, changed: false };
+            action: () => modelPageCall(window, 'ensure', [settings, { checkThinking, previousThinking: prior?.thinking || null, catalog: account.modelCatalog }]) })
+        : { model: inspected.model, thinking: inspected.thinking ?? (prior?.settingsKey === settingsKey ? prior.thinking : null), thinkingChecked: inspected.thinkingChecked === true, changed: false };
   } catch (error) {
     throw error.code === 'MODEL_SELECTION_FAILED' ? error : temporaryModelError(error);
   } finally { pending.modelSelectionActive = false; }

@@ -1,6 +1,6 @@
 # FlowCut 全自动 AI 视频工作台
 
-当前桌面版本：`1.4.42`（个人本机版）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，开发交接入口为 [AGENTS.md](AGENTS.md)。
+当前桌面版本：`1.4.43`（个人本机版）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，开发交接入口为 [AGENTS.md](AGENTS.md)。
 
 FlowCut 在本机整合商品图片、用户自建 Gem、Gemini 网页/API、Seedance 视频生成、任务队列、成片审核与 TikTok 发布管理。支持商品制作、爆款复刻和剧本提示词流水线。
 

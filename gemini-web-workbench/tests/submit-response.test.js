@@ -138,7 +138,7 @@ for (const legacy of ["提交失败：接口 HTTP 200", "提交失败：接口�
     context.store.upsertTask(task);
     const outcome = await context.engine.retryFailedTask("local-1");
     await context.engine.tick();
-    assert.equal(outcome.action, "unconfirmed");
+    assert.equal(outcome.action, "check-failed"); // Legacy fixture has no original submission time.
     assert.equal(context.submissions(), 0);
   });
 }

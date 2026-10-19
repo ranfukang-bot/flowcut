@@ -8,8 +8,8 @@ function normalizeModelSettings(value = {}) {
 }
 
 const modelSettingsKey = value => JSON.stringify(normalizeModelSettings(value));
-function needsThinkingCheck(prior, settings, now = Date.now()) {
-  return prior?.settingsKey !== modelSettingsKey(settings) || now - (prior?.checkedAt || 0) >= 3600_000;
+function needsThinkingCheck(prior, settings) {
+  return prior?.settingsKey !== modelSettingsKey(settings);
 }
 
 // Self-contained: serialized into the Gemini page, including saved /gem/ pages.
@@ -59,20 +59,39 @@ function createModelPicker(doc = document) {
     if (rows.length !== 1) fail('模型按钮无法唯一识别，网页菜单结构可能已变化');
     return rows[0];
   };
-  const label = el => clean(el.getAttribute('data-model-name') || el.querySelector('[data-test-id="model-name"],.mode-title,.model-name,.model-title')?.textContent || String(el.innerText || el.textContent).split('\n').find(line => clean(line)));
-  const menus = () => [...doc.querySelectorAll(menuSelector)].filter(visible).filter(el => !el.parentElement?.closest(menuSelector));
-  const items = menu => [...menu.querySelectorAll(itemSelector)].filter(visible).filter(el => !el.parentElement?.closest(itemSelector));
+  const textWithoutIcons = el => {
+    return String(el.innerText || el.textContent || '').replace(/\b(?:keyboard_arrow_(?:up|down|right)|arrow_right|expand_more|expand_less|check_circle|check)\b/g, '');
+  };
+  const label = el => clean(el.getAttribute('data-model-name') || el.querySelector('[data-test-id="model-name"],.mode-title,.model-name,.model-title,.label')?.textContent || textWithoutIcons(el).split('\n').find(line => clean(line)));
+  const buttonLabel = el => clean(textWithoutIcons(el));
+  const popup = el => ['true', 'menu'].includes(el.getAttribute('aria-haspopup')) || el.matches('gem-menu-item[value="thinking_level"].expandable');
+  const splitButton = (value, options = []) => {
+    const text = clean(value);
+    const matches = options.filter(option => text.toLowerCase().endsWith(` ${clean(option).toLowerCase()}`));
+    if (matches.length !== 1) return { model: text, thinking: null };
+    return { model: text.slice(0, -clean(matches[0]).length).trim(), thinking: matches[0] };
+  };
+  const menus = () => [...doc.querySelectorAll(menuSelector)].filter(visible)
+    .filter(el => el.matches('[role="menu"],[role="listbox"]') || !el.querySelector('[role="menu"],[role="listbox"]'));
+  const items = menu => [...menu.querySelectorAll(itemSelector)].filter(visible).filter(el => {
+    if (menu.matches(menuSelector) && el.closest(menuSelector) !== menu) return false;
+    const parentItem = el.parentElement?.closest(itemSelector);
+    return !parentItem || !menu.contains(parentItem);
+  });
   const selected = el => {
     const aria = el.getAttribute('aria-checked') ?? el.getAttribute('aria-selected');
     if (aria !== null) return aria === 'true';
     const icon = el.querySelector('[data-mat-icon-name="check"], [data-mat-icon-name="check_circle"], .checkmark');
+    // Real gem-menu-item has no aria-checked. Its selected class and check
+    // icon agree; mat-icon itself can have no layout box (display: contents).
+    if (el.matches('gem-menu-item.selected') && icon) return true;
     if (icon) return visible(icon) && getComputedStyle(icon).opacity !== '0';
     return /[✓✔]/.test(el.innerText || el.textContent);
   };
-  const models = menu => items(menu).filter(el => el.getAttribute('aria-haspopup') !== 'menu' && (['menuitemradio', 'option'].includes(el.getAttribute('role')) || el.hasAttribute('data-model-name') || el.getAttribute('data-test-id') === 'model-option' || /\d+(?:\.\d+)*\s*[a-z]/i.test(label(el))));
-  const isModelMenu = menu => items(menu).some(el => el.getAttribute('aria-haspopup') === 'menu' || /\d+(?:\.\d+)*\s*[a-z]/i.test(label(el)) || el.hasAttribute('data-model-name')) || menu.id === button().getAttribute('aria-controls');
+  const models = menu => items(menu).filter(el => !popup(el) && (['menuitemradio', 'option'].includes(el.getAttribute('role')) || el.hasAttribute('data-model-name') || el.getAttribute('data-test-id') === 'model-option' || /\d+(?:\.\d+)*\s*[a-z]/i.test(label(el))));
+  const isModelMenu = menu => items(menu).some(el => popup(el) || /\d+(?:\.\d+)*\s*[a-z]/i.test(label(el)) || el.hasAttribute('data-model-name')) || Boolean(menu.id && menu.id === button().getAttribute('aria-controls'));
   const thinkingTrigger = menu => {
-    const rows = items(menu).filter(el => el.getAttribute('aria-haspopup') === 'menu');
+    const rows = items(menu).filter(popup);
     if (rows.length > 1) fail('思考等级子菜单无法唯一识别');
     return rows[0];
   };
@@ -105,14 +124,18 @@ function createModelPicker(doc = document) {
     return matches.length === 1 && equal(matches[0], wanted);
   }
   async function inspect(settings, catalog = {}, checkThinking = false) {
-    if (settings.mode === 'preserve' && (!settings.thinking || !checkThinking)) {
+    if (settings.mode === 'preserve' && !settings.thinking) {
       const rows = buttonRows();
       return { needsMenu: false, model: rows.length === 1 ? label(rows[0]) : '', thinking: null };
     }
-    const current = label(await waitForButton());
+    const current = splitButton(buttonLabel(await waitForButton()), catalog.thinking);
     let wanted = '';
     try { wanted = target(settings, catalog.models || []); } catch { return { needsMenu: true }; }
-    return { needsMenu: checkThinking || !wanted || !buttonMatches(current, wanted, catalog.models || []), model: wanted || current };
+    const matchingModels = (catalog.models || []).filter(name => buttonMatches(current.model, name, catalog.models || []));
+    const model = wanted || (matchingModels.length === 1 ? matchingModels[0] : '');
+    const thinkingMatches = !settings.thinking || equal(current.thinking, settings.thinking);
+    return { needsMenu: !model || !buttonMatches(current.model, model, catalog.models || []) || !thinkingMatches,
+      model: model || current.model, thinking: current.thinking, thinkingChecked: Boolean(settings.thinking && thinkingMatches) };
   }
   async function session(action) {
     const deadline = Date.now() + 8000;
@@ -130,8 +153,10 @@ function createModelPicker(doc = document) {
     };
     const close = async () => {
       if (!menus().length) return;
-      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
-      await new Promise(resolve => setTimeout(resolve, 0));
+      for (let depth = 0; depth < 3 && menus().length; depth++) {
+        menus().at(-1).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
       if (menus().length) {
         const backdrop = [...doc.querySelectorAll('.cdk-overlay-backdrop')].find(visible);
         if (backdrop) backdrop.click();
@@ -141,8 +166,11 @@ function createModelPicker(doc = document) {
     const thoughtMenu = async menu => {
       const trigger = thinkingTrigger(menu);
       if (!trigger) return null;
-      trigger.click();
-      return wait(() => menus().find(el => el !== menu && items(el).length && !isModelMenu(el)));
+      if (trigger.getAttribute('aria-expanded') !== 'true') trigger.click();
+      return wait(() => {
+        const inline = trigger.querySelector('.expand-content');
+        return inline && items(inline).length ? inline : menus().find(el => el !== menu && items(el).length && !isModelMenu(el));
+      });
     };
     let failed = false;
     try { return await action({ wait, open, close, thoughtMenu }); }
@@ -156,10 +184,12 @@ function createModelPicker(doc = document) {
       const names = models(menu).map(label);
       if (!names.length || new Set(names.map(name => name.toLowerCase())).size !== names.length) fail('模型列表为空或存在重名选项');
       const thought = await thoughtMenu(menu);
-      return { models: names, thinking: thought ? items(thought).map(label) : [], current: label(models(menu).find(selected) || button()), currentThinking: thought ? label(items(thought).find(selected) || { getAttribute: () => '', querySelector: () => null, innerText: '' }) || null : null };
+      const chosen = models(menu).find(selected);
+      const chosenThinking = thought && items(thought).find(selected);
+      return { models: names, thinking: thought ? items(thought).map(label) : [], current: chosen ? label(chosen) : buttonLabel(button()), currentThinking: chosenThinking ? label(chosenThinking) : null };
     });
   }
-  async function ensure(settings, { checkThinking = false, previousThinking = null } = {}) {
+  async function ensure(settings, { checkThinking = false, previousThinking = null, catalog = {} } = {}) {
     return session(async ({ wait, open, close, thoughtMenu }) => {
       let menu = await open();
       let rows = models(menu), names = rows.map(label);
@@ -181,8 +211,8 @@ function createModelPicker(doc = document) {
       }
       const verified = models(menu).filter(selected);
       if (verified.length !== 1 || !equal(label(verified[0]), wanted)) fail(`切换后核对不一致，目标模型 ${wanted}`);
-      let thinking = previousThinking, thinkingChecked = false, thinkingOptions;
-      if (changed || checkThinking) {
+      let thinking = previousThinking, thinkingChecked = false, thinkingOptions = catalog.thinking;
+      if (changed || checkThinking || settings.thinking) {
         const thought = await thoughtMenu(menu);
         if (!thought && settings.thinking) fail(`找不到思考等级 ${settings.thinking}`);
         if (thought) {
@@ -209,7 +239,10 @@ function createModelPicker(doc = document) {
       await close();
       // The menu checkmark has verified the full name. The button may show a
       // shared short family label, unlike the stricter menu-free fast path.
-      await wait(() => buttonMatches(label(button()), wanted, [wanted]), `模型按钮核对不一致，目标模型 ${wanted}`);
+      await wait(() => {
+        const final = splitButton(buttonLabel(button()), thinkingOptions);
+        return buttonMatches(final.model, wanted, [wanted]) && (!settings.thinking || equal(final.thinking, settings.thinking));
+      }, `模型按钮核对不一致，目标模型 ${wanted}${settings.thinking ? ` · 思考等级 ${settings.thinking}` : ''}`);
       return { model: wanted, thinking, thinkingChecked, changed, models: names, thinkingOptions };
     });
   }

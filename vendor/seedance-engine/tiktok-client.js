@@ -471,12 +471,13 @@ class TikTokClient {
     });
   }
 
-  async fetchHistory(wantedTaskIds = []) {
+  async fetchHistory(wantedTaskIds = [], { exhaustive = false } = {}) {
     const wanted = new Set(wantedTaskIds.filter(Boolean).map(String));
     const mergedItems = [];
     const mergedIds = new Set();
     const pageSignatures = new Set();
     let firstResult = null;
+    let historyComplete = false;
     for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
       const result = await this.apiRequest(HISTORY_PATH, {
         method: 'POST',
@@ -493,7 +494,8 @@ class TikTokClient {
         },
       });
       if (!firstResult) firstResult = result;
-      const pageItems = result?.data?.draft_infos || [];
+      const pageItems = result?.data?.draft_infos;
+      if (!Array.isArray(pageItems)) throw new Error('生成历史响应缺少 draft_infos');
       const signature = pageItems.map((item) => String(item.taskId)).join(',');
       if (pageSignatures.has(signature)) break;
       pageSignatures.add(signature);
@@ -504,11 +506,14 @@ class TikTokClient {
         mergedItems.push(item);
       }
       const foundAll = [...wanted].every((taskId) => mergedIds.has(taskId));
-      if (!wanted.size || foundAll || pageItems.length < 50) break;
+      const total = Number(result?.data?.total);
+      historyComplete = pageItems.length < 50 || (Number.isFinite(total) && mergedItems.length >= total);
+      if (historyComplete || (!exhaustive && (!wanted.size || foundAll))) break;
     }
     return {
       ...firstResult,
       data: { ...(firstResult?.data || {}), draft_infos: mergedItems },
+      ...(exhaustive ? { historyComplete } : {}),
     };
   }
 

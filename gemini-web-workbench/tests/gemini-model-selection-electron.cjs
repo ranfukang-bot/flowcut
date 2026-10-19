@@ -8,27 +8,28 @@ app.on('window-all-closed', () => {});
 app.whenReady().then(async () => {
   const window = new BrowserWindow({ show: false, webPreferences: { partition: `model-selection-${process.pid}`, sandbox: true } });
   try {
-    const fixture = `<button data-test-id="bard-mode-menu-button">Flash</button>
+    const fixture = `<button data-test-id="bard-mode-menu-button">Flash 中等 <mat-icon>keyboard_arrow_up</mat-icon></button>
       <div role="menu" id="models" hidden><button role="menuitemradio" aria-checked="false">3.5 Flash-Lite</button><button role="menuitemradio" aria-checked="true">3.8 Flash</button><button role="menuitemradio" aria-checked="false">3.1 Pro</button><button role="menuitem" aria-haspopup="menu">思考等级</button></div>
-      <div role="menu" id="thinking" hidden><button role="menuitemradio" aria-checked="true">低</button><button role="menuitemradio" aria-checked="false">高</button></div><script>
+      <div role="menu" id="thinking" hidden><button role="menuitemradio" aria-checked="false"><span>低点</span><div>快速高效</div></button><button role="menuitemradio" aria-checked="true"><span>中等</span><div>深度适中</div></button><button role="menuitemradio" aria-checked="false"><span>高点</span><div>超级详尽</div></button></div><script>
       window.clicks=[];const picker=document.querySelector('button'),models=document.querySelector('#models'),thinking=document.querySelector('#thinking');
       const close=()=>{models.hidden=thinking.hidden=true;};picker.onclick=()=>{clicks.push('menu');models.hidden=false;};
       document.querySelector('[aria-haspopup]').onclick=()=>{thinking.hidden=false;};
-      models.querySelectorAll('[role="menuitemradio"]').forEach(item=>item.onclick=()=>{clicks.push(item.textContent);models.querySelectorAll('[role="menuitemradio"]').forEach(el=>el.setAttribute('aria-checked',String(el===item)));picker.textContent=item.textContent;thinking.children[0].setAttribute('aria-checked','true');thinking.children[1].setAttribute('aria-checked','false');close();});
-      [...thinking.children].forEach(item=>item.onclick=()=>{clicks.push(item.textContent);[...thinking.children].forEach(el=>el.setAttribute('aria-checked',String(el===item)));close();});document.addEventListener('keydown',event=>{if(event.key==='Escape')close();});</script>`;
+      let model='Flash',level='中等';const render=()=>{picker.textContent=model+' '+level+' keyboard_arrow_up';};
+      models.querySelectorAll('[role="menuitemradio"]').forEach(item=>item.onclick=()=>{clicks.push(item.textContent);models.querySelectorAll('[role="menuitemradio"]').forEach(el=>el.setAttribute('aria-checked',String(el===item)));model=item.textContent.replace(/^[0-9.]+ /,'');level='低点';[...thinking.children].forEach((e,i)=>e.setAttribute('aria-checked',String(i===0)));render();close();});
+      [...thinking.children].forEach(item=>item.onclick=()=>{level=item.firstElementChild.textContent;clicks.push(level);[...thinking.children].forEach(el=>el.setAttribute('aria-checked',String(el===item)));render();close();});document.addEventListener('keydown',event=>{if(event.key==='Escape')close();});</script>`;
     await window.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(fixture));
     const run = script => window.webContents.executeJavaScript(script, true);
     await run(modelRuntimeSource + '\ntrue');
     let started = performance.now();
-    const fast = await run(`__flowcutModelPicker.inspect({mode:'auto',thinking:''},{models:['3.5 Flash-Lite','3.8 Flash','3.1 Pro']},false)`);
+    const fast = await run(`__flowcutModelPicker.inspect({mode:'auto',thinking:'中等'},{models:['3.5 Flash-Lite','3.8 Flash','3.1 Pro'],thinking:['低点','中等','高点']},true)`);
     const fastMs = performance.now() - started;
     assert.equal(fast.needsMenu, false); assert.deepEqual(await run('clicks'), []); assert.ok(fastMs < 500);
     report({ pass: true, scenario: 'matching model has no clicks or activation', elapsedMs: fastMs });
     await run(`document.querySelectorAll('#models [role="menuitemradio"]')[2].click();clicks=[];true`);
     started = performance.now();
-    const changed = await runWithActivatedGeminiWorker({ workerWindow: window, action: () => run(`__flowcutModelPicker.ensure({mode:'auto',thinking:'高'},{checkThinking:true})`) });
+    const changed = await runWithActivatedGeminiWorker({ workerWindow: window, action: () => run(`__flowcutModelPicker.ensure({mode:'auto',thinking:'中等'},{checkThinking:true})`) });
     const switchMs = performance.now() - started;
-    assert.equal(changed.model, '3.8 Flash'); assert.equal(changed.thinking, '高'); assert.ok(switchMs < 5000);
+    assert.equal(changed.model, '3.8 Flash'); assert.equal(changed.thinking, '中等'); assert.ok(switchMs < 5000);
     report({ pass: true, scenario: 'hidden Electron activation switches model before restoring thinking', elapsedMs: switchMs });
     await assert.rejects(callModelPage(window, modelRuntimeSource, 'ensure', [{ mode: 'exact', name: 'missing-model', thinking: '' }]), { code: 'MODEL_SELECTION_FAILED' });
     await run(`__flowcutModelPicker.inspect = () => { throw new Error('temporary fixture script error'); }; true`);

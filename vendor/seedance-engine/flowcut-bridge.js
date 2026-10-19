@@ -219,7 +219,7 @@ class FlowCutBridge {
       return;
     }
     if (task.status === 'submit_unconfirmed') {
-      this.engine.recordTask(task, 'FlowCut 请求重试，但这条任务的提交结果尚未确认，没有重新提交', 'error');
+      await this.engine.retryUnconfirmedTask(task);
     }
     // Waiting, uploading, generating or finished tasks continue as they are:
     // queuing again never starts a second generation for them.

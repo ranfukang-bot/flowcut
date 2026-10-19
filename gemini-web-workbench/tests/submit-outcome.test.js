@@ -177,7 +177,8 @@ test("a task interrupted while submitting is held for confirmation instead of re
   await engine.tick();
   await engine.tick();
   assert.equal(client.submits, 0);
-  assert.throws(() => engine.retryTask("local-1"), /提交结果尚未确认/);
+  assert.equal((await engine.retryTask("local-1")).action, 'check-failed'); // This old fixture has no submission timestamp.
+  assert.equal(client.submits, 0);
 });
 
 test("a submit timeout is recorded as unconfirmed rather than failed", async (t) => {

@@ -980,7 +980,10 @@ class QueueEngine {
     if (Date.now() < recovery.submitStartedAt + CHECK_DELAYS[0]) return { action: 'checking' };
     if (!manual && !final && recovery.nextCheckAt > Date.now()) return { action: 'checking' };
     try {
-      const history = await this.accounts.client(recovery.accountId || task.accountId).fetchHistory([], { exhaustive: true });
+      const history = await this.accounts.client(recovery.accountId || task.accountId).fetchHistory([], {
+        exhaustive: true,
+        createdAfterMs: recovery.submitStartedAt - 120_000,
+      });
       const matches = matchSubmissionHistory(task, history);
       if (this.store.isFlowcutTaskCleared?.(task.flowcutTaskId) || this.store.getTask(task.id) !== task) return { action: 'removed' };
       recovery.checkedAt = Date.now();

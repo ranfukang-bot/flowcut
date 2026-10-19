@@ -471,7 +471,12 @@ class TikTokClient {
     });
   }
 
-  async fetchHistory(wantedTaskIds = [], { exhaustive = false } = {}) {
+  async fetchHistory(wantedTaskIds = [], { exhaustive = false, createdAfterMs = null } = {}) {
+    // Only submission reconciliation supplies this lower bound. Existing
+    // Task-ID polling retains its original request and pagination behavior.
+    if (createdAfterMs !== null && (typeof createdAfterMs !== 'number' || !Number.isFinite(createdAfterMs) || createdAfterMs <= 0)) {
+      throw new Error('生成历史的创建时间下限无效');
+    }
     const wanted = new Set(wantedTaskIds.filter(Boolean).map(String));
     const mergedItems = [];
     const mergedIds = new Set();
@@ -487,7 +492,7 @@ class TikTokClient {
           pageLimit: 50,
           edited: false,
           sorted: 2,
-          start_time: String(Math.floor(Date.now() / 1000) - 365 * 86400),
+          start_time: String(createdAfterMs === null ? Math.floor(Date.now() / 1000) - 365 * 86400 : Math.floor(createdAfterMs / 1000)),
           mini_app_type: [2, 3, 11, 13],
           showPlayInfo: true,
           parseSettings: true,

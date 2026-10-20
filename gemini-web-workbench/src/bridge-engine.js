@@ -441,7 +441,7 @@ class BridgeEngine {
         // One code block is one video. Check before anything is written back:
         // a reply that cannot be split is retried, never sent as one prompt.
         try {
-          splitPromptBlocks({ text: result.prompt, blocks: result.codeBlocks, hint: result.codeBlockHint === true, mode: job.blockMode });
+          splitPromptBlocks({ text: result.prompt, blocks: result.codeBlocks, hint: result.codeBlockHint === true, mode: job.blockMode, singleLabel:job.kind==='variant'?'变体 Gem':undefined });
         } catch (error) {
           throw Object.assign(error, { rawReply: result.prompt });
         }

@@ -42,6 +42,8 @@ function restorableTables(tables) {
   }
   for (const name of ['tasks', 'reference_remix_tasks', 'script_pipeline_tasks']) for (const row of tables[name] || []) {
     // split_done: a group whose clips exist as their own rows; finished.
+    // fission_wait and fission_ready still own unfinished work. Pause them
+    // on restore so a historical mother/child queue can never replay itself.
     if (typeof row.status === 'string' && !['video_ready', 'scheduled', 'completed', 'success', 'failed', 'split_done'].includes(row.status)) {
       row.status = 'failed';
       if ('error' in row) row.error = '从历史备份恢复，请核对平台历史后再手动重新生成；未自动重发。';

@@ -10,7 +10,7 @@ const FILTERS = ['all', 'active', 'review', 'completed', 'attention'] as const;
 type Filter = (typeof FILTERS)[number];
 function condition(filter: Filter, a: string) {
   switch (filter) {
-    case 'active': return `${a}.status NOT IN ('video_ready','scheduled','failed','seedance_blocked','split_done')`;
+    case 'active': return `${a}.status NOT IN ('video_ready','scheduled','failed','seedance_blocked','split_done','fission_ready')`;
     case 'review': return `${a}.status IN ('video_ready','scheduled') AND COALESCE(${a}.review_status,'') NOT IN ('approved','replaced','merging','merged')`;
     case 'completed': return `${a}.status IN ('video_ready','scheduled') AND ${a}.review_status IN ('approved','replaced')`;
     case 'attention': return `${a}.status IN ('failed','seedance_blocked')`;
@@ -45,7 +45,7 @@ function decodeCursor(value: string): [string, string] {
 // Clips belong to their group: the list shows top-level rows only and each
 // group carries its clips (and concatenated videos) in batch order.
 async function attachChildren(db: TaskDatabase, rows: TaskRow[]) {
-  const groupIds = rows.filter(row => row.task_role === 'group').map(row => row.id);
+  const groupIds = rows.filter(row => ['group','fission'].includes(String(row.task_role))).map(row => row.id);
   if (!groupIds.length) return rows;
   const children = await db.prepare(`SELECT ${listColumns} ${joins} WHERE t.batch_parent_id IN (${groupIds.map(() => '?').join(',')})
     ORDER BY CASE WHEN t.task_role='concat' THEN 1 ELSE 0 END, t.batch_round ASC, t.batch_index ASC, t.created_at ASC, t.id ASC`)
@@ -55,7 +55,7 @@ async function attachChildren(db: TaskDatabase, rows: TaskRow[]) {
     const key = String(child.batch_parent_id);
     byGroup.set(key, [...(byGroup.get(key) || []), child]);
   }
-  return rows.map(row => row.task_role === 'group' ? { ...row, children: byGroup.get(row.id) || [] } : row);
+  return rows.map(row => ['group','fission'].includes(String(row.task_role)) ? { ...row, children: byGroup.get(row.id) || [] } : row);
 }
 
 export async function listTasks(db: TaskDatabase, query: TaskQuery = {}) {
@@ -66,11 +66,11 @@ export async function listTasks(db: TaskDatabase, query: TaskQuery = {}) {
   if (!Number.isInteger(requestedLimit) || requestedLimit < 1) throw new Error('分页条数必须是正整数');
   const limit = Math.min(200, requestedLimit);
   const where = ['t.batch_parent_id IS NULL', filter === 'all' ? '1 = 1'
-    : `((${condition(filter, 't')}) OR (t.task_role = 'group' AND EXISTS (SELECT 1 FROM tasks c WHERE c.batch_parent_id = t.id AND ${condition(filter, 'c')})))`];
+    : `((${condition(filter, 't')}) OR (t.task_role IN ('group','fission') AND EXISTS (SELECT 1 FROM tasks c WHERE c.batch_parent_id = t.id AND ${condition(filter, 'c')})))`];
   const args: (string | number)[] = [];
   if (query.q?.trim()) {
-    where.push("instr(lower(COALESCE(NULLIF(p.name,''),t.title,'') || ' ' || COALESCE(t.product_external_id_snapshot,p.external_id,'') || ' ' || COALESCE(t.tiktok_account_name,'')),lower(?)) > 0");
-    args.push(query.q.trim());
+    where.push("(instr(lower(COALESCE(NULLIF(p.name,''),t.title,'') || ' ' || COALESCE(t.product_external_id_snapshot,p.external_id,'') || ' ' || COALESCE(t.tiktok_account_name,'')),lower(?)) > 0 OR (t.task_role='fission' AND EXISTS (SELECT 1 FROM tasks c LEFT JOIN products cp ON cp.id=c.product_id WHERE c.batch_parent_id=t.id AND instr(lower(COALESCE(cp.name,'') || ' ' || COALESCE(c.product_external_id_snapshot,'')),lower(?))>0)))");
+    args.push(query.q.trim(),query.q.trim());
   }
   if (query.cursor) {
     const [createdAt, id] = decodeCursor(query.cursor);
@@ -87,7 +87,7 @@ export async function countTasks(db: TaskDatabase): Promise<TaskCounts> {
     COUNT(CASE WHEN ${condition('active', 't')} THEN 1 END) AS active,
     COUNT(CASE WHEN ${condition('review', 't')} THEN 1 END) AS review,
     COUNT(CASE WHEN ${condition('completed', 't')} THEN 1 END) AS completed,
-    COUNT(CASE WHEN ${condition('attention', 't')} THEN 1 END) AS attention FROM tasks t`).first<TaskCounts>();
+    COUNT(CASE WHEN ${condition('attention', 't')} THEN 1 END) AS attention FROM tasks t WHERE COALESCE(t.task_role,'') <> 'fission'`).first<TaskCounts>();
   return result || { total: 0, active: 0, review: 0, completed: 0, attention: 0 };
 }
 

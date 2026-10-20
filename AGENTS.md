@@ -65,3 +65,4 @@ Pop-Location
 9. 新增桌面 IPC 必须通过 `bindIpc` 中的 `handle` 注册。Gemini 结果必须匹配当前 pending job 的 webContents；导航、令牌和窗口来源边界见 `docs/desktop-security.md`。
 10. 本机备份仅通过业务表导出事务和明确的本机文件清单收集数据，不复制运行中的 SQLite 或 Partitions。恢复先校验并备份当前数据，保留较新提交记录、暂停历史未完成任务；见 `docs/local-backups.md`。
 11. 产品任务的 Gemini 回复按代码块拆分：一个代码块一条视频，整轮校验失败时不拆分、不提交。不要把读取失败的回复退回为整段提示词；拼接只在本机进行，参与拼接的视频先预留再合成。见 `docs/code-block-batches.md`。
+12. 多品裂变是独立模块。每条 `fission_child` 必须保存自己商品的 ID 和图片快照，禁止从母版商品继承；母版就绪与放出等待子任务须原子写入。子任务正好一条提示词，不拆 clip、不允许拼接。见 `docs/multi-product-fission.md`。

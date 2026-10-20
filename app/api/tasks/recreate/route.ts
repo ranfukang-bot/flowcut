@@ -6,7 +6,7 @@ import { clipStart } from "../../../../lib/task-batches";
 export async function POST(request: Request) {
   try {
     await ensureWorkspace();
-    const { id, requestId, gemId } = await request.json() as { id?: string; requestId?: string; gemId?: string };
+    const { id, requestId, gemId, rewriteMother } = await request.json() as { id?: string; requestId?: string; gemId?: string; rewriteMother?: boolean };
     if (!id || !requestId || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(requestId)) {
       return Response.json({ error: "缺少原任务 ID 或重做请求标识" }, { status: 400 });
     }
@@ -29,8 +29,17 @@ export async function POST(request: Request) {
         image_keys_snapshot: string | null; review_status: string;
         task_role: string | null; prompt: string; auto_queue: number;
         batch_parent_id: string | null; batch_index: number | null; batch_round: number | null; batch_size: number | null;
+        variant_gem_id: string | null; variant_gem_snapshot: string | null; variant_request_text: string | null;
       }>();
     if (!source) return Response.json({ error: "原任务不存在" }, { status: 404 });
+    if(rewriteMother && source.task_role!=='fission_child') return Response.json({error:'只有多品裂变子任务可以用母版重写'},{status:409});
+    if(source.task_role==='fission_child'){
+      if(gemId) return Response.json({error:'裂变子任务沿用创建时的变体 Gem 快照'},{status:409});
+      if(rewriteMother){
+        const parent=await db.prepare("SELECT id FROM tasks WHERE id=? AND task_role='fission' AND status='fission_ready' AND length(trim(prompt))>=300").bind(source.batch_parent_id).first();
+        if(!parent || !source.variant_gem_snapshot || !source.variant_request_text) return Response.json({error:'母版或变体 Gem 快照不可用，请先恢复母版'},{status:409});
+      }
+    }
     if (source.task_role === "concat") {
       return Response.json({ error: "拼接成片不能重新生成；如需重拼，请删除这条拼接成片，参与拼接的片段会回到待检查" }, { status: 409 });
     }
@@ -77,23 +86,25 @@ export async function POST(request: Request) {
           AND status NOT IN ('video_ready', 'scheduled', 'failed'))`;
     // A clip of a code-block batch is remade from its own prompt: no Gemini
     // round, same group and position, a fresh video from Seedance.
-    const remakeClip = source.task_role === "clip" && Boolean(source.batch_parent_id) && String(source.prompt || "").trim().length >= 300;
+    const remakeClip = ['clip','fission_child'].includes(source.task_role||'') && Boolean(source.batch_parent_id) && String(source.prompt || "").trim().length >= 300;
+    if(source.task_role==='fission_child'&&!remakeClip)return Response.json({error:'本商品提示词或分组信息缺失，不能作为普通商品任务重做'},{status:409});
     let clipStatement: ReturnType<typeof db.prepare> | null = null;
     if (remakeClip) {
       const seedance = await getProviderConfig("seedance");
-      const start = clipStart(Boolean(source.auto_queue), { mode: seedance.config.mode, secretConfigured: seedance.secretConfigured });
+      const start = rewriteMother ? {status:'variant_queued',provider:'gemini-web',progress:36} : clipStart(Boolean(source.auto_queue), { mode: seedance.config.mode, secretConfigured: seedance.secretConfigured });
       clipStatement = db.prepare(`INSERT OR IGNORE INTO tasks
         (id, product_id, gem_id, title, status, prompt, provider, progress,
          duration, region, shooting_style, callback_token, auto_queue,
          gemini_account_id, tiktok_account_name, archive_directory,
          gem_content_snapshot, product_external_id_snapshot, gemini_request_text, image_keys_snapshot,
-         task_role, batch_parent_id, batch_index, batch_round, batch_size, regenerated_from_task_id, created_at, updated_at)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'clip', ?, ?, ?, ?, ?, ?, ?
-        ${remakeGuard}`).bind(requestId, source.product_id, source.gem_id, source.title, start.status, source.prompt,
+         task_role, batch_parent_id, batch_index, batch_round, batch_size, regenerated_from_task_id, created_at, updated_at,variant_gem_id,variant_gem_snapshot,variant_request_text)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ${remakeGuard}`).bind(requestId, source.product_id, source.gem_id, source.title, start.status, rewriteMother?'':source.prompt,
           start.provider, start.progress, source.duration, source.region, source.shooting_style, crypto.randomUUID(),
           source.auto_queue ? 1 : 0, source.tiktok_account_name, source.archive_directory || "", gemContent,
           source.saved_product_id || "", source.gemini_request_text ?? null, JSON.stringify(images.results.map(image => image.object_key)),
-          source.batch_parent_id, source.batch_index, source.batch_round, source.batch_size, id, now, now, id, id);
+          source.task_role,source.batch_parent_id, source.batch_index, source.batch_round, source.batch_size, id, now, now,
+          source.variant_gem_id,source.variant_gem_snapshot,source.variant_request_text,id, id);
     }
     // A single conditional INSERT prevents concurrent clicks/tabs creating two
     // active remakes. requestId also makes a lost HTTP reply safe to retry.

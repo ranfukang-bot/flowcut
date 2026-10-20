@@ -16,13 +16,15 @@ type GeminiKind = "standard" | "variant" | "reference-remix" | "script-pipeline"
 
 // A group already split into clips is finished with Gemini: a late release,
 // retry or failure report from an old worker must not reopen it.
-const SPLIT_GUARD = " AND status <> 'split_done'";
+const SPLIT_GUARD = " AND status NOT IN ('split_done','fission_ready')";
 
 // Table and queue/active states for each Gemini job kind. A variant job is the
 // second round of a product task and lives in the tasks table.
-function kindState(kind: GeminiKind | undefined) {
+function kindState(kind: GeminiKind | undefined, workerId = '') {
+  const fissionGuard = ` AND (COALESCE(task_role,'') NOT IN ('fission','fission_child') OR
+    (provider='gemini-web' AND status IN (${kind==='variant'?"'variant_queued','variant_generating'":"'prompt_queued','prompt_generating'"}) AND bridge_worker_id=?))`;
   if (kind === "reference-remix") {
-    return { table: "reference_remix_tasks", queued: "'reference_queued'", queuedProgress: "5", active: "'reference_analyzing'", activeProgress: "14", rawReply: false, guard: "" };
+    return { table: "reference_remix_tasks", queued: "'reference_queued'", queuedProgress: "5", active: "'reference_analyzing'", activeProgress: "14", rawReply: false, guard: "", guardArgs: [] as string[] };
   }
   if (kind === "script-pipeline") {
     return {
@@ -57,12 +59,13 @@ function kindState(kind: GeminiKind | undefined) {
            END`,
       rawReply: false,
       guard: "",
+      guardArgs: [] as string[],
     };
   }
   if (kind === "variant") {
-    return { table: "tasks", queued: "'variant_queued'", queuedProgress: "36", active: "'variant_generating'", activeProgress: "40", rawReply: true, guard: SPLIT_GUARD };
+    return { table: "tasks", queued: "'variant_queued'", queuedProgress: "36", active: "'variant_generating'", activeProgress: "40", rawReply: true, guard: SPLIT_GUARD+fissionGuard, guardArgs: [workerId] };
   }
-  return { table: "tasks", queued: "'prompt_queued'", queuedProgress: "5", active: "'prompt_generating'", activeProgress: "14", rawReply: true, guard: SPLIT_GUARD };
+  return { table: "tasks", queued: "'prompt_queued'", queuedProgress: "5", active: "'prompt_generating'", activeProgress: "14", rawReply: true, guard: SPLIT_GUARD+fissionGuard, guardArgs: [workerId] };
 }
 
 // Gemini replies kept for the task detail when a split was refused.
@@ -94,7 +97,7 @@ async function queueSeedance(taskId: string, requestUrl: string) {
   const db = getDb();
   const task = await db
     .prepare(
-      `SELECT product_id, prompt, callback_token, duration
+      `SELECT product_id, prompt, callback_token, duration, image_keys_snapshot
        FROM tasks WHERE id = ?`
     )
     .bind(taskId)
@@ -103,6 +106,7 @@ async function queueSeedance(taskId: string, requestUrl: string) {
       prompt: string;
       callback_token?: string | null;
       duration: number;
+      image_keys_snapshot: string | null;
     }>();
   if (!task) throw new Error("任务不存在");
   if (String(task.prompt || "").trim().length < 300) {
@@ -155,9 +159,7 @@ async function queueSeedance(taskId: string, requestUrl: string) {
   await submitSeedance({
     taskId,
     prompt: task.prompt,
-    imageUrls: images.results.map((image: { object_key: string }) =>
-      mediaUrl(requestUrl, image.object_key)
-    ),
+    imageUrls: (task.image_keys_snapshot ? JSON.parse(task.image_keys_snapshot) as string[] : images.results.map(image=>image.object_key)).map(key=>mediaUrl(requestUrl,key)),
     duration: task.duration,
     callbackUrl: callbackUrl(requestUrl, token),
   });
@@ -263,14 +265,16 @@ export async function GET(request: Request) {
     const variantPending = await db
       .prepare(
         `SELECT t.id, t.product_id, t.gemini_account_id, t.created_at, COALESCE(t.gemini_retry_at, t.created_at) AS queue_at,
-                t.prompt AS mother_prompt, t.variant_request_text, t.image_keys_snapshot,
+                CASE WHEN t.task_role='fission_child' THEN parent.prompt ELSE t.prompt END AS mother_prompt, t.task_role, t.variant_request_text, t.image_keys_snapshot,
                 COALESCE(t.variant_gem_id, 'snapshot-variant-' || t.id) AS gem_id, COALESCE(vg.name, '变体 Gem') AS gem_name,
                 t.variant_gem_snapshot AS content
          FROM tasks t
          LEFT JOIN gems vg ON vg.id = t.variant_gem_id
+         LEFT JOIN tasks parent ON parent.id=t.batch_parent_id
          WHERE t.provider = 'gemini-web'
            AND t.status IN ('variant_queued', 'variant_generating')
            AND t.variant_gem_snapshot IS NOT NULL
+           AND (COALESCE(t.task_role,'') <> 'fission_child' OR (parent.task_role='fission' AND parent.status='fission_ready' AND length(trim(parent.prompt))>=300))
            AND (t.bridge_claimed_at IS NULL OR t.bridge_claimed_at < ?)
            AND (t.gemini_retry_at IS NULL OR t.gemini_retry_at <= ?)
          ORDER BY queue_at ASC LIMIT 32`
@@ -281,6 +285,7 @@ export async function GET(request: Request) {
         product_id: string;
         gemini_account_id?: string | null;
         mother_prompt: string;
+        task_role: string | null;
         variant_request_text: string | null;
         image_keys_snapshot: string | null;
         gem_id: string;
@@ -450,7 +455,7 @@ export async function GET(request: Request) {
           id: variantTask.id,
           kind: "variant",
           accountId,
-          blockMode: "split",
+          blockMode: variantTask.task_role==='fission_child' ? "single" : "split",
           gem: { id: variantTask.gem_id, name: variantTask.gem_name, content: variantTask.content },
           prompt: renderVariantRequest(variantTask.variant_request_text || "", variantTask.mother_prompt),
           imageUrls: (variantTask.image_keys_snapshot ? JSON.parse(variantTask.image_keys_snapshot) as string[] : (images?.results || []).map(image => image.object_key))
@@ -789,7 +794,7 @@ export async function POST(request: Request) {
       }
       const task = await db
         .prepare(
-          `SELECT auto_queue, status, provider, prompt, bridge_worker_id, duration,
+          `SELECT auto_queue, status, provider, prompt, bridge_worker_id, duration, task_role,
                   variant_gem_snapshot IS NOT NULL AS variant_mode
            FROM tasks WHERE id = ?`
         )
@@ -802,6 +807,7 @@ export async function POST(request: Request) {
           bridge_worker_id?: string | null;
           duration: number;
           variant_mode: number;
+          task_role: string | null;
         }>();
       if (!task) {
         return Response.json(
@@ -811,14 +817,16 @@ export async function POST(request: Request) {
       }
       const variantRound = body.kind === "variant";
       const expectedStatus = variantRound ? "variant_generating" : "prompt_generating";
-      const mode: PromptBlockMode = variantRound ? "split" : Number(task.duration) === 30 ? "raw" : task.variant_mode ? "single" : "split";
+      const fissionChild=task.task_role==='fission_child';
+      const fissionMother=task.task_role==='fission';
+      const mode: PromptBlockMode = fissionChild ? 'single' : variantRound ? "split" : Number(task.duration) === 30 ? "raw" : task.variant_mode ? "single" : "split";
       let parsed;
       try {
-        parsed = splitPromptBlocks({ text: prompt, blocks: body.codeBlocks, hint: body.codeBlockHint === true, mode });
+        parsed = splitPromptBlocks({ text: prompt, blocks: body.codeBlocks, hint: body.codeBlockHint === true, mode, singleLabel:fissionChild?'变体 Gem':undefined });
       } catch (error) {
         return Response.json({ error: error instanceof Error ? error.message : "代码块校验失败" }, { status: 400 });
       }
-      const split = parsed.prompts.length > 1 || variantRound;
+      const split = !fissionChild && (parsed.prompts.length > 1 || variantRound);
       const appliedPrompt = split ? prompt : parsed.prompts[0];
       if (
         String(task.prompt || "").trim() === appliedPrompt &&
@@ -829,6 +837,7 @@ export async function POST(request: Request) {
       if (
         task.provider !== "gemini-web" ||
         task.status !== expectedStatus ||
+        ((fissionChild || fissionMother) && (task.bridge_worker_id !== body.workerId || !body.workerId || variantRound !== fissionChild)) ||
         (task.bridge_worker_id &&
           body.workerId &&
           task.bridge_worker_id !== body.workerId)
@@ -845,7 +854,18 @@ export async function POST(request: Request) {
       const rawReply = rawReplyValue(prompt);
       const note = parsed.note || null;
 
-      if (mode === "single") {
+      if (fissionMother) {
+        const results=await db.batch([
+          db.prepare(`UPDATE tasks SET status='variant_queued',progress=36,updated_at=? WHERE batch_parent_id=? AND task_role='fission_child' AND status='fission_wait'
+            AND EXISTS (SELECT 1 FROM tasks parent WHERE parent.id=? AND parent.task_role='fission' AND parent.status='prompt_generating' AND parent.provider='gemini-web' AND parent.bridge_worker_id=?)`).bind(now,body.taskId,body.taskId,workerId),
+          db.prepare(`UPDATE tasks SET prompt=?,prompt_note=?,gemini_raw_reply=?,status='fission_ready',progress=100,error=NULL,
+            bridge_claimed_at=NULL,bridge_worker_id=NULL,gemini_failures=0,gemini_retry_at=NULL,updated_at=?
+            WHERE id=? AND task_role='fission' AND status='prompt_generating' AND provider='gemini-web' AND bridge_worker_id=?`).bind(parsed.prompts[0],note,rawReply,now,body.taskId,workerId),
+        ]);
+        return results[1].meta.changes ? Response.json({ok:true,fissionReady:true}) : Response.json({error:'母版领取已失效，忽略过期结果',ignorable:true},{status:409});
+      }
+
+      if (mode === "single" && !fissionChild) {
         // Round 1 of a two-round task: keep the mother prompt and queue round 2.
         const updated = await db
           .prepare(
@@ -913,10 +933,10 @@ export async function POST(request: Request) {
            error = NULL, bridge_claimed_at = NULL, bridge_worker_id = NULL,
            gemini_failures = 0, gemini_retry_at = NULL,
            updated_at = ? WHERE id = ? AND provider = 'gemini-web'
-             AND status = 'prompt_generating'
+             AND status = ?
              AND (bridge_worker_id IS NULL OR bridge_worker_id = ?)`
         )
-        .bind(appliedPrompt, note, mode === "raw" ? null : rawReply, now, body.taskId, workerId)
+        .bind(appliedPrompt, note, mode === "raw" ? null : rawReply, now, body.taskId, expectedStatus, workerId)
         .run();
       if (!updated.meta.changes) {
         return Response.json(
@@ -943,27 +963,27 @@ export async function POST(request: Request) {
     }
 
     if (body.action === "release") {
-      const state = kindState(body.kind);
+      const state = kindState(body.kind,body.workerId);
       await db
         .prepare(
           `UPDATE ${state.table} SET status = ${state.queued}, progress = ${state.queuedProgress},
            bridge_claimed_at = NULL, bridge_worker_id = NULL,
            gemini_retry_at = NULL, error = ?, gemini_error_code = ?, updated_at = ? WHERE id = ?${state.guard}`
         )
-        .bind(body.error || null, body.errorCode || null, now, body.taskId)
+        .bind(body.error || null, body.errorCode || null, now, body.taskId,...state.guardArgs)
         .run();
       return Response.json({ ok: true });
     }
 
     if (body.action === "defer") {
-      const state = kindState(body.kind);
+      const state = kindState(body.kind,body.workerId);
       const rawReplySql = state.rawReply ? ", gemini_raw_reply = COALESCE(?, gemini_raw_reply)" : "";
       const rawReplyArgs = state.rawReply ? [rawReplyValue(body.rawReply)] : [];
       const task = await db
         .prepare(
           `SELECT gemini_failures FROM ${state.table} WHERE id = ? AND provider = 'gemini-web'${state.guard}`
         )
-        .bind(body.taskId)
+        .bind(body.taskId,...state.guardArgs)
         .first<{ gemini_failures: number }>();
       if (!task) {
         return Response.json({ error: "任务已不在 Gemini 阶段" }, { status: 409 });
@@ -985,7 +1005,7 @@ export async function POST(request: Request) {
             `Gemini ${body.accountLimited ? "账号限流，稍后重试" : "任务暂时失败，先处理后续任务"}；${retry.label}后可重试（${failures}/${retry.maxFailures}）：${body.error || "页面未确认任务完成"}`,
             ...rawReplyArgs,
             now,
-            body.taskId
+            body.taskId,...state.guardArgs
           )
           .run();
         return Response.json({
@@ -1008,7 +1028,7 @@ export async function POST(request: Request) {
           `${body.error || "Gemini 网页生成失败"}（后台恢复已尝试 ${retry.maxFailures} 轮）`,
           ...rawReplyArgs,
           now,
-          body.taskId
+          body.taskId,...state.guardArgs
         )
         .run();
       return Response.json({
@@ -1020,7 +1040,7 @@ export async function POST(request: Request) {
     }
 
     if (body.action === "retrying") {
-      const state = kindState(body.kind);
+      const state = kindState(body.kind,body.workerId);
       await db
         .prepare(
           `UPDATE ${state.table} SET status = ${state.active}, progress = ${state.activeProgress},
@@ -1031,14 +1051,14 @@ export async function POST(request: Request) {
           now,
           body.error || "Gemini 页面波动，正在自动重试",
           now,
-          body.taskId
+          body.taskId,...state.guardArgs
         )
         .run();
       return Response.json({ ok: true });
     }
 
     if (body.action === "error") {
-      const state = kindState(body.kind);
+      const state = kindState(body.kind,body.workerId);
       const rawReplySql = state.rawReply ? ", gemini_raw_reply = COALESCE(?, gemini_raw_reply)" : "";
       await db
         .prepare(
@@ -1046,7 +1066,7 @@ export async function POST(request: Request) {
            bridge_claimed_at = NULL, bridge_worker_id = NULL,
            error = ?${rawReplySql}, updated_at = ? WHERE id = ?${state.guard}`
         )
-        .bind(body.error || "Gemini 网页生成失败", ...(state.rawReply ? [rawReplyValue(body.rawReply)] : []), now, body.taskId)
+        .bind(body.error || "Gemini 网页生成失败", ...(state.rawReply ? [rawReplyValue(body.rawReply)] : []), now, body.taskId,...state.guardArgs)
         .run();
       return Response.json({ ok: true });
     }

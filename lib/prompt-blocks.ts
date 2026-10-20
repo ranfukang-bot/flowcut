@@ -31,6 +31,7 @@ export function splitPromptBlocks(input: {
   blocks?: unknown;
   hint?: boolean;
   mode?: PromptBlockMode;
+  singleLabel?: string;
 }): PromptBlockResult {
   const text = String(input.text || "").trim();
   const mode = input.mode || "split";
@@ -50,7 +51,9 @@ export function splitPromptBlocks(input: {
     throw promptBlocksError(`识别到 ${blocks.length} 个代码块，超过上限 ${MAX_PROMPT_BLOCKS} 个；整轮未拆分、未提交`);
   }
   if (mode === "single" && blocks.length > 1) {
-    throw promptBlocksError(`母版 Gem 输出了 ${blocks.length} 个代码块；母版只能是 1 条提示词，请让母版 Gem 只输出一个代码块`);
+    throw promptBlocksError(input.singleLabel
+      ? `${input.singleLabel} 输出了 ${blocks.length} 个代码块；本轮只能是 1 条提示词，请只输出一个代码块`
+      : `母版 Gem 输出了 ${blocks.length} 个代码块；母版只能是 1 条提示词，请让母版 Gem 只输出一个代码块`);
   }
   const seen = new Map<string, number>();
   blocks.forEach((block, index) => {

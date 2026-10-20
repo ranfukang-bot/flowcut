@@ -204,6 +204,7 @@ export async function POST(request: Request) {
       );
     }
     const db = getDb();
+
     const account = await db
       .prepare(
         "SELECT id, archive_directory FROM tiktok_accounts WHERE lower(name) = lower(?)"
@@ -332,6 +333,27 @@ export async function PATCH(request: Request) {
     if (!body.id) return Response.json({ error: "缺少任务 ID" }, { status: 400 });
     const db = getDb();
 
+    const fission=await db.prepare("SELECT task_role,batch_parent_id,status,prompt,provider_job_id FROM tasks WHERE id=? AND task_role IN ('fission','fission_child')").bind(body.id).first<{task_role:string;batch_parent_id:string|null;status:string;prompt:string;provider_job_id:string|null}>();
+    if(fission && ['regenerate','process'].includes(body.action||'')) return Response.json({error:'多品裂变请使用恢复任务或用母版重写，不能按普通商品任务重置'},{status:409});
+    if(fission && body.action==='retry'){
+      if(fission.status!=='failed' || fission.provider_job_id) return Response.json({error:'请仅恢复失败的 Gemini 任务；已提交视频请从 Seedance 原任务接续监控'},{status:409});
+      const now=new Date().toISOString();
+      if(fission.task_role==='fission'){
+        await db.batch([
+          db.prepare(`UPDATE tasks SET status='variant_queued',progress=36,updated_at=? WHERE batch_parent_id=? AND task_role='fission_child' AND status='fission_wait'
+            AND EXISTS (SELECT 1 FROM tasks WHERE id=? AND status='failed' AND length(trim(prompt))>=300)`).bind(now,body.id,body.id),
+          db.prepare(`UPDATE tasks SET status=CASE WHEN length(trim(prompt))>=300 THEN 'fission_ready' ELSE 'prompt_queued' END,
+            progress=CASE WHEN length(trim(prompt))>=300 THEN 100 ELSE 5 END,provider='gemini-web',error=NULL,bridge_claimed_at=NULL,bridge_worker_id=NULL,gemini_failures=0,gemini_retry_at=NULL,updated_at=? WHERE id=? AND status='failed'`).bind(now,body.id),
+        ]);
+      }else{
+        const parent=await db.prepare("SELECT status FROM tasks WHERE id=? AND task_role='fission' AND length(trim(prompt))>=300").bind(fission.batch_parent_id).first<{status:string}>();
+        if(parent?.status!=='fission_ready') return Response.json({error:'请先恢复并完成母版任务'},{status:409});
+        await db.prepare(`UPDATE tasks SET status=CASE WHEN length(trim(prompt))>=300 THEN 'prompt_ready' ELSE 'variant_queued' END,
+          progress=CASE WHEN length(trim(prompt))>=300 THEN 32 ELSE 36 END,provider='gemini-web',error=NULL,bridge_claimed_at=NULL,bridge_worker_id=NULL,gemini_failures=0,gemini_retry_at=NULL,updated_at=? WHERE id=? AND status='failed'`).bind(now,body.id).run();
+      }
+      return Response.json({ok:true});
+    }
+
     if (body.action === "process") {
       return Response.json(await processQueuedTask(body.id, request.url));
     }
@@ -428,7 +450,7 @@ export async function PATCH(request: Request) {
     if (body.action === "queue") {
       const task = await db
         .prepare(
-          "SELECT product_id, prompt, provider, callback_token, duration, task_role FROM tasks WHERE id = ?"
+          "SELECT product_id, prompt, provider, callback_token, duration, task_role, image_keys_snapshot, status, provider_job_id FROM tasks WHERE id = ?"
         )
         .bind(body.id)
         .first<{
@@ -438,11 +460,15 @@ export async function PATCH(request: Request) {
           callback_token?: string | null;
           duration: number;
           task_role?: string | null;
+          image_keys_snapshot: string | null;
+          status: string;
+          provider_job_id: string | null;
         }>();
       if (!task) return Response.json({ error: "任务不存在" }, { status: 404 });
-      if (task.task_role === "group" || task.task_role === "concat") {
+      if (task.task_role === "group" || task.task_role === "concat" || task.task_role === 'fission') {
         return Response.json({ error: "分组或拼接任务不能直接提交 Seedance，请在其中的单条视频上操作" }, { status: 409 });
       }
+      if(task.task_role==='fission_child' && (!['prompt_ready','seedance_blocked'].includes(task.status)||task.provider_job_id)) return Response.json({error:'这条视频已在执行或尚未完成提示词，请使用原任务继续处理'},{status:409});
       if (task.provider === "demo-engine") {
         return Response.json(
           {
@@ -462,19 +488,21 @@ export async function PATCH(request: Request) {
           .bind(token, body.id)
           .run();
       }
-      const images = await taskImages(task.product_id, request.url);
+      const images = await taskImages(task.product_id, request.url,task.image_keys_snapshot?JSON.parse(task.image_keys_snapshot):undefined);
       const seedance = await getProviderConfig("seedance");
       if (seedance.config.mode === "local-api") {
-        await db
+        const queued=await db
           .prepare(
             `UPDATE tasks SET provider = 'seedance-bridge',
              status = 'video_queued', progress = 48, error = NULL,
              provider_job_id = NULL, provider_status_url = NULL,
              bridge_claimed_at = NULL, bridge_worker_id = NULL,
-             updated_at = ? WHERE id = ?`
+             updated_at = ? WHERE id = ? AND (COALESCE(task_role,'') <> 'fission_child'
+               OR (status IN ('prompt_ready','seedance_blocked') AND provider_job_id IS NULL))`
           )
           .bind(new Date().toISOString(), body.id)
           .run();
+        if(!queued.meta.changes)return Response.json({error:'这条视频已进入队列，未重复提交'},{status:409});
         return Response.json({ ok: true });
       }
       try {

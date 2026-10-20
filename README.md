@@ -1,6 +1,8 @@
 # FlowCut 全自动 AI 视频工作台
 
-当前桌面版本：`1.4.45`（个人本机版）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，开发交接入口为 [AGENTS.md](AGENTS.md)。
+当前桌面版本：`1.4.46`（个人本机版）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，开发交接入口为 [AGENTS.md](AGENTS.md)。
+
+“多品裂变”可让 2–10 个商品共用一份母版，每个商品各生成一条提示词和视频，独立保存商品 ID、图片与归档账号。使用和恢复规则见 [多品裂变](docs/multi-product-fission.md)。
 
 FlowCut 在本机整合商品图片、用户自建 Gem、Gemini 网页/API、Seedance 视频生成、任务队列、成片审核与 TikTok 发布管理。支持商品制作、爆款复刻和剧本提示词流水线。
 

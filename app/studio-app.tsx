@@ -31,8 +31,10 @@ import type { TaskCounts } from '../lib/task-list';
 import { DEFAULT_VARIANT_REQUEST, validateVariantRequest } from '../lib/prompt-blocks';
 import { VariantConfigBlock, type VariantConfig } from './variant-config';
 import { TaskBatchPanel, clipLabel } from './task-batch-panel';
+import { FissionPage } from './fission-page';
+import { FissionBatchPanel } from './fission-batch-panel';
 
-type Gem = {
+export type Gem = {
   id: string;
   name: string;
   description: string;
@@ -41,7 +43,7 @@ type Gem = {
   updated_at: string;
 };
 
-type Product = {
+export type Product = {
   id: string;
   external_id: string;
   name: string;
@@ -58,7 +60,7 @@ type Product = {
   created_at: string;
 };
 
-type Task = {
+export type Task = {
   has_prompt?: number;
   updated_at?: string;
   gemini_model_info?: string | null;
@@ -104,7 +106,7 @@ type Task = {
   children?: Task[];
 };
 
-type TikTokAccount = {
+export type TikTokAccount = {
   archive_directory?: string;
   id: string;
   name: string;
@@ -235,12 +237,13 @@ type Workspace = {
   };
 };
 
-type Page = "dashboard" | "scripts" | "remix" | "products" | "gems" | "tasks" | "calendar" | "settings" | "publisher";
+type Page = "dashboard" | "scripts" | "remix" | "fission" | "products" | "gems" | "tasks" | "calendar" | "settings" | "publisher";
 
 const nav: Array<{ id: Page; label: string; icon: string }> = [
   { id: "dashboard", label: "创作中心", icon: "✦" },
   { id: "scripts", label: "剧本提示词", icon: "文" },
   { id: "remix", label: "爆款复刻", icon: "◎" },
+  { id: "fission", label: "多品裂变", icon: "⑂" },
   { id: "products", label: "商品库", icon: "▣" },
   { id: "gems", label: "Gem 模板", icon: "◇" },
   { id: "tasks", label: "任务队列", icon: "↗" },
@@ -274,6 +277,8 @@ const statusLabels: Record<string, string> = {
   variant_generating: "变体 Gem 生成中",
   split_done: "已按代码块拆分",
   concat_running: "正在拼接",
+  fission_wait: "等待母版",
+  fission_ready: "母版就绪",
 };
 
 type SeedanceRuntime = {
@@ -295,6 +300,15 @@ function withChildren(tasks: Task[]) {
 }
 
 function taskStages(task: Task): TaskStage[] {
+  if(task.task_role==='fission'){
+    const ready=task.status==='fission_ready',children=task.children||[];
+    return [
+      {number:'1',label:'商品批次',detail:`${task.batch_size||children.length} 个不同商品`,state:'done'},
+      {number:'2',label:'共用母版',detail:ready?'母版已保存':taskStatusLabel(task),state:ready?'done':task.status==='failed'?'blocked':'active'},
+      {number:'3',label:'逐品变体',detail:'每个商品使用自己的图片',state:ready?'active':'waiting'},
+      {number:'4',label:'逐品视频',detail:`${children.filter(c=>['video_ready','scheduled'].includes(c.status)).length}/${children.length} 条就绪`,state:'waiting'},
+    ];
+  }
   if (task.task_role === "concat") {
     const done = ["video_ready", "scheduled"].includes(task.status);
     return [
@@ -441,6 +455,11 @@ function clipAwaitingReview(task: Task): boolean {
 }
 
 function taskStatusClass(task: Task) {
+  if(task.task_role==='fission'&&task.status==='fission_ready'){
+    const children=task.children||[];
+    if(children.some(clipAwaitingReview))return 'review_pending';
+    return children.some(c=>['failed','seedance_blocked'].includes(c.status))?'failed':children.every(c=>['video_ready','scheduled'].includes(c.status))?'video_ready':'video_generating';
+  }
   if (task.task_role === "group" && task.status === "split_done") {
     const children = task.children || [];
     if (children.some(clipAwaitingReview)) return 'review_pending';
@@ -451,6 +470,10 @@ function taskStatusClass(task: Task) {
 }
 
 function taskStatusLabel(task: Task) {
+  if(task.task_role==='fission'&&task.status==='fission_ready'){
+    const children=task.children||[],ready=children.filter(c=>['video_ready','scheduled'].includes(c.status)).length,failed=children.filter(c=>['failed','seedance_blocked'].includes(c.status)).length;
+    return `${children.length} 个商品 · ${ready} 条视频就绪${failed?` · ${failed} 条需处理`:''}`;
+  }
   if (task.provider === "demo-engine") return "需重新用 Gemini 识别";
   if (task.task_role === "group" && task.status === "split_done") {
     const children = task.children || [];
@@ -1058,7 +1081,7 @@ export function StudioApp() {
 
         <nav className="nav-list" aria-label="主导航">
           <p>工作台</p>
-          {(["dashboard", "tasks", "products", "publisher", "gems", "settings"] as Page[]).map((id) => nav.find((item) => item.id === id)!).map((item) => (
+          {(["dashboard", "remix", "fission", "tasks", "products", "publisher", "gems", "settings"] as Page[]).map((id) => nav.find((item) => item.id === id)!).map((item) => (
             <button
               key={item.id}
               className={page === item.id ? "active" : ""}
@@ -1074,7 +1097,7 @@ export function StudioApp() {
           <button className="more-tools-toggle" aria-expanded={moreTools} onClick={() => setMoreTools(!moreTools)}>
             <span>{moreTools ? "−" : "+"}</span>更多工具
           </button>
-          {moreTools && nav.filter((item) => ["scripts", "remix", "calendar"].includes(item.id)).map((item) => (
+          {moreTools && nav.filter((item) => ["scripts", "calendar"].includes(item.id)).map((item) => (
             <button
               key={item.id}
               className={page === item.id ? "active" : ""}
@@ -1192,6 +1215,9 @@ export function StudioApp() {
             onNotice={setNotice}
           />
         )}
+        {page === 'fission' && <FissionPage products={data.products} gems={data.gems} accounts={data.tiktokAccounts}
+          request={api} onUpload={quickUploadProduct} onOpenTask={openTask} statusLabel={taskStatusLabel}
+          onCreated={async(autoQueue)=>{try{await desktopBridge()?.setQueueRunning?.(true);if(autoQueue)await desktopBridge()?.seedanceSetRunning?.(true);}catch{setNotice('任务已保存，请在账号与设置中启动队列');}await reload();}} />}
         {page === "products" && (
           <ProductsPage
             products={data.products}
@@ -1221,7 +1247,7 @@ export function StudioApp() {
             tasks={data.tasks}
             geminiRuntime={data.integrations.geminiRuntime}
             onPreview={openTask}
-            onDelete={(task) => deleteRecord("/api/tasks", task.id, task.task_role === "group"
+            onDelete={(task) => deleteRecord("/api/tasks", task.id, ['group','fission'].includes(task.task_role||'')
               ? `确认删除这一整组任务（含 ${task.children?.length || 0} 条视频记录）？已下载到待检查文件夹的视频文件会保留。`
               : "确认删除这个任务？")}
             onClearCompleted={clearCompletedTasks}
@@ -2977,7 +3003,7 @@ function TasksPage({
             <button className="task-name task-product-summary" onClick={() => onPreview(task)}>
               <TaskProductThumbnail task={task} />
               <span className="task-product-copy">
-              <b>{task.product_name || task.title}</b>
+              <b>{task.task_role==='fission'?task.title:task.product_name || task.title}</b>
               <small>
                 {task.gem_name}
                 {` · ${task.duration || DEFAULT_TASK_DURATION}秒 · ${
@@ -2993,9 +3019,9 @@ function TasksPage({
             <TaskChain task={task} compact />
             <div className="task-live-status"><span className={`status ${taskStatusClass(task)}`}>{taskStatusLabel(task)}</span><small>{progressText(task)}</small></div>
             <div className="row-actions">{task.download_path && task.review_status === 'approved' && <button onClick={() => void openVideo(task)}>查看视频</button>}<button onClick={() => onPreview(task)}>{failed(task) ? "查看 / 继续" : pendingReview(task) ? "审核" : "查看"}</button><button aria-label={task.task_role === "group" ? "删除整组" : "删除任务"} onClick={() => onDelete(task)}>×</button></div>
-            {task.task_role === "group" && Boolean(task.children?.length) && <div className="task-batch-rows" role="list" aria-label="本组视频">
+            {['group','fission'].includes(task.task_role||'') && Boolean(task.children?.length) && <div className="task-batch-rows" role="list" aria-label="本组视频">
               {task.children!.map(child => <div className="task-batch-row" role="listitem" key={child.id}>
-                <button className="task-name" onClick={() => onPreview(child)}><b>{clipLabel(child)}</b><small>{child.duration || task.duration} 秒</small></button>
+                <button className="task-name" onClick={() => onPreview(child)}><b>{task.task_role==='fission'?(child.product_name||child.title):clipLabel(child)}</b><small>{task.task_role==='fission'?`商品 ID：${child.product_external_id}`:`${child.duration || task.duration} 秒`}</small></button>
                 <div className="task-live-status"><span className={`status ${taskStatusClass(child)}`}>{taskStatusLabel(child)}</span><small>{progressText(child)}</small></div>
                 <div className="row-actions">{child.download_path && child.review_status === 'approved' && <button onClick={() => void openVideo(child)}>查看视频</button>}<button onClick={() => onPreview(child)}>{failed(child) ? "查看 / 继续" : pendingReview(child) ? "审核" : "查看"}</button><button aria-label={`删除${clipLabel(child)}`} onClick={() => onDelete(child)}>×</button></div>
               </div>)}
@@ -4370,8 +4396,10 @@ function PromptDrawer({
   onUpdated: (message: string) => Promise<void>;
   onOpenTask: (task: Task) => void;
 }) {
-  const isGroup = task.task_role === "group";
-  const isClip = task.task_role === "clip";
+  const isFission=task.task_role==='fission';
+  const isFissionChild=task.task_role==='fission_child';
+  const isGroup = task.task_role === "group" || isFission;
+  const isClip = task.task_role === "clip" || isFissionChild;
   const isConcat = task.task_role === "concat";
   const merged = ['merging', 'merged'].includes(task.review_status || '');
   const [copied, setCopied] = useState(false);
@@ -4380,25 +4408,31 @@ function PromptDrawer({
   const [recreateGemId, setRecreateGemId] = useState("");
   const [recreateRequested, setRecreateRequested] = useState(false);
   const recreateRequest = useRef<string | null>(null);
+  const recreateMode = useRef<boolean | null>(null);
   const recreateLock = useRef(false);
-  async function recreateTask() {
+  async function recreateTask(rewriteMother=false) {
     if (recreateLock.current) return;
     recreateLock.current = true;
     setBusy("recreate");
     setRecreateError("");
     try {
+      if(recreateRequested && recreateMode.current!==null)rewriteMother=recreateMode.current;
       const gemLabel = recreateGemId ? gems.find(gem => gem.id === recreateGemId)?.name : '原任务 Gem 设定';
-      const confirmText = isClip
+      const confirmText = rewriteMother
+        ? '确认用母版重新写这条提示词并生成新视频？将重新运行本商品的变体 Gem，使用原商品图片、商品 ID 和共用母版，会额外消耗一次视频额度。旧视频会删除，新视频仍需检查。'
+        : isClip
         ? `确认删除这条视频并用同一条提示词重新生成？不经过 Gemini，旧视频将永久删除，会消耗一次视频生成额度。新视频仍为待检查，不会自动发布。`
         : `确认删除旧成片并重新生成？本次使用：${gemLabel}。旧视频将永久删除，旧任务也会从列表移除。沿用本任务的图片、商品 ID 和视频参数，从提示词开始重新生成，会消耗生成额度。新成片仍为待检查，不会自动发布。`;
       if (!await confirmAction(confirmText)) return;
       recreateRequest.current ||= crypto.randomUUID();
+      recreateMode.current=rewriteMother;
       setRecreateRequested(true);
       const result = await api("/api/tasks/recreate", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: task.id, requestId: recreateRequest.current, gemId: isClip ? undefined : recreateGemId || undefined }),
+        body: JSON.stringify({ id: task.id, requestId: recreateRequest.current, gemId: isClip ? undefined : recreateGemId || undefined, rewriteMother }),
       }) as { id: string; status?: string; created: boolean };
       let message = !result.created ? "已有重做任务，未重复创建"
+        : rewriteMother ? '已保存重写任务，将用原母版和本商品图片重新运行变体 Gem'
         : isClip ? (result.status === "prompt_ready" ? "已新建重做任务（同一条提示词），请打开它点“提交 Seedance”" : "已新建重做任务，将用同一条提示词重新生成视频")
         : "已新建重做任务，将从 Gemini 提示词开始完整生成视频";
       const desktop = desktopBridge();
@@ -4489,7 +4523,7 @@ function PromptDrawer({
         <div className="drawer-head">
           <div>
             <span className="step-kicker">AUTOMATION RESULT</span>
-            <h2>{task.product_name || task.title}</h2>
+            <h2>{isFission?task.title:task.product_name || task.title}</h2>
             <p>{task.gem_name}{isClip || isConcat ? ` · ${clipLabel(task)}` : ""}</p>
           </div>
           <button onClick={onClose}>×</button>
@@ -4527,7 +4561,8 @@ function PromptDrawer({
           <TaskChain task={task} />
         </div>
         {task.prompt_note && !isGroup && <div className="warning-box">{task.prompt_note}</div>}
-        {isGroup && <TaskBatchPanel task={task} statusLabel={child => taskStatusLabel(child as Task)}
+        {isFission && <FissionBatchPanel task={task} statusLabel={taskStatusLabel} onOpenTask={onOpenTask} />}
+        {isGroup && !isFission && <TaskBatchPanel task={task} statusLabel={child => taskStatusLabel(child as Task)}
           onOpenTask={child => onOpenTask(child as Task)} onUpdated={onUpdated} desktop={desktopBridge} request={api} />}
         {merged && <div className="download-result">
           <b>{task.review_status === 'merging' ? '正在拼接这条视频' : '这条视频已用于拼接'}</b>
@@ -4580,9 +4615,10 @@ function PromptDrawer({
                 {gems.map(gem => <option key={gem.id} value={gem.id}>{gem.name}</option>)}
               </select>
             </label>}
-            <button className="secondary" disabled={Boolean(busy) || task.review_status === 'deleting'} onClick={recreateTask}>
+            <button className="secondary" disabled={Boolean(busy) || task.review_status === 'deleting'} onClick={()=>void recreateTask()}>
               {busy === "recreate" ? "正在处理…" : task.review_status === 'replaced' ? '完成旧成片清理（不重复生成）' : "重新生成该任务"}
             </button>
+            {isFissionChild && <button className="secondary" disabled={Boolean(busy)||recreateRequested||task.review_status==='replaced'} onClick={()=>void recreateTask(true)}>用母版重新写这条提示词</button>}
             {['pending','deleting'].includes(task.review_status || 'pending') && task.download_path && <button className="secondary" disabled={Boolean(busy) || recreateRequested} onClick={() => reviewAction('delete')}>
               {busy === 'delete' ? '正在删除…' : '删除该任务并删除该视频'}
             </button>}

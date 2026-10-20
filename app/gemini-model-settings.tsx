@@ -12,6 +12,15 @@ type ModelBridge = {
   saveGeminiModel?: (settings: GeminiModelSettings) => Promise<ModelState>;
 };
 const defaults: GeminiModelSettings = { mode: 'preserve', name: '', thinking: '' };
+// Same rule as the desktop picker: Gemini renamed 低点/中等/高点 to 低/中/高,
+// and a saved level keeps working under the new wording.
+function thinkingLevel(value: string) {
+  const text = value.replace(/\s+/g, ' ').trim().toLowerCase();
+  if (/^(?:低|low\b|minimal\b)/.test(text)) return 'low';
+  if (/^(?:中|medium\b|mid\b|moderate\b)/.test(text)) return 'medium';
+  if (/^(?:高|high\b|max(?:imum)?\b)/.test(text)) return 'high';
+  return text;
+}
 
 export function GeminiModelSettingsPanel({ bridge }: { bridge: () => ModelBridge | undefined }) {
   const [state, setState] = useState<ModelState | null>(null);
@@ -27,6 +36,8 @@ export function GeminiModelSettingsPanel({ bridge }: { bridge: () => ModelBridge
   const accounts = state?.accounts || [];
   const models = [...new Set(accounts.flatMap(account => account.modelCatalog?.models || []))];
   const thinking = [...new Set(accounts.flatMap(account => account.modelCatalog?.thinking || []))];
+  const sameLevel = value.thinking ? thinking.find(name => thinkingLevel(name) === thinkingLevel(value.thinking)) : undefined;
+  const savedThinkingNote = sameLevel ? `${value.thinking}（网页现在叫「${sameLevel}」，可以正常使用）` : `${value.thinking}（读取结果中不存在）`;
   async function act(action: 'read' | 'save') {
     setBusy(true); setMessage('');
     try {
@@ -49,7 +60,7 @@ export function GeminiModelSettingsPanel({ bridge }: { bridge: () => ModelBridge
       <option value="">请先读取模型列表，再选择</option>{value.name && !models.includes(value.name) && <option value={value.name}>{value.name}（读取结果中不存在）</option>}{models.map(name => <option key={name}>{name}</option>)}
     </select></label>}
     <label>思考等级<select aria-label="Gemini 思考等级" disabled={busy} value={value.thinking} onChange={event => setDraft({ ...value, thinking: event.target.value })}>
-      <option value="">不改动</option>{value.thinking && !thinking.includes(value.thinking) && <option value={value.thinking}>{value.thinking}（读取结果中不存在）</option>}{thinking.map(name => <option key={name}>{name}</option>)}
+      <option value="">不改动</option>{value.thinking && !thinking.includes(value.thinking) && <option value={value.thinking}>{savedThinkingNote}</option>}{thinking.map(name => <option key={name}>{name}</option>)}
     </select></label>
     <p><button type="button" className="secondary" disabled={busy || !state} onClick={() => void act('read')}>{busy ? '处理中…' : '读取模型列表'}</button> <button type="button" className="secondary" disabled={busy || !state || (value.mode === 'exact' && !value.name)} onClick={() => void act('save')}>保存生成模型</button></p>
     <small>读取前请暂停 Gemini 队列并等待当前任务结束。列表按账号保存；某一账号不支持所选模型时不会改选其他模型。</small>

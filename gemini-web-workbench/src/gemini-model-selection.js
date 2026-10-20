@@ -60,10 +60,28 @@ function createModelPicker(doc = document) {
     return rows[0];
   };
   const textWithoutIcons = el => {
-    return String(el.innerText || el.textContent || '').replace(/\b(?:keyboard_arrow_(?:up|down|right)|arrow_right|expand_more|expand_less|check_circle|check)\b/g, '');
+    // Icon ligatures can run straight into a label ("Mediumkeyboard_arrow_up"),
+    // so remove the icon elements' own text before the name-based fallback.
+    let text = String(el.innerText || el.textContent || '');
+    for (const icon of el.querySelectorAll('mat-icon,[data-mat-icon-name],.material-icons,.material-symbols-outlined,.google-symbols')) {
+      const name = String(icon.textContent || '').trim();
+      if (name) text = text.split(name).join(' ');
+    }
+    return text.replace(/\b(?:keyboard_arrow_(?:up|down|right)|arrow_right|expand_more|expand_less|check_circle|check)\b/g, '');
   };
   const label = el => clean(el.getAttribute('data-model-name') || el.querySelector('[data-test-id="model-name"],.mode-title,.model-name,.model-title,.label')?.textContent || textWithoutIcons(el).split('\n').find(line => clean(line)));
   const buttonLabel = el => clean(textWithoutIcons(el));
+  // Gemini renames thinking levels (低点/中等/高点 became 低/中/高), so a saved
+  // level is compared by meaning, not wording. Two options of the same level
+  // are still ambiguous and stop the job.
+  const thinkingLevel = value => {
+    const text = clean(value).toLowerCase();
+    if (/^(?:低|low\b|minimal\b)/.test(text)) return 'low';
+    if (/^(?:中|medium\b|mid\b|moderate\b)/.test(text)) return 'medium';
+    if (/^(?:高|high\b|max(?:imum)?\b)/.test(text)) return 'high';
+    return text;
+  };
+  const sameThinking = (a, b) => Boolean(clean(a)) && Boolean(clean(b)) && thinkingLevel(a) === thinkingLevel(b);
   const popup = el => ['true', 'menu'].includes(el.getAttribute('aria-haspopup')) || el.matches('gem-menu-item[value="thinking_level"].expandable');
   const splitButton = (value, options = []) => {
     const text = clean(value);
@@ -133,7 +151,7 @@ function createModelPicker(doc = document) {
     try { wanted = target(settings, catalog.models || []); } catch { return { needsMenu: true }; }
     const matchingModels = (catalog.models || []).filter(name => buttonMatches(current.model, name, catalog.models || []));
     const model = wanted || (matchingModels.length === 1 ? matchingModels[0] : '');
-    const thinkingMatches = !settings.thinking || equal(current.thinking, settings.thinking);
+    const thinkingMatches = !settings.thinking || sameThinking(current.thinking, settings.thinking);
     return { needsMenu: !model || !buttonMatches(current.model, model, catalog.models || []) || !thinkingMatches,
       model: model || current.model, thinking: current.thinking, thinkingChecked: Boolean(settings.thinking && thinkingMatches) };
   }
@@ -220,8 +238,8 @@ function createModelPicker(doc = document) {
           thinkingOptions = choices.map(label);
           const wantedThinking = settings.thinking;
           if (wantedThinking) {
-            const matches = choices.filter(el => equal(label(el), wantedThinking));
-            if (matches.length !== 1) fail(`找不到思考等级 ${wantedThinking}`);
+            const matches = choices.filter(el => sameThinking(label(el), wantedThinking));
+            if (matches.length !== 1) fail(`${matches.length ? '思考等级选项无法唯一对应' : '找不到思考等级'} ${wantedThinking}（网页现有：${thinkingOptions.join('、') || '无'}）`);
             if (!selected(matches[0])) {
               matches[0].click();
               await close(); menu = await open();
@@ -231,7 +249,7 @@ function createModelPicker(doc = document) {
             }
           }
           const checked = choices.filter(selected);
-          if (checked.length !== 1 || (wantedThinking && !equal(label(checked[0]), wantedThinking))) fail('思考等级设置后核对不一致');
+          if (checked.length !== 1 || (wantedThinking && !sameThinking(label(checked[0]), wantedThinking))) fail('思考等级设置后核对不一致');
           thinking = label(checked[0]);
         } else thinking = null;
         thinkingChecked = true;
@@ -241,7 +259,7 @@ function createModelPicker(doc = document) {
       // shared short family label, unlike the stricter menu-free fast path.
       await wait(() => {
         const final = splitButton(buttonLabel(button()), thinkingOptions);
-        return buttonMatches(final.model, wanted, [wanted]) && (!settings.thinking || equal(final.thinking, settings.thinking));
+        return buttonMatches(final.model, wanted, [wanted]) && (!settings.thinking || sameThinking(final.thinking, settings.thinking));
       }, `模型按钮核对不一致，目标模型 ${wanted}${settings.thinking ? ` · 思考等级 ${settings.thinking}` : ''}`);
       return { model: wanted, thinking, thinkingChecked, changed, models: names, thinkingOptions };
     });

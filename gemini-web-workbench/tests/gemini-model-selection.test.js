@@ -29,7 +29,7 @@ async function fixture(t, { models = names, current = '3.1 Pro', short = false, 
         const item = document.createElement('gem-menu-item'); item.setAttribute('role', 'menuitem'); item.setAttribute('aria-haspopup', 'false'); item.classList.toggle('selected', name === choice);
         item.setAttribute('data-model-name', name);
         item.innerHTML = `<span class="label">${name}</span><div>全方位帮助</div>${name === choice ? '<mat-icon data-mat-icon-name="check" style="display:contents"></mat-icon>' : ''}`;
-        item.onclick = () => { clicks.push(name); if (!wrong) choice = name; level = '低点'; close(); render(); }; menu.append(item);
+        item.onclick = () => { clicks.push(name); if (!wrong) choice = name; level = levels[0]; close(); render(); }; menu.append(item);
       }
       const trigger = document.createElement('gem-menu-item'); trigger.setAttribute('role', 'menuitem'); trigger.setAttribute('aria-haspopup', 'true'); trigger.textContent = '思考等级';
       if (inline) { trigger.setAttribute('aria-haspopup', 'false'); trigger.setAttribute('value', 'thinking_level'); trigger.setAttribute('aria-expanded', 'false'); trigger.className = 'expandable'; thought.removeAttribute('role'); thought.className = 'expand-content'; }
@@ -90,6 +90,30 @@ test('missing 中等 deterministically prevents upload and send', async t => {
   const { select } = await fixture(t, { current: '3.8 Flash', short: true, levels: ['低点', '高点'] });
   const result = await select(config('auto', '', '中等'));
   assert.equal(result.code, 'MODEL_SELECTION_FAILED'); assert.equal(result.sent, 0); assert.equal(result.uploads, 0);
+});
+
+test('a level saved as 中等 keeps working after Gemini renames the levels to 低/中/高', async t => {
+  const renamed = { levels: ['低', '中', '高'] };
+  const ready = await fixture(t, { current: '3.8 Flash', short: true, level: '中', ...renamed });
+  const fast = await ready.select(config('auto', '', '中等'), true);
+  assert.deepEqual(fast.clicks, []); assert.equal(fast.thinking, '中'); assert.equal(fast.thinkingChecked, true);
+  const low = await fixture(t, { current: '3.8 Flash', short: true, level: '低', ...renamed });
+  const changed = await low.select(config('auto', '', '中等'));
+  assert.equal(changed.thinking, '中'); assert.ok(changed.clicks.includes('中')); assert.equal(changed.sent, 1);
+  const pro = await fixture(t, { short: true, level: '高', ...renamed });
+  const switched = await pro.select(config('auto', '', '中等'), false, { models: names, thinking: ['低点', '中等', '高点'] });
+  assert.equal(switched.model, '3.8 Flash'); assert.equal(switched.thinking, '中'); assert.equal(switched.sent, 1, 'an outdated saved list does not block the job');
+});
+
+test('the reverse rename and English labels are understood; two options of one level stop the job', async t => {
+  const old = await fixture(t, { current: '3.8 Flash', short: true });
+  assert.equal((await old.select(config('auto', '', '中'))).thinking, '中等');
+  const english = await fixture(t, { current: '3.8 Flash', short: true, level: 'Low', levels: ['Low', 'Medium', 'High'] });
+  const englishResult = await english.select(config('auto', '', '中等'));
+  assert.equal(englishResult.thinking, 'Medium', JSON.stringify(englishResult));
+  const ambiguous = await fixture(t, { current: '3.8 Flash', short: true, levels: ['低点', '中', '中等', '高点'] });
+  const failed = await ambiguous.select(config('auto', '', '中等'));
+  assert.equal(failed.code, 'MODEL_SELECTION_FAILED'); assert.match(failed.error, /无法唯一对应/); assert.equal(failed.sent, 0); assert.equal(failed.uploads, 0);
 });
 
 test('narrow Gemini layout expands thinking inline instead of opening a second menu', async t => {

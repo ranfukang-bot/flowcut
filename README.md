@@ -1,6 +1,6 @@
 # FlowCut 全自动 AI 视频工作台
 
-当前桌面版本：`1.4.47`（个人本机版）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，开发交接入口为 [AGENTS.md](AGENTS.md)。
+当前桌面版本：`1.4.48`（个人本机版）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，开发交接入口为 [AGENTS.md](AGENTS.md)。
 
 “多品裂变”可让 2–10 个商品共用一份母版，每个商品各生成一条提示词和视频，独立保存商品 ID、图片与归档账号。使用和恢复规则见 [多品裂变](docs/multi-product-fission.md)。
 

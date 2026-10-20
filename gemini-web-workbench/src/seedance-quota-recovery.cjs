@@ -25,6 +25,13 @@ function patchEngine(engine) {
   const hasRemoteJob = task => Boolean(task.taskId || task.taskIds?.length);
   const requestedModel = task => task.quotaRequestedModel || task.model || accounts.account(task.accountId)?.preferredModel;
   const save = () => { engine.store.save(); engine.emit(); };
+  // Why each enabled account of this model cannot take the task right now.
+  const blockers = model => {
+    const reasons = engine.store.data.accounts
+      .filter(account => account.enabled !== false && account.preferredModel === model)
+      .map(account => `${account.name}${!accounts.ensureRuntime(account.id)?.authenticated ? ' 未登录' : accounts.modelExhausted(account, model) ? ' 今日已上限' : ' 暂不可用'}`);
+    return reasons.join('、') || `没有首选 ${label(model)} 的账号`;
+  };
 
   function route(task, excludeId = '') {
     if (hasRemoteJob(task)) return false;
@@ -39,8 +46,15 @@ function patchEngine(engine) {
     let next = ordered.find(account => account.id !== excludeId && account.enabled !== false &&
       accounts.isAvailable(account) && accounts.effectiveModel(account) === model &&
       !accounts.modelExhausted(account, model));
-    // Only an explicit, current-day approval can release Fast tasks to 2.0.
-    // Keep their original preference so they return to Fast after the reset.
+    // No Fast account can take it now: an account the user explicitly set to
+    // 2.0 is their choice to spend 2.0 there, so waiting tasks may use it.
+    if (!next && model === '2000012') {
+      next = ordered.find(account => account.id !== excludeId && account.enabled !== false && accounts.isAvailable(account) &&
+        account.preferredModel === '2000004' && accounts.effectiveModel(account) === '2000004');
+      if (next) selectedModel = '2000004';
+    }
+    // Otherwise only an explicit, current-day approval releases Fast tasks to
+    // 2.0. Keep their original preference so they return to Fast after reset.
     if (!next && model === '2000012' && accounts.allFastExhausted()) {
       next = ordered.find(account => account.enabled !== false && accounts.isAvailable(account) &&
         account.preferredModel === '2000012' && accounts.effectiveModel(account) === '2000004');
@@ -51,8 +65,8 @@ function patchEngine(engine) {
       task.status = 'model_wait';
       task.errorCode = 'MODEL_QUOTA_WAIT';
       task.errorMessage = model === '2000012' && accounts.allFastExhausted()
-        ? `所有已启用 Fast 账号今日均已上限，等待确认是否改用 Seedance 2.0；可在顶部额度提醒中选择`
-        : `${label(model)} 暂无可用账号，请检查登录状态或等待额度恢复；尚未确认所有账号均已上限`;
+        ? `所有已启用 Fast 账号今日均已上限，等待确认是否改用 Seedance 2.0；可在顶部额度提醒中选择，或把某个账号的首选模型改成 Seedance 2.0`
+        : `${label(model)} 暂无可用账号（${blockers(model)}）。可以登录或暂停未登录的账号${model === '2000012' ? '，或把某个账号的首选模型改成 Seedance 2.0，等待中的任务会自动改用它' : '，或等待额度恢复'}`;
       delete task.completedAt;
       if (changed) engine.recordTask(task, task.errorMessage, 'warn');
       return changed;

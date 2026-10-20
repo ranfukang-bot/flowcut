@@ -1360,7 +1360,7 @@ function SeedanceQuotaSummary({ state, onUpdated, onError }: {
         <p>{accounts.map(account => `${account.name}：${account.fastExhaustedToday ? "今日已上限" : "今日尚未检测到上限"}${!account.authenticated ? "（需登录）" : ""}`).join("；")}</p>
         <p>{usingStandard ? "已按你的确认改用 2.0，跨天后重新优先 Fast。" : state.accountState.allFastExhausted
           ? pendingChoice ? "所有已启用 Fast 账号今日均已上限。请在下方选择改用 2.0，或等待 Fast 恢复。" : "已选择等待 Fast 恢复；如需改用 2.0，可在账号与设置中重新选择。"
-          : "优先使用 Fast；某个账号达到上限后自动换号。尚未检测到上限不代表已查询到剩余额度。"}</p>
+          : "优先使用 Fast；某个账号达到上限后自动换号。Fast 都用不了时，任务会改用你设为 Seedance 2.0 的账号。尚未检测到上限不代表已查询到剩余额度。"}</p>
       </div>
     </section>
     {!usingStandard && accounts.filter(account => account.needsModelDecision).map(account => (

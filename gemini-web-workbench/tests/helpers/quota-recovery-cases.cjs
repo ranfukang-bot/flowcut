@@ -32,12 +32,33 @@ module.exports = async (fixture, test) => {
     assert.equal(f.task.imageItems[0].localPath,'image.png');assert.equal(f.accounts.account('a').preferredModel,model);
     assert.equal(f.accounts.modelExhausted(f.accounts.account('a'),model==='2000012'?'2000004':'2000012'),false);
   });
-  await test('different selected model on second account is not silently substituted',()=>{
+  await test('when no Fast account can take it, a waiting task uses an account the user set to 2.0',()=>{
     const f=setup();f.accounts.account('b').preferredModel='2000004';
     f.engine.switchAfterQuota(f.task,'a',QUOTA);
-    assert.equal(f.task.status,'model_wait');assert.equal(f.task.model,'2000012');
-    f.engine.resumeModelWaiters();assert.equal(f.task.status,'model_wait');
-    assert.equal(f.accounts.account('b').preferredModel,'2000004');
+    assert.equal(f.task.accountId,'b');assert.equal(f.task.model,'2000004');assert.equal(f.task.status,'upload_wait');
+    assert.equal(f.task.quotaRequestedModel,'2000012','it returns to Fast once a Fast account is usable again');
+    assert.equal(f.accounts.account('b').preferredModel,'2000004');assert.equal(f.accounts.account('a').preferredModel,'2000012');
+  });
+  await test('an available Fast account still outranks an account set to 2.0',()=>{
+    const f=setup();f.store.data.accounts.push({id:'c',name:'C',enabled:true,preferredModel:'2000004',modelQuota:{}});
+    f.accounts.ensureRuntime('c');f.accounts.markAuthenticated('c');
+    f.engine.switchAfterQuota(f.task,'a',QUOTA);
+    assert.equal(f.task.accountId,'b');assert.equal(f.task.model,'2000012');
+  });
+  await test('a logged-out Fast account no longer blocks waiting tasks once an account is set to 2.0',()=>{
+    const f=setup();f.accounts.ensureRuntime('b').authenticated=false;
+    f.engine.switchAfterQuota(f.task,'a',QUOTA);
+    assert.equal(f.task.status,'model_wait');assert.match(f.task.errorMessage,/A 今日已上限、B 未登录/);assert.match(f.task.errorMessage,/首选模型改成 Seedance 2.0/);
+    f.accounts.ensureRuntime('b').authenticated=true;f.accounts.markModelExhausted('b','2000012',QUOTA);f.accounts.ensureRuntime('b').authenticated=false;
+    f.store.data.accounts.push({id:'c',name:'C',enabled:true,preferredModel:'2000012',modelQuota:{}});f.accounts.ensureRuntime('c');f.accounts.markAuthenticated('c');
+    f.accounts.markModelExhausted('c','2000012',QUOTA);
+    f.accounts.setPreferredModel('c','2000004');f.engine.resumeModelWaiters();
+    assert.equal(f.task.accountId,'c');assert.equal(f.task.model,'2000004');assert.notEqual(f.task.status,'model_wait');
+  });
+  await test('a 2.0 account whose 2.0 quota is used up is not chosen',()=>{
+    const f=setup();f.accounts.account('b').preferredModel='2000004';f.accounts.markModelExhausted('b','2000004',QUOTA);
+    f.engine.switchAfterQuota(f.task,'a',QUOTA);
+    assert.equal(f.task.status,'model_wait');
   });
   await test('both accounts exhausted waits and resumes after daily reset',()=>{
     const f=setup();f.accounts.markModelExhausted('b','2000012',QUOTA);f.engine.switchAfterQuota(f.task,'a',QUOTA);

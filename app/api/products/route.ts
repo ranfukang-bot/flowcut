@@ -112,6 +112,10 @@ export async function DELETE(request: Request) {
     await ensureWorkspace();
     const { id } = (await request.json()) as { id?: string };
     if (!id) return Response.json({ error: "缺少产品 ID" }, { status: 400 });
+    // A fission mother is shared by other products. Ordinary product cleanup
+    // must not remove their parent and leave invisible, unclaimable children.
+    const shared=await getDb().prepare("SELECT id FROM tasks WHERE product_id=? AND task_role='fission' LIMIT 1").bind(id).first();
+    if(shared)return Response.json({error:'该商品正被多品裂变批次用作母版商品。请先处理并删除对应裂变批次，再删除商品，以免其他商品任务失去母版。'},{status:409});
     const images = await getDb()
       .prepare("SELECT object_key FROM product_images WHERE product_id = ?")
       .bind(id)

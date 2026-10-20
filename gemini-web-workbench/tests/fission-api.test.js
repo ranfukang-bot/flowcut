@@ -190,6 +190,16 @@ test('fission: concurrent manual queue requests accept once; recovery never eras
   assert.equal(f.row('SELECT provider_job_id FROM tasks WHERE id=?',job.id).provider_job_id,'known-task-id');
 });
 
+test('fission: deleting the mother product cannot orphan other products; deleting a child product keeps its siblings',async t=>{
+  const f=await fixture(t),created=await f.create();
+  const parentDelete=await f.call('products','DELETE',{body:{id:'p1'}});
+  assert.equal(parentDelete.status,409,JSON.stringify(parentDelete.body));
+  assert.equal(f.children(created.body.id).length,4);assert.ok(f.objects.has('products/p1/own.png'));
+  assert.equal((await f.call('products','DELETE',{body:{id:'p4'}})).status,200);
+  assert.deepEqual(f.children(created.body.id).map(c=>c.product_id),['p1','p2','p3']);
+  assert.ok(f.row('SELECT id FROM tasks WHERE id=?',created.body.id));
+});
+
 test('fission: backup restoration pauses waiting children and ready mother; manual recovery preserves mother',async t=>{
   const f=await fixture(t),c=await f.create({motherSource:'paste',motherPrompt:block('母版')});
   const tables=restorableTables({tasks:[{status:'fission_wait',error:''},{status:'fission_ready',error:''}]});

@@ -986,3 +986,54 @@ body {
 .download-result .batch-clip b { font-size:12px; }
 .download-result .batch-clip .status { justify-self:start; }
 .download-result .batch-clip-open { padding:4px 12px; font-size:12px; border:1px solid #cde4a5; border-radius:7px; background:white; cursor:pointer; }
+
+/* Multi-product fission: drop images, check cards, pick Gems, start. */
+.fission-form { gap: 28px; }
+.fission-step legend { display: flex; align-items: center; gap: 10px; font-size: 16px; }
+.fission-step legend span { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--ink); color: var(--lime); font-size: 13px; }
+.fission-drop { position: relative; display: grid !important; place-items: center; gap: 6px; padding: 42px 20px; border: 2px dashed #c9ccc4; border-radius: 14px; background: #fafbf7; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+.fission-drop.compact { padding: 18px 20px; }
+.fission-drop.dragging, .fission-drop:hover { border-color: #8fbf1f; background: #f3fbe2; }
+.fission-drop input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.fission-drop b { font-size: 17px; }
+.fission-drop span { color: var(--muted); font-size: 13px; }
+.fission-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+.fission-card { display: grid; gap: 8px; align-content: start; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: white; min-width: 0; }
+.fission-card.mother { border-color: #8fbf1f; box-shadow: 0 0 0 2px #e4f7b8; }
+.fission-card.invalid { border-color: var(--red); box-shadow: 0 0 0 2px #fde2e2; }
+.fission-card.dragging { background: #f3fbe2; }
+.fission-card-thumbs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.fission-card-thumbs img, .fission-card-thumbs span { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; background: var(--paper); }
+.fission-card-thumbs span { display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+.fission-card input { font-size: 14px; font-variant-numeric: tabular-nums; }
+.fission-card .fission-card-id { font-size: 14px; padding: 10px 0; overflow-wrap: anywhere; }
+.fission-card small { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.fission-card small.problem { color: var(--red); }
+.fission-card-actions { display: flex; gap: 6px; }
+.fission-card-actions button { flex: 1; padding: 6px 8px; font-size: 12px; border: 1px solid var(--line); border-radius: 8px; background: white; cursor: pointer; }
+.fission-card-actions button.mother-on { background: var(--ink); color: var(--lime); border-color: var(--ink); }
+.fission-step-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 13px; }
+.fission-picker { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+.fission-picker [role="list"] { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; max-height: 320px; overflow: auto; }
+.fission-picker [role="listitem"] { display: grid; grid-template-columns: 40px 1fr auto; align-items: center; gap: 10px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: white; text-align: left; cursor: pointer; min-width: 0; }
+.fission-picker [role="listitem"]:disabled { opacity: .5; cursor: default; }
+.fission-picker img, .fission-picker i { width: 40px; height: 40px; object-fit: cover; border-radius: 6px; background: var(--paper); }
+.fission-picker span { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.fission-picker em { font-style: normal; font-size: 12px; color: var(--muted); }
+.fission-essentials { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.fission-more { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: block; }
+.fission-more[open] > * + * { margin-top: 14px; }
+.fission-more summary { cursor: pointer; font-size: 14px; font-weight: 600; }
+.fission-more summary span { font-weight: 400; color: var(--muted); margin-left: 8px; font-size: 13px; }
+.fission-more-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.fission-hint { color: var(--muted); font-size: 12px; margin: 0; }
+.fission-notice { margin: 0; padding: 10px 14px; border-radius: 10px; background: #f3fbe2; color: #355018; font-size: 13px; }
+.fission-submit { display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-wrap: wrap; }
+.fission-submit span { color: var(--muted); font-size: 13px; }
+.fission-submit .primary { min-width: 200px; font-size: 15px; }
+.fission-batch-children { display: flex; flex-wrap: wrap; gap: 8px; }
+.fission-batch-children button { display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 6px; border: 1px solid var(--line); border-radius: 10px; background: white; cursor: pointer; text-align: left; }
+.fission-batch-children img, .fission-batch-children i { width: 34px; height: 34px; object-fit: cover; border-radius: 6px; background: var(--paper); }
+.fission-batch-children b { display: block; font-size: 12px; font-variant-numeric: tabular-nums; }
+.fission-batch-children small { color: var(--muted); font-size: 11px; }
+@media (max-width: 800px) { .fission-essentials { grid-template-columns: 1fr; } .fission-step-foot { flex-direction: column; align-items: stretch; } }

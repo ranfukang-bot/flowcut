@@ -35,6 +35,7 @@ const BRIDGE_REQUEST_TIMEOUT_MS = 10_000;
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function isRetryableJobError(error) {
+  if(['GEM_NO_PROMPT_BLOCKS','GEM_CORRECTION_FAILED','PROMPT_BLOCKS_INVALID_FINAL'].includes(error?.code)) return false;
   if (isAccountLimitedError(error)) return true;
   if (RETRYABLE_JOB_CODES.has(error?.code || "")) return true;
   if (error?.name === "TimeoutError" || error?.name === "AbortError") return true;
@@ -228,6 +229,7 @@ class BridgeEngine {
         workerId: this.workerId,
         capacity: String(idle.length),
         accountIds: idle.map((account) => account.id).join(","),
+        blockedTaskIds: JSON.stringify((this.store.state.pendingErrors || []).map(item=>item.taskId)),
         blockedGemVersions: JSON.stringify(Object.fromEntries(idle.map(account=>[account.id,
           Object.keys(account.gemSetupHolds || {}).filter(key=>{
             const binding=account.gemBindings?.[key],hold=account.gemSetupHolds[key];
@@ -296,7 +298,7 @@ class BridgeEngine {
       for (const pending of [...(this.store.state.pendingErrors || [])]) {
         if (Number(pending.nextRetryAt || 0) > Date.now()) continue;
         try {
-          await this.report(pending.taskId, 'error', { kind: pending.kind, workerId: pending.workerId, error: pending.error });
+          await this.report(pending.taskId, 'error', { kind: pending.kind, workerId: pending.workerId, error: pending.error,rawReply:pending.rawReply || '' });
           this.store.removePendingError(pending.taskId);
         } catch (error) {
           if (error.ignorable || Number(error.status) === 409) this.store.removePendingError(pending.taskId);
@@ -443,6 +445,7 @@ class BridgeEngine {
         try {
           splitPromptBlocks({ text: result.prompt, blocks: result.codeBlocks, hint: result.codeBlockHint === true, mode: job.blockMode, singleLabel:job.kind==='variant'?'变体 Gem':undefined });
         } catch (error) {
+          if(result.correctionUsed)error.code='PROMPT_BLOCKS_INVALID_FINAL';
           throw Object.assign(error, { rawReply: result.prompt });
         }
       }
@@ -532,7 +535,16 @@ class BridgeEngine {
           );
         }
       } else {
-        await this.report(job.id, "error", { kind: job.kind, error: message }).catch(() => {});
+        if(['GEM_NO_PROMPT_BLOCKS','GEM_CORRECTION_FAILED','PROMPT_BLOCKS_INVALID_FINAL'].includes(code)) {
+          try {
+            this.store.movePendingResultToError?.({taskId:job.id,kind:job.kind,workerId:this.workerId,rawReply:error.rawReply},message);
+          } catch {
+            this.store.state.settings.queueRunning=false;this.store.save?.();
+            this.store.log('无法保存 Gemini 失败记录，队列已暂停，避免为同一任务重复创建对话','error');
+          }
+          await this.report(job.id,'error',{kind:job.kind,error:message,rawReply:error?.rawReply || ''})
+            .then(()=>this.store.removePendingError?.(job.id)).catch(()=>{});
+        } else await this.report(job.id, "error", { kind: job.kind, error: message, rawReply: error?.rawReply || "" }).catch(() => {});
         this.store.log(`任务 ${job.id} 失败：${message}`, "error");
       }
     } finally {

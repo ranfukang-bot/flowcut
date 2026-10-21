@@ -249,6 +249,7 @@ class Store {
     this.state.pendingErrors = [...priorErrors.filter(item => item.taskId !== pending.taskId), {
       taskId: pending.taskId, kind: pending.kind || 'standard', workerId: pending.workerId,
       error, createdAt: new Date().toISOString(), nextRetryAt: Date.now() + 5000,
+      rawReply: String(pending.rawReply || pending.prompt || '').slice(0,60000),
     }];
     if (!this.save()) {
       this.state.pendingResults = priorResults; this.state.pendingErrors = priorErrors;

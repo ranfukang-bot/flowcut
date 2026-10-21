@@ -829,6 +829,7 @@ async function runGeminiJob(account, job) {
     filePaths: temporary.filePaths,
     referenceFiles: referencePageFiles,
     referenceFilePaths: referenceTemporary.filePaths,
+    spokenLanguage: job.spokenLanguage,
   };
   if (protectedGeminiPageRuntime) {
     void (async () => {
@@ -990,11 +991,13 @@ function completeGeminiJob(result, contentsId) {
       optimizedGroupsJson: result.optimizedGroupsJson || "",
       codeBlocks: Array.isArray(result.codeBlocks) ? result.codeBlocks.slice(0, 50).map(String) : [],
       codeBlockHint: result.codeBlockHint === true,
+      correctionUsed: result.correctionUsed === true,
     });
     return;
   }
   const error = new Error(result.error || "Gemini 网页执行失败");
   error.code = result.code || "";
+  error.rawReply = typeof result.rawReply === "string" ? result.rawReply.slice(0, 60000) : "";
   if (['MODEL_SELECTION_FAILED', 'MODEL_SELECTION_RETRYABLE'].includes(error.code)) error.modelSettingsKey = modelSettingsKey(pending.modelSettings);
   if (error.code === "NEEDS_LOGIN") {
     store.updateAccount(pending.accountId, { authenticated: false, error: "Gemini 登录已失效，请在账号与设置中通过 Firefox 重新登录" });

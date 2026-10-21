@@ -20,7 +20,9 @@ import {
 
 import { confirmAction } from "./confirm-action";
 import { useImageProductId } from "./use-image-product-id";
-import { DEFAULT_GEM_REQUEST, renderGemRequest, validateGemRequest } from "../lib/gem-request";
+import { DEFAULT_GEM_REQUEST, buildGemRequest, validateGemRequest } from "../lib/gem-request";
+import { SpokenLanguageSelect } from './spoken-language-select';
+import { SPOKEN_LANGUAGE_OPTIONS } from '../lib/spoken-language';
 import { ApprovalStats } from './approval-stats';
 import { GeminiModelSettingsPanel, GeminiModelInfo, type GeminiModelSettings, type ModelState } from './gemini-model-settings';
 import { GeminiAccountAccessButtons, GeminiLoginDialog, type GeminiLoginState } from './gemini-login';
@@ -654,6 +656,9 @@ export function StudioApp() {
   );
   const [autoQueue, setAutoQueue] = useState(true);
   const [gemRequestTemplate, setGemRequestTemplate] = useState(DEFAULT_GEM_REQUEST);
+  const [spokenLanguage,setSpokenLanguage]=useState('auto');
+  useEffect(()=>{const timer=window.setTimeout(()=>{try{const saved=window.localStorage.getItem('flowcut-spoken-language-v1');if(saved && SPOKEN_LANGUAGE_OPTIONS.includes(saved))setSpokenLanguage(saved);}catch{/* Use automatic selection without browser storage. */}},0);return()=>window.clearTimeout(timer);},[]);
+  function changeSpokenLanguage(value:string){setSpokenLanguage(value);try{window.localStorage.setItem('flowcut-spoken-language-v1',value);}catch{/* Selection still works for this visit. */}}
   useEffect(() => {
     const timer = window.setTimeout(() => {
     try {
@@ -898,7 +903,7 @@ export function StudioApp() {
     setBusy(true);
     try {
       const geminiRequestText = data.integrations.geminiMode === "web"
-        ? validateGemRequest(renderGemRequest(gemRequestTemplate, { duration: selectedDuration, region: selectedRegion, shooting_style: selectedShootingStyle }))
+        ? validateGemRequest(buildGemRequest(gemRequestTemplate, { duration: selectedDuration, region: selectedRegion, shooting_style: selectedShootingStyle, spoken_language:spokenLanguage }))
         : undefined;
       const variantActive = variantConfig.enabled && data.integrations.geminiMode === "web" && selectedDuration !== 30;
       if (variantActive && !data.gems.some(gem => gem.id === variantConfig.gemId)) throw new Error("请选择变体 Gem，或关闭“变体两轮”");
@@ -926,6 +931,7 @@ export function StudioApp() {
           duration: selectedDuration,
           region: selectedRegion,
           shootingStyle: selectedShootingStyle,
+          spokenLanguage,
           geminiRequestText,
           ...(variantActive ? { variantGemId: variantConfig.gemId, variantRequestText } : {}),
         }),
@@ -1170,6 +1176,7 @@ export function StudioApp() {
             selectedRegion={selectedRegion}
             selectedShootingStyle={selectedShootingStyle}
             gemRequestTemplate={gemRequestTemplate}
+            spokenLanguage={spokenLanguage} onSpokenLanguage={changeSpokenLanguage}
             onGemRequestTemplate={changeGemRequestTemplate}
             variantConfig={variantConfig}
             onVariantConfig={changeVariantConfig}
@@ -1221,6 +1228,7 @@ export function StudioApp() {
           />
         )}
         {page === 'fission' && <FissionPage products={data.products} gems={data.gems} accounts={data.tiktokAccounts}
+          gemRequestTemplate={gemRequestTemplate}
           request={api} onUpload={quickUploadProduct} onOpenTask={openTask} statusLabel={taskStatusLabel}
           onCreated={async(autoQueue)=>{try{await desktopBridge()?.setQueueRunning?.(true);if(autoQueue)await desktopBridge()?.seedanceSetRunning?.(true);}catch{setNotice('任务已保存，请在账号与设置中启动队列');}await reload();}} />}
         {page === "products" && (
@@ -1583,6 +1591,8 @@ function Dashboard({
   selectedRegion,
   selectedShootingStyle,
   gemRequestTemplate,
+  spokenLanguage,
+  onSpokenLanguage,
   onGemRequestTemplate,
   variantConfig,
   onVariantConfig,
@@ -1615,6 +1625,8 @@ function Dashboard({
   selectedRegion: string;
   selectedShootingStyle: string;
   gemRequestTemplate: string;
+  spokenLanguage: string;
+  onSpokenLanguage: (value:string)=>void;
   onGemRequestTemplate: (value: string) => void;
   variantConfig: VariantConfig;
   onVariantConfig: (value: VariantConfig) => void;
@@ -1981,16 +1993,17 @@ function Dashboard({
             </label>
           </div>
           {data.integrations.geminiMode === "web" && <div className="creative-config-block">
+            <SpokenLanguageSelect region={selectedRegion} value={spokenLanguage} onChange={onSpokenLanguage} />
             <label>
               <span>发送给 Gem 的文字（可编辑）</span>
               <textarea aria-label="发送给 Gem 的文字" rows={6} maxLength={12000}
                 value={gemRequestTemplate} onChange={event => onGemRequestTemplate(event.target.value)}
                 style={{ width: "100%", resize: "vertical", marginTop: 8 }} />
             </label>
-            <p style={{ fontSize: 12, color: "#a6b5c6" }}>会记住你的修改，用于后续新任务。可使用 {"{时长}、{地区}、{拍摄风格}"} 自动带入上方参数，也可以全部改成自己的文字。不会额外追加要求，也不会修改 Gem 设定。</p>
+            <p style={{ fontSize: 12, color: "#a6b5c6" }}>会记住你的修改。可用 {"{时长}、{地区}、{口播语言}、{拍摄风格}"} 自动带入参数；发送时会补齐口播语言和直接输出代码块的要求，Gem 设定保持原样。</p>
             <details>
               <summary>查看实际发送内容</summary>
-              <pre data-testid="gem-request-preview" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{renderGemRequest(gemRequestTemplate, { duration: selectedDuration, region: selectedRegion, shooting_style: selectedShootingStyle })}</pre>
+              <pre data-testid="gem-request-preview" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{buildGemRequest(gemRequestTemplate, { duration: selectedDuration, region: selectedRegion, shooting_style: selectedShootingStyle,spoken_language:spokenLanguage })}</pre>
             </details>
           </div>}
           {data.integrations.geminiMode === "web" && <VariantConfigBlock value={variantConfig} gems={data.gems}
@@ -4640,7 +4653,7 @@ function PromptDrawer({
             下载状态：{task.download_error}
           </div>
         )}
-        {!isGroup && task.status === "failed" && task.gemini_raw_reply && <details className="warning-box">
+        {!isGroup && task.error && task.gemini_raw_reply && <details className="warning-box">
           <summary>查看 Gemini 原始回复</summary>
           <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{task.gemini_raw_reply}</pre>
         </details>}

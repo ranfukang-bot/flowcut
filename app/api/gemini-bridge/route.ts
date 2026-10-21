@@ -1,4 +1,6 @@
 import { buildSavedGemPrompt } from "../../../lib/gemini";
+import { buildGemRequest } from '../../../lib/gem-request';
+import { requestSpokenLanguage } from '../../../lib/spoken-language';
 import { chooseGeminiAccount, availableGemAccounts } from "../../../lib/gemini-account-routing";
 import { geminiRetryPlan } from "../../../lib/gemini-retry";
 import { getProviderConfig } from "../../../lib/provider-config";
@@ -210,6 +212,8 @@ export async function GET(request: Request) {
     }
 
     const url = new URL(request.url);
+    const blockedValue=JSON.parse(url.searchParams.get('blockedTaskIds') || '[]');
+    const blockedTaskIds=new Set(Array.isArray(blockedValue)?blockedValue.filter(id=>typeof id==='string').slice(0,1000):[]);
     const workerId = url.searchParams.get("workerId") || "gemini-web-desktop";
     const capacity = Math.max(1, Math.min(8, Number(url.searchParams.get("capacity") || 1)));
     const availableAccounts = new Set(
@@ -266,6 +270,7 @@ export async function GET(request: Request) {
       .prepare(
         `SELECT t.id, t.product_id, t.gemini_account_id, t.created_at, COALESCE(t.gemini_retry_at, t.created_at) AS queue_at,
                 CASE WHEN t.task_role='fission_child' THEN parent.prompt ELSE t.prompt END AS mother_prompt, t.task_role, t.variant_request_text, t.image_keys_snapshot,
+                t.duration,t.region,t.shooting_style,t.gemini_request_text,
                 COALESCE(t.variant_gem_id, 'snapshot-variant-' || t.id) AS gem_id, COALESCE(vg.name, '变体 Gem') AS gem_name,
                 t.variant_gem_snapshot AS content
          FROM tasks t
@@ -285,6 +290,10 @@ export async function GET(request: Request) {
         product_id: string;
         gemini_account_id?: string | null;
         mother_prompt: string;
+        duration: number;
+        region: string;
+        shooting_style: string;
+        gemini_request_text: string | null;
         task_role: string | null;
         variant_request_text: string | null;
         image_keys_snapshot: string | null;
@@ -350,6 +359,7 @@ export async function GET(request: Request) {
       accountId: string;
       blockMode?: PromptBlockMode;
       prompt?: string;
+      spokenLanguage?: string;
       analysisPrompt?: string;
       adaptationPrompt?: string;
       imageUrls: string[];
@@ -368,6 +378,7 @@ export async function GET(request: Request) {
     ].sort((left, right) => left.task.queue_at.localeCompare(right.task.queue_at));
     for (const candidate of candidates) {
       const task = candidate.task;
+      if(blockedTaskIds.has(task.id))continue;
       if (jobs.length >= capacity) break;
       const eligibleAccounts = candidate.kind === "standard" || candidate.kind === "variant"
         ? await availableGemAccounts(availableAccounts, blockedGemVersions, candidate.task.gem_id, candidate.task.content)
@@ -442,6 +453,7 @@ export async function GET(request: Request) {
           blockMode: Number(standardTask.duration) === 30 ? "raw" : standardTask.variant_mode ? "single" : "split",
           gem: { id: standardTask.gem_id || `snapshot-${standardTask.id}`, name: standardTask.gem_name || "历史任务 Gem", content: standardTask.content },
           prompt: buildSavedGemPrompt(standardTask),
+          spokenLanguage: requestSpokenLanguage(buildSavedGemPrompt(standardTask),standardTask.region),
           imageUrls: (standardTask.image_keys_snapshot ? JSON.parse(standardTask.image_keys_snapshot) as string[] : images.results.map(image => image.object_key))
             .map(key => mediaUrl(request.url, key)),
         });
@@ -457,7 +469,8 @@ export async function GET(request: Request) {
           accountId,
           blockMode: variantTask.task_role==='fission_child' ? "single" : "split",
           gem: { id: variantTask.gem_id, name: variantTask.gem_name, content: variantTask.content },
-          prompt: renderVariantRequest(variantTask.variant_request_text || "", variantTask.mother_prompt),
+          prompt: renderVariantRequest(buildGemRequest(variantTask.variant_request_text || "",{duration:variantTask.duration,region:variantTask.region,shooting_style:variantTask.shooting_style,spoken_language:requestSpokenLanguage(variantTask.gemini_request_text || '',variantTask.region)}), variantTask.mother_prompt),
+          spokenLanguage: requestSpokenLanguage(variantTask.gemini_request_text || '',variantTask.region),
           imageUrls: (variantTask.image_keys_snapshot ? JSON.parse(variantTask.image_keys_snapshot) as string[] : (images?.results || []).map(image => image.object_key))
             .map(key => mediaUrl(request.url, key)),
         });

@@ -74,6 +74,37 @@ test('fission: pasted mother skips the standard round; confirmation may select p
   assert.ok(f.children(c.body.id).every(c=>c.status==='prompt_ready'));
 });
 
+test('fission: a durable terminal failure awaiting writeback is excluded without blocking another mother',async t=>{
+  const f=await fixture(t),first=await f.create(),second=await f.create();
+  const query='?workerId=desk&capacity=4&accountIds=acc1,acc2&blockedTaskIds='+encodeURIComponent(JSON.stringify([first.body.id]));
+  const claimed=await f.call('gemini-bridge','GET',{query});
+  assert.equal(claimed.status,200);
+  assert.deepEqual(claimed.body.jobs.map(job=>job.id),[second.body.id]);
+  assert.equal(f.row('SELECT status FROM tasks WHERE id=?',first.body.id).status,'prompt_queued');
+});
+
+test('fission: mother request uses the supplied creation-centre template, freezes rendered values and rejects invalid text',async t=>{
+  const f=await fixture(t);
+  const template='本次目标：{地区}，口播语言按当地语言。时长 {时长} 秒，{拍摄风格}。只输出完整文字。';
+  const created=await f.create({motherRequestTemplate:template});
+  assert.equal(created.status,201,JSON.stringify(created.body));
+  const [job]=await f.claim();
+  const saved=f.row('SELECT gemini_request_text FROM tasks WHERE id=?',created.body.id).gemini_request_text;
+  assert.equal(saved,'本次目标：泰国，口播语言按当地语言。时长 15 秒，iPhone实拍质感。只输出完整文字。\n口播语言：泰语\n不要提问，直接按以上信息输出提示词，每条提示词放在单独的代码块里');
+  assert.ok(job.prompt.includes(saved));
+  assert.equal((await f.create({motherRequestTemplate:' '})).status,400);
+  assert.equal((await f.create({motherRequestTemplate:'字'.repeat(12001)})).status,400);
+  assert.equal((await f.create({motherRequestTemplate:123})).status,400);
+  const manual=await f.create({region:'菲律宾',spokenLanguage:'中文'});
+  assert.equal(manual.status,201);
+  const row=f.row('SELECT gemini_request_text,variant_request_text FROM tasks WHERE id=?',manual.body.id);
+  assert.ok(row.gemini_request_text.includes('口播语言：中文'));
+  assert.ok(row.variant_request_text.includes('口播语言：中文'));
+  const unknown=await f.create({region:'未配置市场'});
+  assert.equal(unknown.status,201);
+  assert.ok(f.row('SELECT gemini_request_text FROM tasks WHERE id=?',unknown.body.id).gemini_request_text.includes('口播语言：该地区最常用的本地日常口语'));
+});
+
 test('fission: rejects multiple, short, or unreadable blocks; defer preserves reply and retries normally',async t=>{
   const f=await fixture(t),c=await f.create({motherSource:'paste',motherPrompt:block('母版')});
   const [job]=await f.claim();

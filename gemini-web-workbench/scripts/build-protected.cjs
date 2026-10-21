@@ -119,14 +119,14 @@ const geminiPageRuntime = `(() => {
         rawGroupsJson: result.rawGroupsJson || "",
         optimizedGroupsJson: result.optimizedGroupsJson || "",
         codeBlocks: Array.isArray(result.codeBlocks) ? result.codeBlocks : [],
-        codeBlockHint: result.codeBlockHint === true
+        codeBlockHint: result.codeBlockHint === true,
+        correctionUsed: result.correctionUsed === true
       };
     } catch (error) {
       return {
         requestId: job.requestId,
         ok: false,
-        code: error?.code || "",
-        error: error instanceof Error ? error.message : String(error)
+        ...geminiJobFailure(error)
       };
     }
   };

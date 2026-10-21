@@ -149,7 +149,8 @@ test('two-round variant: mother prompt, then the variant Gem with the mother and
   assert.equal(second.kind,'variant');
   assert.equal(second.id,first.id);
   assert.equal(second.gem.content,'变体 Gem 设定');
-  assert.equal(second.prompt,`目标国家：泰国\n母版如下：\n${mother}\n每条放一个代码块。`);
+  assert.equal(second.prompt,`目标国家：泰国\n母版如下：\n${mother}\n每条放一个代码块。\n口播语言：泰语\n不要提问，直接按以上信息输出提示词，每条提示词放在单独的代码块里`);
+  assert.equal(second.spokenLanguage,'泰语');
   assert.deepEqual(second.imageUrls,first.imageUrls,'the same product images go to the variant Gem');
   const variants=[block(11),block(12)];
   assert.equal((await submit(f,second,{prompt:reply(variants),codeBlocks:variants})).status,200);

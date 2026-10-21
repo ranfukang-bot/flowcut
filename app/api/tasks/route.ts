@@ -1,5 +1,5 @@
 import { generatePrompt } from "../../../lib/gemini";
-import { DEFAULT_GEM_REQUEST, renderGemRequest, validateGemRequest } from "../../../lib/gem-request";
+import { DEFAULT_GEM_REQUEST, buildGemRequest, validateGemRequest } from "../../../lib/gem-request";
 import { getProviderConfig } from "../../../lib/provider-config";
 import { checkSeedance, submitSeedance } from "../../../lib/seedance";
 import { ensureWorkspace, getDb, jsonError, runtimeEnv } from "../../../lib/storage";
@@ -183,6 +183,7 @@ export async function POST(request: Request) {
       region?: string;
       shootingStyle?: string;
       geminiRequestText?: string;
+      spokenLanguage?: string;
       imageKeys?: string[];
       variantGemId?: string;
       variantRequestText?: string;
@@ -266,7 +267,7 @@ export async function POST(request: Request) {
     if (duration === 30 && (await getProviderConfig("seedance")).config.mode !== "local-api") return Response.json({error:"双段 30 秒需要本机 Seedance 执行器"},{status:400});
     const region = normalizeTaskRegion(body.region);
     const shootingStyle = normalizeShootingStyle(body.shootingStyle);
-    const geminiRequestText = body.geminiRequestText ?? renderGemRequest(DEFAULT_GEM_REQUEST, { duration, region, shooting_style: shootingStyle });
+    const geminiRequestText = buildGemRequest(body.geminiRequestText ?? DEFAULT_GEM_REQUEST, { duration, region, shooting_style: shootingStyle, spoken_language: body.spokenLanguage });
     // Two-round task: the selected Gem writes a mother prompt, the variant Gem
     // turns it into one video per code block. Snapshots keep later template
     // edits from changing a task already in progress.
@@ -279,7 +280,7 @@ export async function POST(request: Request) {
       let request: string;
       try { request = validateVariantRequest(body.variantRequestText); }
       catch (error) { return jsonError(error, 400); }
-      variant = { id: variantGem.id, content: variantGem.content, request: renderGemRequest(request, { duration, region, shooting_style: shootingStyle }) };
+      variant = { id: variantGem.id, content: variantGem.content, request: buildGemRequest(request, { duration, region, shooting_style: shootingStyle, spoken_language: body.spokenLanguage }) };
     }
     await db
       .prepare(

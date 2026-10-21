@@ -5,7 +5,7 @@ import { DEFAULT_GEM_REQUEST, renderGemRequest, validateGemRequest } from '../li
 test('default Gem request contains no unrequested conservative-processing instruction', () => {
   assert.doesNotMatch(DEFAULT_GEM_REQUEST, /信息不足|保守处理|无人值守/);
   assert.equal(renderGemRequest(DEFAULT_GEM_REQUEST, { duration: 15, region: '印尼', shooting_style: 'iPhone实拍感' }),
-    '请根据本次上传的商品图片，按这个 Gem 的设定生成完整的视频提示词。只输出文字，不要生成图片或视频。\n时长：15秒\n地区：印尼\n拍摄风格：iPhone实拍感');
+    '请根据本次上传的商品图片，按这个 Gem 的设定生成完整的视频提示词。只输出文字，不要生成图片或视频。\n时长：15秒\n地区：印尼\n口播语言：印尼语\n拍摄风格：iPhone实拍感\n不要提问，直接按以上信息输出提示词，每条提示词放在单独的代码块里');
 });
 test('custom request is sent literally without extra text; only known placeholders resolve once', () => {
   const input = { duration: 30, region: '泰国', shooting_style: '{地区}' };

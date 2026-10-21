@@ -1,13 +1,7 @@
+import { REGION_SPOKEN_LANGUAGES } from './spoken-language.ts';
 export const TASK_DURATIONS = [5, 10, 15, 30] as const;
 
-export const TASK_REGIONS = [
-  "印尼",
-  "马来西亚",
-  "泰国",
-  "越南",
-  "菲律宾",
-  "新加坡",
-] as const;
+export const TASK_REGIONS = Object.keys(REGION_SPOKEN_LANGUAGES);
 
 export const SHOOTING_STYLES = [
   "iPhone实拍质感",

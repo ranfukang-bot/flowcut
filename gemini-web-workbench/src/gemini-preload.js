@@ -28,6 +28,14 @@ function codedError(message, code) {
   return error;
 }
 
+function geminiJobFailure(error) {
+  return {
+    code: error?.code || "",
+    error: error instanceof Error ? error.message : String(error),
+    rawReply: typeof error?.rawReply === "string" ? error.rawReply.slice(0, 60000) : "",
+  };
+}
+
 function all(selectors) {
   const output = new Set();
   for (const selector of String(selectors || "")
@@ -852,7 +860,7 @@ function classifyUnusableResponse(text) {
 }
 
 // Only a fresh answer whose generation has stopped may advance to Seedance.
-async function waitForResponse(initialResponses, minLength = 200) {
+async function waitForResponse(initialResponses, minLength = 200, allowShortReply = false) {
   const startedAt = Date.now();
   const baseline = JSON.stringify(initialResponses);
   let lastText = "";
@@ -879,14 +887,14 @@ async function waitForResponse(initialResponses, minLength = 200) {
     geminiProgress = currentText
       ? `Gemini 正在生成 · 已接收 ${currentText.length} 字 · ${seconds} 秒`
       : `等待 Gemini 回复 · ${seconds} 秒`;
-    if (fresh && lastText.length > 5 && !inProgress && Date.now() - changedAt > 3000) {
+    if (fresh && lastText.length > 0 && !inProgress && Date.now() - changedAt > 3000) {
       await sleep(500);
       const confirmedText = String(responseSnapshot().at(-1) || "").trim();
       if (confirmedText !== lastText || generationInProgress()) continue;
       const unusableResponse = classifyUnusableResponse(lastText);
-      if (unusableResponse) throw unusableResponse;
-      if (lastText.length < minLength) {
-        throw codedError(`Gemini 回复不完整（${lastText.length} 字），任务将自动恢复`, "INCOMPLETE_RESPONSE");
+      if (unusableResponse && !allowShortReply) throw Object.assign(unusableResponse, { rawReply: lastText });
+      if (lastText.length < minLength && !allowShortReply) {
+        throw Object.assign(codedError(`Gemini 只回复了 ${lastText.length} 字：『${lastText}』；未达到完整提示词要求，任务将自动恢复`, "INCOMPLETE_RESPONSE"), { rawReply: lastText });
       }
       geminiProgress = "提示词已完成，正在回传";
       return lastText;
@@ -901,6 +909,35 @@ async function waitForResponse(initialResponses, minLength = 200) {
       throw codedError("Gemini 本轮回复超过 8 分钟，任务将自动恢复", "RESPONSE_TIMEOUT");
     }
     await sleep(500);
+  }
+}
+
+async function readPromptWithCodeBlocks(job, baseline) {
+  const replies=[];
+  for(let attempt=0;attempt<2;attempt++) {
+    let prompt;
+    try { prompt=await waitForResponse(baseline,200,true); }
+    catch(error) {
+      if(attempt===0) throw error;
+      throw Object.assign(codedError(`Gem 原对话补充后未完成回复：${error.message}`,'GEM_CORRECTION_FAILED'),{rawReply:replies.join('\n\n')});
+    }
+    replies.push(prompt);
+    const {blocks,markup}=responseCodeBlocks();
+    if(blocks.length) return {prompt,codeBlocks:blocks,codeBlockHint:false,correctionUsed:attempt===1};
+    if(attempt===1) throw Object.assign(codedError('Gem 没有输出提示词（回复里没有代码块）','GEM_NO_PROMPT_BLOCKS'),{
+      rawReply:replies.join('\n\n【同一对话补充后的回复】\n'),
+    });
+    // Keep the uploaded image and conversation. Do not create a new chat or
+    // re-upload the product merely because the Gem asked a question.
+    geminiProgress=markup?'代码块未能读取，正在原对话补充一次':'Gem 未输出代码块，正在原对话补充一次';
+    const language=String(job.spokenLanguage || '该地区最常用的本地日常口语');
+    try {
+      await typePrompt(`不要提问，按默认值直接输出：口播语言 ${language}，每条提示词放在单独的代码块里。`);
+      baseline=responseSnapshot();
+      await submitPrompt();
+    } catch(error) {
+      throw Object.assign(codedError(`Gem 原对话补充未能确认发送：${error.message}`,'GEM_CORRECTION_FAILED'),{rawReply:replies.join('\n\n')});
+    }
   }
 }
 
@@ -927,9 +964,7 @@ async function runJob(job) {
   await typePrompt(job.prompt);
   const baseline = responseSnapshot();
   await submitPrompt();
-  const prompt = await waitForResponse(baseline);
-  const { blocks, markup } = responseCodeBlocks();
-  return { prompt, codeBlocks: blocks, codeBlockHint: markup && !blocks.length };
+  return readPromptWithCodeBlocks(job,baseline);
 }
 
 async function runReferenceRemixJob(job) {
@@ -1369,13 +1404,13 @@ ipcRenderer.on("gemini:run-job", async (_event, job) => {
       optimizedGroupsJson: result.optimizedGroupsJson || "",
       codeBlocks: Array.isArray(result.codeBlocks) ? result.codeBlocks : [],
       codeBlockHint: result.codeBlockHint === true,
+      correctionUsed: result.correctionUsed === true,
     });
   } catch (error) {
     ipcRenderer.send("gemini:job-result", {
       requestId: job.requestId,
       ok: false,
-      code: error?.code || "",
-      error: error instanceof Error ? error.message : String(error),
+      ...geminiJobFailure(error),
     });
   }
 });

@@ -61,6 +61,8 @@ test('fission UI: drop images grouped by product ID, fix one card, pick from lib
     return route.fulfill({contentType:'text/html',body:'<div id="root"></div>'});
   });
   const code=bundle(),style=css();
+  const creationTemplate='按已保存要求生成完整文字。地区：{地区}；{时长} 秒；{拍摄风格}。';
+  await page.addInitScript(value=>localStorage.setItem('flowcut-gem-request-template-v1',value),creationTemplate);
   const open=async()=>{
     await page.goto('http://127.0.0.1:45991');await page.addStyleTag({content:style});await page.addScriptTag({content:code});
     await page.locator('.nav-list').getByRole('button',{name:/多品裂变/}).click();await page.locator('.fission-drop').waitFor();
@@ -96,6 +98,20 @@ test('fission UI: drop images grouped by product ID, fix one card, pick from lib
   await page.getByRole('button',{name:'收起商品库'}).click();
 
   await page.getByLabel('母版 Gem',{exact:true}).selectOption('mother');await page.getByLabel('变体 Gem',{exact:true}).selectOption('variant');await page.getByLabel('TK 归档账号',{exact:true}).selectOption('隔离归档账号');
+  assert.equal(await page.getByLabel('口播语言',{exact:true}).inputValue(),'auto');
+  assert.equal(await page.getByLabel('口播语言',{exact:true}).locator('option').filter({hasText:'中文'}).count(),1);
+  await page.getByLabel('口播语言',{exact:true}).selectOption('中文');
+  await page.getByLabel('变体 Gem',{exact:true}).selectOption('mother');
+  await page.getByRole('status').filter({hasText:'母版 Gem 和变体 Gem 是同一个，确认没选错？'}).waitFor();
+  assert.equal(await start.isEnabled(),true,'the same-Gem message warns without blocking');
+  await page.getByLabel('变体 Gem',{exact:true}).selectOption('variant');
+  assert.equal(await page.getByRole('status').filter({hasText:'母版 Gem 和变体 Gem 是同一个'}).count(),0);
+  await page.locator('.fission-more summary').click();
+  assert.equal(await page.getByLabel('第一轮发给母版 Gem 的文字',{exact:true}).inputValue(),creationTemplate);
+  assert.ok((await page.getByTestId('fission-mother-request-preview').textContent()).includes('15 秒'));
+  assert.ok((await page.getByTestId('fission-mother-request-preview').textContent()).includes('口播语言：中文'));
+  await page.getByLabel('第一轮发给母版 Gem 的文字',{exact:true}).fill('本模块单独要求：{地区}；{时长} 秒。');
+  await page.locator('.fission-more summary').click();
   await cards.nth(2).getByRole('button',{name:'设为母版'}).click();
   assert.equal(await cards.nth(2).getByRole('button',{name:'★ 母版'}).getAttribute('aria-pressed'),'true');
   assert.equal(await start.isDisabled(),false);assert.equal((await start.textContent()).trim(),'生成 4 条视频');
@@ -112,6 +128,8 @@ test('fission UI: drop images grouped by product ID, fix one card, pick from lib
   assert.equal(posts.length,1);
   assert.deepEqual(posts[0].products.map(p=>p.productId),['u-1735360337668113921','u-1735360337668113925','u-1735360337668113926','p2']);
   assert.equal(posts[0].motherProductId,'u-1735360337668113926');assert.equal(posts[0].products[3].imageKeys,undefined,'a library product keeps its saved images');
+  assert.equal(posts[0].motherRequestTemplate,'本模块单独要求：{地区}；{时长} 秒。');
+  assert.equal(posts[0].spokenLanguage,'中文');
   assert.equal(await cards.count(),0,'the form is cleared for the next batch');
   await page.locator('.fission-batch-card').first().waitFor();
   assert.match(await page.locator('.fission-batch-card').first().textContent(),/4 个商品.*1\/4 条已出片/s);
@@ -120,6 +138,11 @@ test('fission UI: drop images grouped by product ID, fix one card, pick from lib
   await open();
   assert.equal(await page.getByLabel('变体 Gem',{exact:true}).inputValue(),'variant');
   assert.equal(await page.getByLabel('TK 归档账号',{exact:true}).inputValue(),'隔离归档账号');
+  await page.locator('.fission-more summary').click();
+  assert.equal(await page.getByLabel('第一轮发给母版 Gem 的文字',{exact:true}).inputValue(),'本模块单独要求：{地区}；{时长} 秒。');
+  await page.getByRole('button',{name:'沿用创作中心',exact:true}).click();
+  assert.equal(await page.getByLabel('第一轮发给母版 Gem 的文字',{exact:true}).inputValue(),creationTemplate);
+  await page.locator('.fission-more summary').click();
 
   // Pasted mother, prompts only, and a lost reply retried with the same request.
   await drop(page,'.fission-drop',['1735360337668113931.png','1735360337668113932.webp']);
@@ -140,8 +163,15 @@ test('fission UI: drop images grouped by product ID, fix one card, pick from lib
   // Restore the defaults so later visits in this profile start normally.
   await page.getByLabel('母版来源',{exact:true}).selectOption('generate');await page.getByLabel('生成方式',{exact:true}).selectOption('video');
 
+  const shortReply='请先提供目标国家和口播语言。';
+  batches[0].status='failed';batches[0].prompt='';batches[0].gemini_raw_reply=shortReply;
+  batches[0].error=`Gemini 只回复了 ${shortReply.length} 字：『${shortReply}』`;
+
   await nav.getByRole('button',{name:/任务队列/}).click();await page.locator('.task-batch-row').nth(1).waitFor();
   await page.locator('.table-row>.task-name').first().click();await page.locator('.fission-batch-panel').waitFor();
+  await page.getByText('母版原始回复',{exact:true}).click();
+  assert.equal(await page.locator('.fission-batch-panel details').filter({hasText:'母版原始回复'}).locator('pre').textContent(),shortReply);
+  assert.ok((await page.locator('.drawer').textContent()).includes(`Gemini 只回复了 ${shortReply.length} 字`));
   assert.equal(await page.getByRole('button',{name:/拼接所选|同一份母版重新分裂/}).count(),0);
   await page.locator('.fission-child').first().getByRole('button',{name:'查看商品任务'}).click();await page.getByRole('button',{name:'用母版重新写这条提示词'}).waitFor();
   assert.equal(await page.getByRole('combobox',{name:'重做使用的 Gem'}).count(),0);

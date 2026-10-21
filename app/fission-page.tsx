@@ -1,6 +1,9 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } from 'react';
 import { DEFAULT_FISSION_REQUEST } from '../lib/fission';
+import { DEFAULT_GEM_REQUEST, buildGemRequest, validateGemRequest } from '../lib/gem-request';
+import { SpokenLanguageSelect } from './spoken-language-select';
+import { SPOKEN_LANGUAGE_OPTIONS } from '../lib/spoken-language';
 import { DEFAULT_TASK_DURATION, DEFAULT_TASK_REGION, DEFAULT_SHOOTING_STYLE, TASK_DURATIONS, TASK_REGIONS, SHOOTING_STYLES } from '../lib/task-config';
 import { validateVariantRequest } from '../lib/prompt-blocks';
 import { confirmAction } from './confirm-action';
@@ -22,6 +25,8 @@ type Settings = {
   motherGem: string; variantGem: string; account: string;
   duration: number; region: string; style: string; autoQueue: boolean;
   motherSource: 'generate' | 'paste'; template: string;
+  motherRequestTemplate?: string;
+  spokenLanguage: string;
 };
 type Dropped = { file: File; folder: string };
 
@@ -30,6 +35,7 @@ const SETTINGS_KEY = 'flowcut-fission-settings-v1';
 const DEFAULT_SETTINGS: Settings = {
   motherGem: '', variantGem: '', account: '', duration: DEFAULT_TASK_DURATION, region: DEFAULT_TASK_REGION,
   style: DEFAULT_SHOOTING_STYLE, autoQueue: true, motherSource: 'generate', template: DEFAULT_FISSION_REQUEST,
+  spokenLanguage: 'auto',
 };
 const IMAGE = /\.(?:jpe?g|png|webp)$/i;
 
@@ -125,11 +131,12 @@ function Thumbs({ card, product }: { card: Card; product?: Product }) {
   /* eslint-enable @next/next/no-img-element */
 }
 
-export function FissionPage({ products, gems, accounts, request, onUpload, onCreated, onOpenTask, statusLabel }: {
+export function FissionPage({ products, gems, accounts, request, onUpload, onCreated, onOpenTask, statusLabel, gemRequestTemplate = DEFAULT_GEM_REQUEST }: {
   products: Product[]; gems: Gem[]; accounts: TikTokAccount[];
   request: (path: string, init?: RequestInit) => Promise<unknown>;
   onUpload: (files: File[], name: string, externalId: string) => Promise<{ id: string; imageKeys: string[] }>;
   onCreated: (autoQueue: boolean) => Promise<void>; onOpenTask: (task: Task) => void; statusLabel: (task: Task) => string;
+  gemRequestTemplate?: string;
 }) {
   const [cards, setCards] = useState<Card[]>([]);
   const [motherKey, setMotherKey] = useState('');
@@ -147,7 +154,7 @@ export function FissionPage({ products, gems, accounts, request, onUpload, onCre
     const timer = window.setTimeout(() => {
       try {
         const saved = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) || 'null');
-        if (saved && typeof saved === 'object') setSettings(current => ({ ...current, ...saved }));
+        if (saved && typeof saved === 'object') setSettings(current => ({ ...current, ...saved, spokenLanguage:SPOKEN_LANGUAGE_OPTIONS.includes(saved.spokenLanguage)?saved.spokenLanguage:'auto' }));
       } catch { /* Defaults still work without local storage. */ }
     }, 0);
     return () => window.clearTimeout(timer);
@@ -175,6 +182,7 @@ export function FissionPage({ products, gems, accounts, request, onUpload, onCre
   const variantGem = gemIds.has(settings.variantGem) ? settings.variantGem : '';
   const account = accountNames.has(settings.account) ? settings.account : '';
   const paste = settings.motherSource === 'paste';
+  const motherRequestTemplate = settings.motherRequestTemplate ?? gemRequestTemplate;
   const mother = cards.find(card => card.key === motherKey) || cards[0];
   const libraryProduct = (card: Card) => card.source === 'library' ? products.find(p => p.id === card.productId) : undefined;
   const idOf = (card: Card) => (card.source === 'library' ? libraryProduct(card)?.external_id || '' : card.externalId).trim();
@@ -222,6 +230,7 @@ export function FissionPage({ products, gems, accounts, request, onUpload, onCre
     lock.current = true; setBusy(true); setError(''); setNotice('');
     try {
       validateVariantRequest(settings.template);
+      if (!paste) validateGemRequest(motherRequestTemplate);
       for (const card of cards) {
         if (card.source === 'upload' && card.files.reduce((sum, file) => sum + file.size, 0) > MAX_BYTES) throw Error(`商品 ${idOf(card)} 的图片超过 48MB，请删掉几张`);
       }
@@ -242,6 +251,8 @@ export function FissionPage({ products, gems, accounts, request, onUpload, onCre
       await request('/api/fission', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
         requestId: requestId.current, products: selected, motherSource: settings.motherSource, motherProductId: selected[motherIndex].productId,
         motherGemId: motherGem, motherPrompt, variantGemId: variantGem, variantRequestText: settings.template,
+        motherRequestTemplate,
+        spokenLanguage: settings.spokenLanguage,
         duration: settings.duration, region: settings.region, shootingStyle: settings.style, tiktokAccountName: account, autoQueue: settings.autoQueue,
       }) });
       requestId.current = null; setCards([]); setMotherKey('');
@@ -308,6 +319,7 @@ export function FissionPage({ products, gems, accounts, request, onUpload, onCre
           {!paste && <label>母版 Gem<select aria-label="母版 Gem" value={motherGem} onChange={event => change({ motherGem: event.target.value })}><option value="">请选择</option>{gems.map(gem => <option key={gem.id} value={gem.id}>{gem.name}</option>)}</select></label>}
           <label>变体 Gem<select aria-label="变体 Gem" value={variantGem} onChange={event => change({ variantGem: event.target.value })}><option value="">请选择</option>{gems.map(gem => <option key={gem.id} value={gem.id}>{gem.name}</option>)}</select></label>
           <label>TK 账号<select aria-label="TK 归档账号" value={account} onChange={event => change({ account: event.target.value })}><option value="">请选择</option>{accounts.map(item => <option key={item.id} value={item.name}>{item.name}</option>)}</select></label>
+          <SpokenLanguageSelect region={settings.region} value={settings.spokenLanguage} onChange={spokenLanguage=>change({spokenLanguage})} />
         </div>
         <details className="fission-more">
           <summary>更多设置 <span>{settings.duration} 秒 · {settings.region} · {settings.style} · {settings.autoQueue ? '自动出视频' : '只出提示词'} · {paste ? '粘贴母版' : '商品生成母版'}</span></summary>
@@ -319,6 +331,11 @@ export function FissionPage({ products, gems, accounts, request, onUpload, onCre
             <label>母版来源<select aria-label="母版来源" value={settings.motherSource} onChange={event => change({ motherSource: event.target.value as Settings['motherSource'] })}><option value="generate">用 ★ 商品生成</option><option value="paste">粘贴现成母版</option></select></label>
           </div>
           {paste && <label>现成母版（至少 300 字）<textarea aria-label="现成母版" rows={6} value={motherPrompt} maxLength={60000} onChange={event => { requestId.current = null; setMotherPrompt(event.target.value); }} /></label>}
+          {!paste && <>
+            <label>第一轮发给母版 Gem 的文字<textarea aria-label="第一轮发给母版 Gem 的文字" rows={5} maxLength={12000} value={motherRequestTemplate} onChange={event => change({ motherRequestTemplate: event.target.value })} /></label>
+            <p className="fission-hint">{settings.motherRequestTemplate === undefined ? '沿用创作中心保存的「发送给 Gem 的文字」' : '本模块单独设置'}；可用 {'{时长}{地区}{拍摄风格}'}。{settings.motherRequestTemplate !== undefined && <button type="button" className="text-button" onClick={() => change({ motherRequestTemplate: undefined })}>沿用创作中心</button>}</p>
+            <pre data-testid="fission-mother-request-preview" style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{buildGemRequest(motherRequestTemplate,{duration:settings.duration,region:settings.region,shooting_style:settings.style,spoken_language:settings.spokenLanguage})}</pre>
+          </>}
           <label>第二轮发给变体 Gem 的文字<textarea aria-label="第二轮发给变体 Gem 的文字" rows={4} maxLength={12000} value={settings.template} onChange={event => change({ template: event.target.value })} /></label>
           <p className="fission-hint">必须保留 {'{母版提示词}'}；可用 {'{时长}{地区}{拍摄风格}'}。{settings.template !== DEFAULT_FISSION_REQUEST && <button type="button" className="text-button" onClick={() => change({ template: DEFAULT_FISSION_REQUEST })}>恢复默认</button>}</p>
         </details>
@@ -327,6 +344,7 @@ export function FissionPage({ products, gems, accounts, request, onUpload, onCre
       {error && <p role="alert" className="warning-box">{error}</p>}
       {notice && <p role="status" className="fission-notice">{notice}</p>}
       <div className="fission-submit">
+        {!paste && motherGem && motherGem === variantGem && <span role="status">母版 Gem 和变体 Gem 是同一个，确认没选错？</span>}
         {missing.length > 0 && <span>还差：{missing.join('、')}</span>}
         <button className="primary" disabled={busy || missing.length > 0}>{busy ? '正在提交…' : `生成 ${cards.length || ''} 条${output}`}</button>
       </div>

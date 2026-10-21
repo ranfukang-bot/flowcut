@@ -1,6 +1,5 @@
 import { ensureWorkspace,getDb,jsonError,runtimeEnv } from '../../../lib/storage';
 import { getProviderConfig } from '../../../lib/provider-config';
-import { DEFAULT_GEM_REQUEST,renderGemRequest } from '../../../lib/gem-request';
 import { validateFissionInput,type FissionInput } from '../../../lib/fission';
 import { validateTikTokAccountName } from '../../../lib/tiktok-accounts';
 import { taskDetail } from '../../../lib/task-list';
@@ -52,7 +51,7 @@ export async function POST(request:Request) {
         child?(row.name||row.external_id):`多品裂变 · ${products.length} 个商品`,
         child?(pasted?'variant_queued':'fission_wait'):(pasted?'fission_ready':'prompt_queued'),child?'':(pasted?input.motherPrompt:''),child? (pasted?36:0):(pasted?100:5),
         ...common,crypto.randomUUID(),child?variant.content:mother.content,row.external_id.trim(),JSON.stringify(row.keys),
-        renderGemRequest(DEFAULT_GEM_REQUEST,{duration:input.duration,region:input.region,shooting_style:input.shooting_style}),
+        input.motherRequest,
         child?'fission_child':'fission',child?id:null,child?index:null,products.length,variant.id,variant.content,input.variantRequest,at,at);
     await db.batch([statement(master,false,0),...products.map((p,i)=>statement(p,true,i+1))]);
     return Response.json({id,created:true},{status:201});

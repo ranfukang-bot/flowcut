@@ -7,6 +7,10 @@ import { randomBytes } from 'node:crypto';
 
 const root = path.resolve(import.meta.dirname, '..');
 const executable = path.resolve(process.argv[2] || path.join(root, 'gemini-web-workbench/release/win-unpacked/FlowCut全自动AI视频工作台.exe'));
+// Optional second argument: an unpacked app directory, so CI can run the same
+// self-test with the plain Electron binary after build:protected.
+const appArgs = process.argv[3] ? [path.resolve(process.argv[3])] : [];
+const timeoutMs = Number(process.env.FLOWCUT_SMOKE_TIMEOUT_MS || 90000);
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'flowcut-personal-package-'));
 const profile = path.join(temporary, 'profile'), resultFile = path.join(temporary, 'result.json');
 fs.mkdirSync(path.join(profile, 'seedance'), { recursive: true });
@@ -14,10 +18,10 @@ fs.writeFileSync(path.join(profile, 'workbench-state.json'), JSON.stringify({ se
 fs.writeFileSync(path.join(profile, 'seedance/workbench-state.json'), JSON.stringify({ settings: { running: false, apiPort: 17891, downloadDirectory: path.join(temporary, 'downloads') }, accounts: [{ id: 'default', name: '隔离测试', enabled: false, partition: 'persist:isolated-package-smoke' }], tasks: [] }));
 let child, exited = false;
 try {
-  child = spawn(executable, [`--user-data-dir=${profile}`], { windowsHide: true, stdio: 'ignore', env: { ...process.env, FLOWCUT_SMOKE_USER_DATA: profile, FLOWCUT_DESKTOP_SMOKE_FILE: resultFile } });
+  child = spawn(executable, [...appArgs, `--user-data-dir=${profile}`], { windowsHide: true, stdio: 'ignore', env: { ...process.env, FLOWCUT_SMOKE_USER_DATA: profile, FLOWCUT_DESKTOP_SMOKE_FILE: resultFile } });
   let launchError;
   child.once('error', error => { launchError = error; }); child.once('exit', () => { exited = true; });
-  const deadline = Date.now() + 90000;
+  const deadline = Date.now() + timeoutMs;
   while (!fs.existsSync(resultFile) && !exited && !launchError && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 250));
   if (launchError) throw launchError;
   assert.ok(fs.existsSync(resultFile), 'packaged smoke timed out or exited before reporting');

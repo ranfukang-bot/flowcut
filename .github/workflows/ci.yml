@@ -45,3 +45,29 @@ jobs:
           & (Join-Path $mediaTool.DirectoryName 'ffprobe.exe') -version
           if ($LASTEXITCODE -ne 0) { throw 'FFprobe could not start' }
       - run: npm run verify
+
+  # Start the real desktop app once in an isolated profile and check its own
+  # self-test report (startup, local site, Gemini page runtime, IPC, backup).
+  desktop-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            gemini-web-workbench/package-lock.json
+            vendor/publisher/package-lock.json
+      - run: npm ci
+      - run: npm ci --prefix gemini-web-workbench
+      - run: npm ci --prefix vendor/publisher
+      - run: npm run build
+      - run: node gemini-web-workbench/scripts/harden-site-build.cjs
+      - run: node gemini-web-workbench/scripts/build-protected.cjs
+      - name: Desktop self-test in an isolated profile
+        run: node scripts/packaged-security-smoke.mjs gemini-web-workbench/node_modules/electron/dist/electron.exe gemini-web-workbench
+        env:
+          FLOWCUT_SMOKE_TIMEOUT_MS: '240000'

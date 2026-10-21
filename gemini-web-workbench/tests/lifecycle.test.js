@@ -29,10 +29,10 @@ test("closing the visible FlowCut window also closes hidden login windows", () =
 });
 
 test("packaged local site is isolated and automatically restarted after a crash", () => {
-  const source = fs.readFileSync(
-    path.join(projectRoot, "src", "main.js"),
-    "utf8",
-  );
+  // The local site lifecycle lives in local-site.js; main.js wires it up.
+  const source = ["main.js", "local-site.js"]
+    .map((file) => fs.readFileSync(path.join(projectRoot, "src", file), "utf8"))
+    .join("\n");
   assert.match(source, /function scheduleLocalSiteRestart/);
   assert.match(source, /function startLocalSiteHealthMonitor/);
   assert.match(source, /localSiteHealthFailures < 3/);

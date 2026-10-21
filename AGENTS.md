@@ -7,7 +7,7 @@
 - `app/`、`lib/`、`worker/`：本机网页服务，使用 vinext 和本地 D1/R2；当前表结构以 `lib/storage.ts` 为准。
 - 界面按页面分文件：`app/studio-app.tsx` 只管整体框架、导航、数据加载和弹窗开关；页面各在 `dashboard-page.tsx`（创作中心）、`tasks-page.tsx`（任务队列）、`products-page.tsx`（商品库及商品弹窗）、`gems-page.tsx`、`settings-page.tsx`、`reference-remix-page.tsx`、`script-pipeline-page.tsx`、`fission-page.tsx`、`calendar-page.tsx`、`publisher-page.tsx`；任务详情抽屉在 `prompt-drawer.tsx`。共用类型在 `studio-types.ts`，任务状态的中文名和常用分组（成片已出、需处理、Gemini 处理中、任务组等）统一在 `lib/task-statuses.ts`，新增状态先改这里；界面上的状态文字与进度阶段在 `task-status.tsx`，接口与桌面桥在 `studio-client.ts`，通用小组件在 `studio-ui.tsx`。改哪个页面就只改对应文件。
 - 桌面 Gemini 执行器的接口 `app/api/gemini-bridge/route.ts` 只做鉴权和分发，逻辑在 `lib/gemini-bridge/`：`claim.ts` 领取任务并组装发给 Gemini 的内容，`results.ts` 写回结果（普通、变体、代码块分条、多品裂变、爆款复刻、剧本），`failures.ts` 处理放回、延后重试和失败，`progress.ts` 处理心跳、实际模型和中间阶段，`seedance-queue.ts` 把提示词交给 Seedance，`shared.ts`/`types.ts` 放共用的判断和类型。
-- `gemini-web-workbench/`：Electron 桌面程序，启动网页服务和本机执行器。
+- `gemini-web-workbench/`：Electron 桌面程序，启动网页服务和本机执行器。本机网页服务的启动、健康检查和自动重启在 `src/local-site.js`；`src/main.js` 负责窗口、IPC 和 Gemini 任务执行。
 - `vendor/seedance-engine/`：Seedance 执行引擎。
 - `vendor/publisher/`：TikTok 自动发布及发布管理页面。
 - `gemini-web-workbench/integrations/fastmoss-picker/`：FastMoss 选品插件。
@@ -53,6 +53,8 @@ Pop-Location
 ```
 
 发布管理浏览器测试需要 Chrome/Chromium，可通过 `CHROMIUM_PATH` 指定可执行文件。
+
+GitHub Actions 另有 `desktop-smoke`：构建后用隔离资料目录真实启动一次桌面程序，检查自检报告（本机服务、Gemini 页面运行时、IPC、备份等）。改动 `main.js`、`local-site.js` 或启动流程时，这项必须通过。
 
 ## 长期规则
 

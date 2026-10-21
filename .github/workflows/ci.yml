@@ -27,5 +27,21 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
       - run: npm ci --prefix vendor/publisher
       - name: Install media tools for real dual-video tests
-        run: choco install ffmpeg --yes --no-progress
+        run: |
+          $mediaPackage = Join-Path $env:ChocolateyInstall 'lib/ffmpeg'
+          $mediaTool = $null
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install ffmpeg --yes --no-progress
+            $mediaTool = Get-ChildItem -LiteralPath $mediaPackage -Recurse -File -Filter ffmpeg.exe -ErrorAction SilentlyContinue |
+              Where-Object { Test-Path -LiteralPath (Join-Path $_.DirectoryName 'ffprobe.exe') } |
+              Select-Object -First 1
+            if ($mediaTool) { break }
+            if ($attempt -lt 3) { Start-Sleep -Seconds 10 }
+          }
+          if (!$mediaTool) { throw 'FFmpeg and FFprobe were not installed after three attempts' }
+          $mediaTool.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $mediaTool.FullName -version
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg could not start' }
+          & (Join-Path $mediaTool.DirectoryName 'ffprobe.exe') -version
+          if ($LASTEXITCODE -ne 0) { throw 'FFprobe could not start' }
       - run: npm run verify

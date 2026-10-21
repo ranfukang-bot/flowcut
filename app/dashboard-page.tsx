@@ -3,13 +3,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { SHOOTING_STYLES, TASK_DURATIONS, TASK_REGIONS } from '../lib/task-config';
 import { useImageProductId } from './use-image-product-id';
-import { buildGemRequest } from '../lib/gem-request';
+import { DEFAULT_GEM_REQUEST, buildGemRequest } from '../lib/gem-request';
 import { SpokenLanguageSelect } from './spoken-language-select';
 import { VariantConfigBlock, type VariantConfig } from './variant-config';
-import type { Product, Task, Workspace, Page, SeedanceRuntime } from './studio-types';
+import type { Product, Task, Workspace, Page } from './studio-types';
 import { formatTime, EmptyState } from './studio-ui';
-import { taskStatusClass, taskStatusLabel } from './task-status';
-import { APPROVED_REVIEW_STATUSES, VIDEO_DONE_STATUSES, VIDEO_FAILED_STATUSES } from '../lib/task-statuses';
+import { taskStatusClass, taskStatusLabel, withChildren } from './task-status';
+import { TaskProductThumbnail } from './tasks-page';
+import { Icon } from './icons';
+import { APPROVED_REVIEW_STATUSES, GEMINI_STATUSES, VIDEO_DONE_STATUSES, VIDEO_FAILED_STATUSES, VIDEO_RUNNING_STATUSES } from '../lib/task-statuses';
 
 export function ProductImagePicker({products, selectedId, onChoose, onClose}: {
   products: Product[]; selectedId: string; onChoose: (id:string) => void; onClose: () => void;
@@ -41,6 +43,10 @@ export function ProductImagePicker({products, selectedId, onChoose, onClose}: {
   </dialog>;
 }
 
+// 正在跑的状态排在前面，排队中的放后面。
+const LIVE_RUNNING = ["prompt_generating", "variant_generating", "video_generating", "concat_running"];
+const LIVE_WAITING = [...GEMINI_STATUSES, ...VIDEO_RUNNING_STATUSES, "fission_wait"];
+
 export function Dashboard({
   data,
   selectedProduct,
@@ -70,11 +76,8 @@ export function Dashboard({
   onChooseArchiveDirectory,
   onAutoQueue,
   onRun,
-  onAddProduct,
-  onAddGem,
   onPreview,
   onNavigate,
-  seedanceRuntime,
 }: {
   data: Workspace;
   selectedProduct: string;
@@ -109,11 +112,8 @@ export function Dashboard({
     productName: string;
     externalId: string;
   }) => Promise<boolean>;
-  onAddProduct: () => void;
-  onAddGem: () => void;
   onPreview: (task: Task) => void;
-  onNavigate: (page: Page) => void;
-  seedanceRuntime: SeedanceRuntime;
+  onNavigate: (page: Page, taskFilter?: string) => void;
 }) {
   const [productPickerOpen, setProductPickerOpen] = useState(false);
   const chosenProduct = data.products.find(product => product.id === selectedProduct);
@@ -129,9 +129,14 @@ export function Dashboard({
   const archiveProductId =
     productMode === "new"
       ? quickExternalId.trim()
-      : data.products
-          .find((product) => product.id === selectedProduct)
-          ?.external_id?.trim() || "";
+      : chosenProduct?.external_id?.trim() || "";
+  const webGemini = data.integrations.geminiMode === "web";
+  const gemName = data.gems.find(gem => gem.id === selectedGem)?.name || "";
+  const variantOn = webGemini && variantConfig.enabled && selectedDuration !== 30;
+  const archiveFolder = data.tiktokAccounts.find(account => account.name === selectedTikTokAccount)?.archive_directory
+    || `${data.integrations.seedanceRuntime?.downloadDirectory || "视频下载目录"}\\${selectedTikTokAccount || "账号名"}`;
+  const hasProduct = productMode === "new" ? quickFiles.length > 0 : Boolean(selectedProduct);
+  const missing = [!hasProduct && (productMode === "new" ? "放入商品图" : "选择商品"), !selectedGem && "选择 Gem", !selectedTikTokAccount && "选择 TK 归档账号"].filter(Boolean);
 
   useEffect(
     () => () => quickPreviews.forEach((preview) => URL.revokeObjectURL(preview.url)),
@@ -173,39 +178,45 @@ export function Dashboard({
     });
   }
 
+  const planProduct = productMode === "new"
+    ? quickFiles.length ? `上传 ${quickFiles.length} 张商品图，存进商品库` : "先在左边放入商品图"
+    : chosenProduct ? `使用商品 ${chosenProduct.external_id || chosenProduct.name?.trim() || "未命名商品"}（${chosenProduct.images.length} 张图）` : "先在左边选择商品";
+  const planPrompt = !gemName ? "先选择 Gem"
+    : selectedDuration === 30 ? `Gemini 用「${gemName}」写上下两段提示词`
+    : variantOn ? `Gemini 用「${gemName}」写母版，再交给变体 Gem 写出多条`
+    : `Gemini 用「${gemName}」读图写提示词${webGemini ? "，几个代码块就出几条视频" : ""}`;
+  const planVideo = !autoQueue ? "只生成提示词，不提交 Seedance"
+    : `${selectedDuration === 30 ? "Seedance 分两段各 15 秒生成，再在本机拼接" : `Seedance 生成 ${selectedDuration} 秒视频`}，下载到「${selectedTikTokAccount || "未选账号"}」等你检查`;
+
+  const counts = data.taskCounts;
+  const allTasks = withChildren(data.tasks);
+  const liveAll = allTasks.filter(task => LIVE_WAITING.includes(task.status) || LIVE_RUNNING.includes(task.status));
+  // 组还在写母版时，组里每条都在等它，只显示这一组。
+  const liveTasks = liveAll
+    .filter(task => !task.batch_parent_id || !liveAll.some(parent => parent.id === task.batch_parent_id))
+    .sort((a, b) => Number(LIVE_RUNNING.includes(b.status)) - Number(LIVE_RUNNING.includes(a.status)));
+  const activeJobs = [...(data.integrations.geminiRuntime?.activeJobs || []), ...(data.integrations.seedanceRuntime?.activeJobs || [])];
+  const summary: Array<[string, string, number]> = [
+    ["review", "待检查", counts?.review ?? allTasks.filter(task => VIDEO_DONE_STATUSES.includes(task.status) && !APPROVED_REVIEW_STATUSES.includes(task.review_status || '')).length],
+    ["attention", "需处理", counts?.attention ?? allTasks.filter(task => VIDEO_FAILED_STATUSES.includes(task.status)).length],
+    ["active", "进行中", counts?.active ?? liveTasks.length],
+    ["completed", "已完成", counts?.completed ?? allTasks.filter(task => VIDEO_DONE_STATUSES.includes(task.status) && APPROVED_REVIEW_STATUSES.includes(task.review_status || '')).length],
+  ];
+
   return (
     <div className="page-body">
       {productPickerOpen && <ProductImagePicker products={data.products} selectedId={selectedProduct}
         onChoose={id => { onProduct(id); setProductMode("library"); setProductPickerOpen(false); }}
         onClose={() => setProductPickerOpen(false)} />}
-      <section className="hero-grid">
-        <div className="composer">
-          <div className="composer-head">
-            <div>
-              <span className="step-kicker">QUICK CREATE</span>
-              <h2>把商品图拖进来，直接生成成交视频</h2>
-              <p>图片可分多次拖入；点击开始后一次性上传、识别并进入 Gemini → Seedance 流程。</p>
-            </div>
-            <span className="spark">✦</span>
+      <div className="create-layout">
+        <section className="create-panel" aria-labelledby="create-product-title">
+          <div className="create-panel-head">
+            <h2 id="create-product-title">商品</h2>
+            {productMode === "new" && quickFiles.length > 0 && (
+              <button type="button" className="text-button" onClick={() => { setQuickFiles([]); setQuickError(""); }}>清空图片</button>
+            )}
           </div>
-          <div className="quick-product-block">
-            <div className="quick-step-title">
-              <span><b>01</b> 选择商品来源</span>
-              <div>
-                <small>上传新商品与选择商品库二选一</small>
-                {productMode === "new" && quickFiles.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setQuickFiles([]);
-                      setQuickError("");
-                    }}
-                  >
-                    清空图片
-                  </button>
-                )}
-              </div>
-            </div>
+          <div className="create-panel-body">
             <div className="product-source-switch" role="radiogroup" aria-label="商品来源">
               <button
                 type="button"
@@ -216,7 +227,6 @@ export function Dashboard({
                 onClick={() => setProductMode("new")}
               >
                 <b>上传新商品</b>
-                <small>图片会自动保存到商品库</small>
               </button>
               <button
                 type="button"
@@ -283,19 +293,19 @@ export function Dashboard({
                       {quickPreviews.length > 5 && <em>+{quickPreviews.length - 5}</em>}
                     </div>
                   ) : (
-                    <span className="quick-upload-icon">＋</span>
+                    <span className="quick-upload-icon"><Icon name="upload" size={22} /></span>
                   )}
                   <div>
                     <b>
                       {busy && quickFiles.length
                         ? `正在上传 ${quickFiles.length} 张并创建任务…`
                         : quickFiles.length
-                          ? `已暂存 ${quickFiles.length} 张，可继续拖入追加`
-                          : "拖拽商品图到这里，或点击批量选择"}
+                          ? `已放入 ${quickFiles.length} 张，可继续拖入追加`
+                          : "把商品图拖到这里，或点击选择"}
                     </b>
                     <small>
                       {quickFiles.length
-                        ? "开始后保存到商品库；相同商品 ID 自动复用"
+                        ? "开始后存进商品库；相同商品 ID 自动复用"
                         : "JPG / PNG / WebP · 最多 12 张 · 单张不超过 12MB"}
                     </small>
                   </div>
@@ -320,19 +330,11 @@ export function Dashboard({
                       disabled={busy}
                     />
                   </label>
-                  <div className="source-explainer">
-                    <b>新商品会自动入库</b>
-                    <span>Gemini 会根据全部参考图识别品类、外观与可验证卖点。</span>
-                  </div>
                 </div>
               </div>
             ) : (
               <div className="library-product-picker" data-product-id={chosenProduct?.id || ""}>
-                <div className="chosen-product-heading">
-                  <div><b>{chosenProduct ? "当前制作商品" : "还未选择商品"}</b><small>选定后持续使用，换模板、换账号或创建任务都不会清空。</small></div>
-                  <button type="button" className="choose-product-button" disabled={busy} onClick={() => setProductPickerOpen(true)}>{chosenProduct ? "看图更换商品" : "看图选择商品"}</button>
-                </div>
-                {chosenProduct && <>
+                {chosenProduct ? <>
                   <div className="quick-preview-strip" aria-label="已带入的商品图片">
                     {chosenProduct.images.map((image,index) => <span key={image.id}>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -341,57 +343,22 @@ export function Dashboard({
                   </div>
                   <b>{chosenProduct.name?.trim() || "未命名商品"}</b>
                   <small className="chosen-product-detail">商品 ID：{chosenProduct.external_id || "未填写"} · {chosenProduct.images.length} 张商品图</small>
-                </>}
+                </> : <p className="live-empty">还没有选择商品。选定后会一直使用，换模板、换账号或创建任务都不会清空。</p>}
+                <button type="button" className="choose-product-button" disabled={busy} onClick={() => setProductPickerOpen(true)}>{chosenProduct ? "看图更换商品" : "看图选择商品"}</button>
               </div>
             )}
             {quickError && <div className="quick-upload-error">{quickError}</div>}
           </div>
-          <div className="creative-config-block">
-            <div className="quick-step-title">
-              <span><b>02</b> 设置本次视频</span>
-              <small>参数只属于当前任务，不会修改 Gem</small>
-            </div>
-            <div className="creative-settings-grid">
-              <label>
-                <span>视频秒数</span>
-                <select
-                  value={selectedDuration}
-                  onChange={(event) => onDuration(Number(event.target.value))}
-                >
-                  {TASK_DURATIONS.map((duration) => (
-                    <option key={duration} value={duration}>
-                      {duration === 30 ? "双段 30 秒（15秒＋15秒，自动拼接）" : `${duration} 秒${duration === 15 ? "（常用）" : ""}`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>投放地区</span>
-                <select
-                  value={selectedRegion}
-                  onChange={(event) => onRegion(event.target.value)}
-                >
-                  {TASK_REGIONS.map((region) => (
-                    <option key={region} value={region}>{region}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>拍摄风格</span>
-                <select
-                  value={selectedShootingStyle}
-                  onChange={(event) => onShootingStyle(event.target.value)}
-                >
-                  {SHOOTING_STYLES.map((style) => (
-                    <option key={style} value={style}>{style}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
+        </section>
+
+        <section className="create-panel" aria-labelledby="create-settings-title">
+          <div className="create-panel-head">
+            <h2 id="create-settings-title">本次设置</h2>
+            <small>只影响这一次，不会修改 Gem</small>
           </div>
-          <div className="task-config-grid">
+          <div className="setting-rows">
             <label>
-              <span><b>03</b> 选择 Gem</span>
+              <span>Gem</span>
               <select value={selectedGem} onChange={(event) => onGem(event.target.value)}>
                 {!data.gems.length && <option value="">请先创建 Gem</option>}
                 {data.gems.map((gem) => (
@@ -399,195 +366,164 @@ export function Dashboard({
                 ))}
               </select>
             </label>
-            {data.integrations.geminiMode === "web" && (
-                <label>
-                  <span><b>04</b> Gemini 账号</span>
-                  <input value="自动分配空闲账号" readOnly aria-label="Gemini 账号分配" />
-                </label>
-            )}
             <label>
-              <span>
-                <b>{data.integrations.geminiMode === "web" ? "05" : "04"}</b>{" "}
-                归档账号 / 保存文件夹
-              </span>
-              <div className="tk-account-picker">
-                <select
-                  aria-label="TK 归档账号"
-                  value={selectedTikTokAccount}
-                  onChange={(event) => onTikTokAccount(event.target.value)}
-                >
-                  <option value="">
-                    {data.tiktokAccounts.length
-                      ? "请选择 TK 账号"
-                      : "请先添加 TK 账号"}
+              <span>视频时长</span>
+              <select value={selectedDuration} onChange={(event) => onDuration(Number(event.target.value))}>
+                {TASK_DURATIONS.map((duration) => (
+                  <option key={duration} value={duration}>
+                    {duration === 30 ? "双段 30 秒（15秒＋15秒，自动拼接）" : `${duration} 秒${duration === 15 ? "（常用）" : ""}`}
                   </option>
-                  {data.tiktokAccounts.map((account) => (
-                    <option key={account.id} value={account.name}>
-                      {account.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={onAddTikTokAccount}
-                >
-                  ＋ 添加
-                </button>
-                <button type="button" className="secondary" onClick={onManageTikTokAccounts}>管理</button>
-              </div>
-              <button type="button" className="secondary archive-folder-button" onClick={onChooseArchiveDirectory}>选择 / 更改保存文件夹</button>
-              <small className="download-destination">
-                成片自动保存到：{data.tiktokAccounts.find(account => account.name === selectedTikTokAccount)?.archive_directory || `${data.integrations.seedanceRuntime?.downloadDirectory || "视频下载目录"}\\${selectedTikTokAccount || "账号名"}`}
-                \{archiveProductId ? `${archiveProductId}.mp4` : "原视频文件名"}
-              </small>
+                ))}
+              </select>
             </label>
             <label>
-              <span>
-                <b>{data.integrations.geminiMode === "web" ? "06" : "05"}</b>{" "}
-                生成方式
-              </span>
+              <span>投放地区</span>
+              <select value={selectedRegion} onChange={(event) => onRegion(event.target.value)}>
+                {TASK_REGIONS.map((region) => (
+                  <option key={region} value={region}>{region}</option>
+                ))}
+              </select>
+            </label>
+            {webGemini && <SpokenLanguageSelect region={selectedRegion} value={spokenLanguage} onChange={onSpokenLanguage} />}
+            <label>
+              <span>拍摄风格</span>
+              <select value={selectedShootingStyle} onChange={(event) => onShootingStyle(event.target.value)}>
+                {SHOOTING_STYLES.map((style) => (
+                  <option key={style} value={style}>{style}</option>
+                ))}
+              </select>
+            </label>
+            <div className="setting-row">
+              <span>归档账号</span>
+              <div className="tk-account-picker">
+                <select aria-label="TK 归档账号" value={selectedTikTokAccount} onChange={(event) => onTikTokAccount(event.target.value)}>
+                  <option value="">{data.tiktokAccounts.length ? "请选择 TK 账号" : "请先添加 TK 账号"}</option>
+                  {data.tiktokAccounts.map((account) => (
+                    <option key={account.id} value={account.name}>{account.name}</option>
+                  ))}
+                </select>
+                <button type="button" className="secondary" onClick={onAddTikTokAccount}>＋ 添加</button>
+                <button type="button" className="secondary" onClick={onManageTikTokAccounts}>管理</button>
+              </div>
+              <small className="download-destination">
+                成片自动保存到：{archiveFolder}\{archiveProductId ? `${archiveProductId}.mp4` : "原视频文件名"}
+              </small>
+              <button type="button" className="secondary archive-folder-button" onClick={onChooseArchiveDirectory}>选择 / 更改保存文件夹</button>
+            </div>
+            <label>
+              <span>生成方式</span>
               <select value={autoQueue ? "auto" : "prompt"} onChange={(event) => onAutoQueue(event.target.value === "auto")}>
                 <option value="auto">提示词 + 自动进 Seedance</option>
                 <option value="prompt">仅生成提示词</option>
               </select>
             </label>
+            {webGemini && <label>
+              <span>Gemini 账号</span>
+              <input value="自动分配空闲账号" readOnly aria-label="Gemini 账号分配" />
+            </label>}
           </div>
-          {data.integrations.geminiMode === "web" && <div className="creative-config-block">
-            <SpokenLanguageSelect region={selectedRegion} value={spokenLanguage} onChange={onSpokenLanguage} />
-            <label>
-              <span>发送给 Gem 的文字（可编辑）</span>
-              <textarea aria-label="发送给 Gem 的文字" rows={6} maxLength={12000}
-                value={gemRequestTemplate} onChange={event => onGemRequestTemplate(event.target.value)}
-                style={{ width: "100%", resize: "vertical", marginTop: 8 }} />
-            </label>
-            <p style={{ fontSize: 12, color: "#a6b5c6" }}>会记住你的修改。可用 {"{时长}、{地区}、{口播语言}、{拍摄风格}"} 自动带入参数；发送时会补齐口播语言，不会附加代码块要求，Gem 设定保持原样。</p>
-            <details>
-              <summary>查看实际发送内容</summary>
-              <pre data-testid="gem-request-preview" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{buildGemRequest(gemRequestTemplate, { duration: selectedDuration, region: selectedRegion, shooting_style: selectedShootingStyle,spoken_language:spokenLanguage })}</pre>
-            </details>
-          </div>}
-          {data.integrations.geminiMode === "web" && <VariantConfigBlock value={variantConfig} gems={data.gems}
+          {webGemini && <VariantConfigBlock value={variantConfig} gems={data.gems}
             duration={selectedDuration} region={selectedRegion} shootingStyle={selectedShootingStyle}
             disabledReason={selectedDuration === 30 ? "双段 30 秒任务不支持变体两轮" : ""} onChange={onVariantConfig} />}
+          {webGemini && <details className="gem-text">
+            <summary>发送给 Gem 的文字{gemRequestTemplate !== DEFAULT_GEM_REQUEST && <small className="gem-text-edited">已改过</small>}</summary>
+            <textarea aria-label="发送给 Gem 的文字" rows={6} maxLength={12000}
+              value={gemRequestTemplate} onChange={event => onGemRequestTemplate(event.target.value)} />
+            <p>会记住你的修改。可用 {"{时长}、{地区}、{口播语言}、{拍摄风格}"} 自动带入参数；发送时会补齐口播语言，不会附加代码块要求，Gem 设定保持原样。</p>
+            <details>
+              <summary>查看实际发送内容</summary>
+              <pre data-testid="gem-request-preview">{buildGemRequest(gemRequestTemplate, { duration: selectedDuration, region: selectedRegion, shooting_style: selectedShootingStyle,spoken_language:spokenLanguage })}</pre>
+            </details>
+          </details>}
+          <div className="run-plan" aria-label="点开始后会">
+            <span>点开始后会</span>
+            <ol>
+              <li className={hasProduct ? "" : "run-plan-warn"}>{planProduct}</li>
+              <li className={selectedGem ? "" : "run-plan-warn"}>{planPrompt}</li>
+              <li className={selectedTikTokAccount || !autoQueue ? "" : "run-plan-warn"}>{planVideo}</li>
+            </ol>
+          </div>
           <div className="composer-foot">
             <div className="chips">
-              <span>{selectedDuration === 30 ? "双段 30 秒 · 消耗两次视频生成额度" : `${selectedDuration} 秒`}</span>
-              {selectedDuration === 30 && <span>请选择双段 Gem：需输出「视频1｜上半段」和「视频2｜下半段」两份完整提示词</span>}
-              {selectedDuration !== 30 && data.integrations.geminiMode === "web" && <span>{variantConfig.enabled ? "变体两轮 · " : ""}每个代码块生成一条视频，有几个代码块消耗几次额度</span>}
-              <span>9:16</span>
-              <span>{selectedShootingStyle}</span>
-              <span>{selectedRegion}</span>
+              {missing.length ? <span className="run-blocker">还差：{missing.join("、")}</span> : <>
+                <span>9:16</span>
+                <span>{selectedShootingStyle}</span>
+                <span>{selectedRegion}</span>
+                {selectedDuration === 30 && <span>消耗两次视频额度</span>}
+                {selectedDuration !== 30 && webGemini && <span>{variantOn ? "变体两轮 · " : ""}几个代码块消耗几次额度</span>}
+              </>}
             </div>
             <button
               className="primary"
               onClick={async () => {
                 const accepted = await onRun({
-                    mode: productMode,
-                    files: quickFiles,
-                    productName: quickProductName,
-                    externalId: quickExternalId,
-                  });
-                  if (accepted && productMode === "new") {
-                    setQuickFiles([]);
-                    setQuickProductName("");
-                    setQuickExternalId("");
-                    setQuickError("");
+                  mode: productMode,
+                  files: quickFiles,
+                  productName: quickProductName,
+                  externalId: quickExternalId,
+                });
+                if (accepted && productMode === "new") {
+                  setQuickFiles([]);
+                  setQuickProductName("");
+                  setQuickExternalId("");
+                  setQuickError("");
                 }
               }}
-              disabled={
-                busy ||
-                (productMode === "new" ? !quickFiles.length : !selectedProduct) ||
-                !selectedGem ||
-                !selectedTikTokAccount
-              }
+              disabled={busy || missing.length > 0}
             >
-              {busy ? <><i className="spinner" /> 正在提交…</> : <>加入并发任务 <b>↗</b></>}
+              {busy ? <><i className="spinner" /> 正在提交…</> : "开始生成"}
             </button>
           </div>
-        </div>
+        </section>
 
-        <div className="pipeline-card">
-          <span className="step-kicker">PIPELINE</span>
-          <h3>自动化链路</h3>
-          {[
-            [
-              "1",
-              "Gemini 视觉理解",
-              data.integrations.geminiMode === "web"
-                ? data.integrations.gemini
-                  ? `${data.integrations.geminiRuntime?.accounts?.filter((account) => account.authenticated).length || 0} 个 Gemini 网页账号在线`
-                  : data.integrations.geminiRuntime?.online
-                    ? "等待登录 Gemini 账号"
-                    : "本机网页执行器未连接"
-                : data.integrations.gemini
-                  ? "API 已配置"
-                  : "API 未配置 · 禁止生成",
-            ],
-            [
-              "2",
-              "脚本与提示词",
-              data.integrations.gemini ? "使用所选 Gem 自动生成" : "等待 Gemini",
-            ],
-            ["3", "Seedance 2.0", seedanceRuntime.label],
-            ["4", "自动下载归档", "所选文件夹 / 商品 ID 或原文件名"],
-          ].map((item, index) => (
-            <div
-              className={`pipeline-step ${
-                index === 0 && !data.integrations.gemini
-                  ? "blocked"
-                  : index === 2 && seedanceRuntime.status !== "ready"
-                    ? "blocked"
-                    : ""
-              }`}
-              key={item[1]}
-            >
-              <span>{item[0]}</span>
-              <div><b>{item[1]}</b><small>{item[2]}</small></div>
-              {index < 3 && <i />}
+        <div className="create-col create-side">
+          <section className="create-panel" aria-labelledby="create-live-title">
+            <div className="create-panel-head">
+              <h2 id="create-live-title">正在执行</h2>
+              <small>{liveTasks.length ? `${liveTasks.length} 条` : ""}</small>
             </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="workflow-summary" aria-label="任务概况">
-        <span>共 <b>{data.taskCounts?.total ?? data.tasks.length}</b> 条任务</span>
-        <span>处理中 <b>{data.taskCounts?.active ?? data.tasks.filter((task) => ![...VIDEO_DONE_STATUSES, ...VIDEO_FAILED_STATUSES].includes(task.status)).length}</b></span>
-        <span>待检查 <b>{data.taskCounts?.review ?? data.tasks.filter(task => VIDEO_DONE_STATUSES.includes(task.status) && !APPROVED_REVIEW_STATUSES.includes(task.review_status || '')).length}</b></span>
-        <span>已完成 <b>{data.taskCounts?.completed ?? data.tasks.filter((task) => VIDEO_DONE_STATUSES.includes(task.status) && APPROVED_REVIEW_STATUSES.includes(task.review_status || '')).length}</b></span>
-        <button onClick={() => onNavigate("tasks")}>需处理 <b>{data.taskCounts?.attention ?? data.tasks.filter((task) => VIDEO_FAILED_STATUSES.includes(task.status)).length}</b> →</button>
-      </section>
-
-      <section className="content-grid">
-        <div className="panel">
-          <div className="panel-head">
-            <div><span className="step-kicker">RECENT RUNS</span><h3>最近任务</h3></div>
-            <button className="text-button" onClick={() => onNavigate("tasks")}>查看全部 →</button>
-          </div>
-          {data.tasks.length ? (
-            <div className="task-list">
-              {data.tasks.slice(0, 5).map((task) => (
-                <button className="task-row" key={task.id} onClick={() => onPreview(task)}>
-                  <div className="task-thumb">▶</div>
-                  <div className="task-copy"><b>{task.product_name || task.title}</b><span>{task.gem_name}</span></div>
-                  <div className="task-progress"><span style={{ width: `${Math.max(task.progress, 8)}%` }} /></div>
-                  <span className={`status ${taskStatusClass(task)}`}>{taskStatusLabel(task)}</span>
-                  <time>{formatTime(task.created_at)}</time>
-                </button>
-              ))}
+            {liveTasks.length ? <div className="live-jobs">
+              {liveTasks.slice(0, 5).map(task => {
+                const job = activeJobs.find(item => item.taskId === task.id);
+                const running = LIVE_RUNNING.includes(task.status);
+                return <button type="button" className="live-job" key={task.id} onClick={() => onPreview(task)}>
+                  <div><b>{task.task_role === 'fission' ? `${task.title} · ${task.batch_size || task.children?.length || ""} 个商品` : task.product_external_id || task.product_name || task.title}</b><small>{taskStatusLabel(task)}</small></div>
+                  <div className="live-bar" aria-hidden="true"><i style={{ width: `${running ? Math.min(Math.max(task.progress || 0, 6), 100) : 0}%` }} /></div>
+                  <small>{job ? [job.accountName, job.stage].filter(Boolean).join(" · ") : running ? "处理中" : "排队中，空闲后自动开始"}</small>
+                </button>;
+              })}
+              {liveTasks.length > 5 && <button type="button" className="text-button live-more" onClick={() => onNavigate("tasks", "active")}>还有 {liveTasks.length - 5} 条 →</button>}
+            </div> : <p className="live-empty">现在没有在跑的任务。</p>}
+          </section>
+          <section className="create-panel" aria-labelledby="create-summary-title">
+            <div className="create-panel-head"><h2 id="create-summary-title">任务概况</h2><small>点数字直接去看</small></div>
+            <div className="today-grid" aria-label="任务概况">
+              {summary.map(([filter, label, count]) => <button type="button" key={filter} className={filter} onClick={() => onNavigate("tasks", filter)}>
+                <b>{count}</b>{label}
+              </button>)}
             </div>
-          ) : (
-            <EmptyState icon="↗" title="还没有创作任务" text="添加商品后，从上方快速创建开始。" />
-          )}
+          </section>
+          <section className="create-panel" aria-labelledby="create-recent-title">
+            <div className="create-panel-head">
+              <h2 id="create-recent-title">最近任务</h2>
+              <button type="button" className="text-button" onClick={() => onNavigate("tasks")}>全部 →</button>
+            </div>
+            {data.tasks.length ? (
+              <div className="task-list">
+                {data.tasks.slice(0, 5).map((task) => (
+                  <button className="task-row" key={task.id} onClick={() => onPreview(task)}>
+                    <TaskProductThumbnail task={task} />
+                    <span className="task-copy"><b>{task.task_role === 'fission' ? task.title : task.product_external_id || task.product_name || task.title}</b><span>{formatTime(task.created_at)} · {task.tiktok_account_name || task.gem_name}</span></span>
+                    <span className={`status ${taskStatusClass(task)}`}>{taskStatusLabel(task)}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon="↗" title="还没有任务" text="放入商品图、选好 Gem，点开始生成。" />
+            )}
+          </section>
         </div>
-
-        <div className="panel quick-panel">
-          <div className="panel-head"><div><span className="step-kicker">LIBRARY</span><h3>快速管理</h3></div></div>
-          <button onClick={onAddProduct}><span>▣</span><div><b>添加商品</b><small>上传产品图与卖点</small></div><em>＋</em></button>
-          <button onClick={onAddGem}><span>◇</span><div><b>新建 Gem</b><small>定义身份和输出框架</small></div><em>＋</em></button>
-          <button onClick={() => onNavigate("settings")}><span>⚙</span><div><b>账号与下载位置</b><small>管理登录和成片保存目录</small></div><em>→</em></button>
-        </div>
-      </section>
+      </div>
     </div>
   );
 }

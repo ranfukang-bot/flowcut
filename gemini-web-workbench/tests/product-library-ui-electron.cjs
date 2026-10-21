@@ -38,10 +38,10 @@ app.whenReady().then(async()=>{
   await wait("document.querySelectorAll('.product-image-option').length===1");
   await run("document.querySelector('.product-image-option').click()");await wait("!document.querySelector('dialog')");assert.equal(await selected(),'second');
   await click('看图更换商品');await wait("!!document.querySelector('dialog[open]')");await click('取消');await wait("!document.querySelector('dialog')");assert.equal(await selected(),'second');
-  await click('加入并发任务');await wait("calls.filter(c=>c.url==='/api/tasks').length===1 && !document.querySelector('.composer-foot button').disabled");
+  await click('开始生成');await wait("calls.filter(c=>c.url==='/api/tasks').length===1 && !document.querySelector('.composer-foot button').disabled");
   assert.equal(await selected(),'second');
   await run("for(const [value] of [['gem2'],['第二账号']]){const select=[...document.querySelectorAll('select')].find(s=>[...s.options].some(o=>o.value===value));Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select,value);select.dispatchEvent(new Event('change',{bubbles:true}));}");
-  await click('加入并发任务');await wait("calls.filter(c=>c.url==='/api/tasks').length===2 && !document.querySelector('.composer-foot button').disabled");
+  await click('开始生成');await wait("calls.filter(c=>c.url==='/api/tasks').length===2 && !document.querySelector('.composer-foot button').disabled");
   const requests=await run("calls.filter(c=>c.url==='/api/tasks').map(c=>JSON.parse(c.options.body))");
   assert.deepEqual(requests.map(r=>r.productId),['second','second']);assert.equal(requests[1].gemId,'gem2');assert.equal(requests[1].tiktokAccountName,'第二账号');
   assert.deepEqual(requests[1].imageKeys,['products/second/two','products/second/three']);
@@ -50,9 +50,9 @@ app.whenReady().then(async()=>{
   // A fresh upload becomes the selected library item after the first successful task.
   await click('上传新商品');await wait("!!document.querySelector('.quick-upload-zone input')");
   await run("const fileInput=document.querySelector('.quick-upload-zone input');const transfer=new DataTransfer();transfer.items.add(new File(['image'],'1737206719748015225.png',{type:'image/png'}));fileInput.files=transfer.files;fileInput.dispatchEvent(new Event('change',{bubbles:true}));const originalFetch=window.fetch;window.fetch=async(url,options)=>url==='/api/products'?(calls.push({url,options}),{ok:true,json:async()=>({id:'first',reused:true,imageKeys:['products/first/one']})}):originalFetch(url,options);true;");
-  await wait("!document.querySelector('.composer-foot button').disabled");await click('加入并发任务');
+  await wait("!document.querySelector('.composer-foot button').disabled");await click('开始生成');
   await wait("document.querySelector('.library-product-picker')?.dataset.productId==='first'");
-  await click('加入并发任务');await wait("calls.filter(c=>c.url==='/api/tasks').length===4 && !document.querySelector('.composer-foot button').disabled");
+  await click('开始生成');await wait("calls.filter(c=>c.url==='/api/tasks').length===4 && !document.querySelector('.composer-foot button').disabled");
   assert.equal(await run("calls.filter(c=>c.url==='/api/products').length"),1);
   assert.deepEqual(await run("calls.filter(c=>c.url==='/api/tasks').slice(2).map(c=>JSON.parse(c.options.body).productId)"),['first','first']);
   await run('remountStudio()');await wait("document.querySelector('.library-product-picker')?.dataset.productId==='first'");

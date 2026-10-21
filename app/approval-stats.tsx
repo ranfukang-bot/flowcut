@@ -28,14 +28,14 @@ export function ApprovalStats({refreshKey}:{refreshKey:string}) {
     const timer=window.setInterval(()=>void refresh(),15000);
     return ()=>{stopped=true;controller.abort();window.clearInterval(timer);};
   },[selectedDay,requestKey]);
-  return <section aria-label="每日通过统计" style={{background:'white',border:'1px solid #dfe3dc',borderRadius:14,padding:18,marginBottom:20}}>
-    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
-      <div><h3 style={{margin:0}}>每日通过统计 <span style={{color:'#73852b'}}>共 {counts?.total??'—'} 条</span></h3>
-        <p style={{margin:'6px 0',fontSize:12,color:'#77828a'}}>按 TK 归档账号统计，审核通过才计数；清除任务不清零。日期按本机时间。</p></div>
-      <div style={{display:'flex',gap:8}}><input aria-label="统计日期" type="date" value={selectedDay||counts?.day||today()} onChange={e=>setSelectedDay(e.target.value)}/><button className="secondary" onClick={()=>setSelectedDay('')}>今天</button></div>
+  return <section className="approval-stats" aria-label="每日通过统计">
+    <div>
+      <h3>每日通过统计 <span>共 {counts?.total??'—'} 条</span></h3>
+      <p>按 TK 归档账号统计，审核通过才计数；清除任务不清零。日期按本机时间。</p>
     </div>
-    {error?<p role="alert">{error}</p>:<div style={{display:'flex',flexWrap:'wrap',gap:10,marginTop:10}}>
-      {counts?.accounts.map(account=><div key={account.account_name} style={{border:'1px solid #e5e8de',borderRadius:10,padding:'10px 16px',minWidth:130}}><span>{account.account_name}</span><strong style={{display:'block',fontSize:22,marginTop:4}}>{account.count} <small style={{fontSize:12,fontWeight:400}}>条</small></strong></div>)}
+    <div className="approval-date"><input aria-label="统计日期" type="date" value={selectedDay||counts?.day||today()} onChange={e=>setSelectedDay(e.target.value)}/><button className="secondary" onClick={()=>setSelectedDay('')}>今天</button></div>
+    {error?<p role="alert" className="form-error">{error}</p>:<div className="approval-accounts">
+      {counts?.accounts.map(account=><div key={account.account_name}><span>{account.account_name}</span><strong>{account.count}</strong><small>条</small></div>)}
       {counts&&!counts.accounts.length&&<span>暂无账号，请先添加 TK 归档账号。</span>}
     </div>}
   </section>;

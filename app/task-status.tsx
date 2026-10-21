@@ -136,6 +136,19 @@ export function TaskChain({ task, compact = false }: { task: Task; compact?: boo
   );
 }
 
+// 任务队列里的一行进度：四格小条 + 当前这一步的说明。
+export function StageBar({ task }: { task: Task }) {
+  const stages = taskStages(task);
+  const current = stages.find(stage => stage.state === "blocked") || stages.find(stage => stage.state === "active")
+    || stages.find(stage => stage.state === "waiting") || stages[stages.length - 1];
+  const blocked = current.state === "blocked";
+  const summary = stages.map(stage => `${stage.label}：${stage.state === "done" ? "完成" : stage.state === "active" ? "进行中" : stage.state === "blocked" ? "卡住" : "等待"}`).join("，");
+  return <div className={blocked ? "stage-bar blocked" : "stage-bar"}>
+    <div role="img" aria-label={summary} title={summary}>{stages.map(stage => <span key={stage.number} className={stage.state} />)}</div>
+    <small>{current.label} · {current.detail}</small>
+  </div>;
+}
+
 // Kept apart from taskStatusLabel so a group's label can count its clips.
 export function clipAwaitingReview(task: Task): boolean {
   return taskStatusLabel(task) === '待检查';

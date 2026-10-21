@@ -23,25 +23,42 @@ import type { Gem, Product, Task, TikTokAccount, Workspace, Page, SeedanceRuntim
 import { withChildren, taskStatusLabel } from './task-status';
 import { TasksPage } from './tasks-page';
 import { TikTokAccountModal, TikTokAccountManager } from './tiktok-accounts';
+import { Icon, type IconName } from './icons';
 import { APPROVED_REVIEW_STATUSES, GROUP_ROLES, VIDEO_RUNNING_STATUSES } from '../lib/task-statuses';
 
-const nav: Array<{ id: Page; label: string; icon: string }> = [
-  { id: "dashboard", label: "创作中心", icon: "✦" },
-  { id: "scripts", label: "剧本提示词", icon: "文" },
-  { id: "remix", label: "爆款复刻", icon: "◎" },
-  { id: "fission", label: "多品裂变", icon: "⑂" },
-  { id: "products", label: "商品库", icon: "▣" },
-  { id: "gems", label: "Gem 模板", icon: "◇" },
-  { id: "tasks", label: "任务队列", icon: "↗" },
-  { id: "publisher", label: "发布管理", icon: "▷" },
-  { id: "calendar", label: "发布日历", icon: "◫" },
-  { id: "settings", label: "账号与设置", icon: "⚙" },
+const nav: Array<{ id: Page; label: string; icon: IconName }> = [
+  { id: "dashboard", label: "创作中心", icon: "create" },
+  { id: "scripts", label: "剧本提示词", icon: "scripts" },
+  { id: "remix", label: "爆款复刻", icon: "remix" },
+  { id: "fission", label: "多品裂变", icon: "fission" },
+  { id: "products", label: "商品库", icon: "products" },
+  { id: "gems", label: "Gem 模板", icon: "gems" },
+  { id: "tasks", label: "任务队列", icon: "tasks" },
+  { id: "publisher", label: "发布管理", icon: "publisher" },
+  { id: "calendar", label: "发布日历", icon: "calendar" },
+  { id: "settings", label: "账号与设置", icon: "settings" },
 ];
+
+// 顶栏的 Gemini 状态：网页模式显示「已登录账号数 / 启用账号数」。
+function geminiStatusText(data: Workspace) {
+  const { gemini, geminiMode, geminiRuntime } = data.integrations;
+  if (geminiMode !== "web") return gemini ? "Gemini API 已配置" : "Gemini API 未配置";
+  if (!gemini) return geminiRuntime?.online ? "Gemini 账号未登录" : "Gemini 本机执行器未连接";
+  const accounts = (geminiRuntime?.accounts || []).filter(account => account.enabled !== false);
+  if (!accounts.length) return "Gemini 已登录";
+  return `Gemini ${accounts.filter(account => account.authenticated).length}/${accounts.length} 在线`;
+}
 
 export function StudioApp() {
   const [seedanceStatus, setSeedanceStatus] = useState<SeedanceDesktopState | null>(null);
   const seedanceWorkPending = Boolean(seedanceStatus?.tasks.some(task => ["upload_wait", "uploading", "queued", "submitting", "generating", "retry_wait", "model_wait"].includes(task.status)));
   const [page, setPage] = useState<Page>("dashboard");
+  // 创作中心点「待检查 / 需处理…」时，任务队列直接打开对应筛选。
+  const [taskFilter, setTaskFilter] = useState("all");
+  function goTo(next: Page, filter = "all") {
+    setTaskFilter(filter);
+    setPage(next);
+  }
   const [moreTools, setMoreTools] = useState(false);
   const [data, setData] = useState<Workspace | null>(null);
   const [loading, setLoading] = useState(true);
@@ -518,23 +535,20 @@ export function StudioApp() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <button className="brand" onClick={() => setPage("dashboard")}>
+        <button className="brand" onClick={() => goTo("dashboard")}>
           <span className="brand-mark">F</span>
-          <span>
-            <b>FlowCut</b>
-            <small>AI VIDEO STUDIO</small>
-          </span>
+          <span><b>FlowCut</b></span>
         </button>
 
         <nav className="nav-list" aria-label="主导航">
-          <p>工作台</p>
           {(["dashboard", "remix", "fission", "tasks", "products", "publisher", "gems", "settings"] as Page[]).map((id) => nav.find((item) => item.id === id)!).map((item) => (
             <button
               key={item.id}
               className={page === item.id ? "active" : ""}
-              onClick={() => setPage(item.id)}
+              aria-current={page === item.id ? "page" : undefined}
+              onClick={() => goTo(item.id)}
             >
-              <span>{item.icon}</span>
+              <Icon name={item.icon} />
               {item.label}
               {item.id === "tasks" && (data.taskCounts?.total ?? data.tasks.length) > 0 && (
                 <em>{data.taskCounts?.total ?? data.tasks.length}</em>
@@ -542,59 +556,43 @@ export function StudioApp() {
             </button>
           ))}
           <button className="more-tools-toggle" aria-expanded={moreTools} onClick={() => setMoreTools(!moreTools)}>
-            <span>{moreTools ? "−" : "+"}</span>更多工具
+            <Icon name={moreTools ? "minus" : "plus"} />更多工具
           </button>
           {moreTools && nav.filter((item) => ["scripts", "calendar"].includes(item.id)).map((item) => (
             <button
               key={item.id}
               className={page === item.id ? "active" : ""}
-              onClick={() => setPage(item.id)}
+              aria-current={page === item.id ? "page" : undefined}
+              onClick={() => goTo(item.id)}
             >
-              <span>{item.icon}</span>
+              <Icon name={item.icon} />
               {item.label}
             </button>
           ))}
         </nav>
 
         <div className="sidebar-foot">
-          <div>
-            <b>图片 → 提示词 → 视频</b>
-            <small>成片按 TK 账号自动归档</small>
-          </div>
+          {updateState?.currentVersion && <span className="version-badge" title={`当前安装版本：FlowCut ${updateState.currentVersion}`}>v{updateState.currentVersion}</span>}
+          <span title="本机使用，无授权到期限制">个人本机版</span>
         </div>
       </aside>
 
       <main className="main">
         <header className="topbar">
-          <div>
-            <span className="eyebrow">AI VIDEO OPERATIONS</span>
-            <h1>{nav.find((item) => item.id === page)?.label}</h1>
-          </div>
-          <div className="top-actions">
-            {updateState?.currentVersion && (
-              <div
-                className="version-badge"
-                title={`当前安装版本：FlowCut ${updateState.currentVersion}`}
-              >
-                v{updateState.currentVersion}
-              </div>
-            )}
-            <div className="health">
-              <i className={data.integrations.gemini ? "online" : ""} />
-              {data.integrations.gemini
-                ? data.integrations.geminiMode === "web"
-                  ? data.integrations.geminiRuntime?.queueRunning
-                    ? "Gemini 已登录 · 队列运行中"
-                    : "Gemini 已登录 · 队列已暂停"
-                  : "Gemini API 已配置"
-                : data.integrations.geminiMode === "web"
-                  ? data.integrations.geminiRuntime?.online
-                    ? "Gemini 账号未登录"
-                    : "Gemini 本机执行器未连接"
-                  : "Gemini API 未配置"}
-            </div>
-            <div className="version-badge" title="本机使用，无授权到期限制">个人本机版</div>
-            <div className="avatar">FC</div>
+          <h1>{nav.find((item) => item.id === page)?.label}</h1>
+          <div className="top-actions" aria-label="运行状态">
+            <span className="health">
+              <i className={data.integrations.gemini ? "online" : "offline"} />
+              {geminiStatusText(data)}
+            </span>
+            {data.integrations.gemini && data.integrations.geminiMode === "web" && <span className="health">
+              <i className={data.integrations.geminiRuntime?.queueRunning ? "online" : ""} />
+              {data.integrations.geminiRuntime?.queueRunning ? "队列运行中" : "队列已暂停"}
+            </span>}
+            <span className="health" title={seedanceRuntime.detail}>
+              <i className={seedanceRuntime.status === "ready" ? "online" : seedanceRuntime.status === "checking" ? "" : "offline"} />
+              {seedanceRuntime.status === "ready" ? "Seedance 在线" : `Seedance ${seedanceRuntime.label}`}
+            </span>
           </div>
         </header>
 
@@ -629,14 +627,8 @@ export function StudioApp() {
             onChooseArchiveDirectory={chooseSelectedArchiveDirectory}
             onAutoQueue={setAutoQueue}
             onRun={runTask}
-            onAddProduct={() => setProductOpen(true)}
-            onAddGem={() => {
-              setEditingGem(null);
-              setGemOpen(true);
-            }}
             onPreview={openTask}
-            onNavigate={setPage}
-            seedanceRuntime={seedanceRuntime}
+            onNavigate={goTo}
           />
         )}
         {page === "scripts" && (
@@ -673,7 +665,7 @@ export function StudioApp() {
             onImported={reload}
             onAdd={() => setProductOpen(true)}
             onEdit={setEditingProduct}
-            onCreate={(product) => { setSelectedProduct(product.id); setProductMode("library"); setPage("dashboard"); window.scrollTo(0, 0); setNotice(`已带入商品 ${product.external_id || product.name || ""} 的图片，可直接选择 Gem 制作`); }}
+            onCreate={(product) => { setSelectedProduct(product.id); setProductMode("library"); goTo("dashboard"); window.scrollTo(0, 0); setNotice(`已带入商品 ${product.external_id || product.name || ""} 的图片，可直接选择 Gem 制作`); }}
             onDelete={(id) => deleteRecord("/api/products", id, "删除该商品及关联任务？")}
           />
         )}
@@ -694,6 +686,8 @@ export function StudioApp() {
         {page === "tasks" && (
           <TasksPage
             tasks={data.tasks}
+            counts={data.taskCounts}
+            initialFilter={taskFilter}
             geminiRuntime={data.integrations.geminiRuntime}
             onPreview={openTask}
             onDelete={(task) => deleteRecord("/api/tasks", task.id, GROUP_ROLES.includes(task.task_role||'')

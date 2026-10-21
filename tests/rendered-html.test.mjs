@@ -24,11 +24,11 @@ test("studio exposes multi-image product upload", async () => {
   assert.match(studio, /ProductEditModal/);
   assert.match(products, /export async function PUT/);
   assert.match(products, /UPDATE products/);
-  assert.match(studio, /拖拽商品图到这里，或点击批量选择/);
+  assert.match(studio, /把商品图拖到这里，或点击选择/);
   assert.match(studio, /setQuickFiles\(\(current\)/);
-  assert.match(studio, /上传新商品与选择商品库二选一/);
+  assert.match(studio, /选择已有商品/);
   assert.match(studio, /productMode === "new"/);
-  assert.match(studio, /新商品会自动入库/);
+  assert.match(studio, /开始后存进商品库/);
   assert.match(studio, /URL\.createObjectURL/);
   assert.match(studio, /商品名称（选填）/);
   assert.match(products, /\.getAll\("images"\)/);
@@ -105,7 +105,7 @@ test("studio exposes encrypted providers, concurrent tasks and Seedance bridge",
   assert.doesNotMatch(studio, /window\.prompt/);
   assert.match(studio, /成片自动保存到/);
   assert.match(studio, /selectedTikTokAccount/);
-  assert.match(studio, /设置本次视频/);
+  assert.match(studio, /本次设置/);
   assert.match(studio, /selectedDuration/);
   assert.match(studio, /selectedRegion/);
   assert.match(studio, /selectedShootingStyle/);

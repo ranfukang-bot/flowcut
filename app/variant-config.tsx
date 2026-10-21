@@ -24,7 +24,7 @@ export function VariantConfigBlock({ value, gems, duration, region, shootingStyl
         onChange={event => onChange({ ...value, enabled: event.target.checked })} />
       <span><b>变体两轮</b>：上面的 Gem 先出母版提示词，再交给变体 Gem；变体 Gem 输出几个代码块就生成几条视频</span>
     </label>
-    {disabledReason && <p style={{ fontSize: 12, color: "#a6b5c6" }}>{disabledReason}</p>}
+    {disabledReason && <p className="field-note">{disabledReason}</p>}
     {active && <>
       <label className="variant-field">
         <span>变体 Gem（第二轮）</span>
@@ -36,13 +36,12 @@ export function VariantConfigBlock({ value, gems, duration, region, shootingStyl
       <label className="variant-field">
         <span>第二轮发送给变体 Gem 的文字（可编辑）</span>
         <textarea aria-label="第二轮发送给变体 Gem 的文字" rows={5} maxLength={12000} value={value.template}
-          onChange={event => onChange({ ...value, template: event.target.value })}
-          style={{ width: "100%", resize: "vertical" }} />
+          onChange={event => onChange({ ...value, template: event.target.value })} />
       </label>
-      <p style={{ fontSize: 12, color: "#a6b5c6" }}>可使用 {"{时长}、{地区}、{拍摄风格}"}，必须保留 {MOTHER_PROMPT_PLACEHOLDER}（第一轮的母版会放在这里）。商品图片会再上传一次。</p>
+      <p className="field-note">可使用 {"{时长}、{地区}、{拍摄风格}"}，必须保留 {MOTHER_PROMPT_PLACEHOLDER}（第一轮的母版会放在这里）。商品图片会再上传一次。</p>
       <details>
         <summary>查看第二轮实际发送内容</summary>
-        <pre data-testid="variant-request-preview" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{preview}</pre>
+        <pre data-testid="variant-request-preview">{preview}</pre>
       </details>
     </>}
   </div>;

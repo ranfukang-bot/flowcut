@@ -16,6 +16,6 @@ test('待检查单独用橙黄状态，已通过和生成中不被染色',()=>{
   assert.equal(context.taskStatusClass({...ready,download_path:null}),'video_ready');
   assert.equal(context.taskStatusClass({status:'video_generating'}),'video_generating');
   const css=fs.readFileSync(new URL('../app/globals.css',import.meta.url),'utf8');
-  assert.match(css,/\.status\.review_pending\s*\{[^}]*background: #fff0bf/);
+  assert.match(css,/\.status\.review_pending\s*\{[^}]*background: var\(--accent-soft\)/);
   assert.equal((source.match(/status \$\{taskStatusClass\(task\)\}/g)||[]).length,3);
 });

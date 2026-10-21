@@ -69,7 +69,7 @@ test('fission UI: drop images grouped by product ID, fix one card, pick from lib
   };
   await open();
   const nav=page.locator('.nav-list');
-  assert.match((await nav.textContent()).replace(/\s/g,''),/爆款复刻⑂多品裂变/);
+  assert.match((await nav.textContent()).replace(/\s/g,''),/爆款复刻多品裂变/);
   const start=page.locator('.fission-submit button.primary');
   const shot=async name=>{if(process.env.FLOWCUT_FISSION_SCREENSHOT)await page.screenshot({path:process.env.FLOWCUT_FISSION_SCREENSHOT.replace(/\.png$/,`-${name}.png`),fullPage:true});};
   await shot('empty');

@@ -373,7 +373,7 @@ function createMainWindow() {
     height: 920,
     minWidth: 920,
     minHeight: 640,
-    backgroundColor: "#f4f4f0",
+    backgroundColor: "#0e1014",
     title: "FlowCut 全自动 AI 视频工作台",
     icon: flowcutWindowIcon(),
     webPreferences: {

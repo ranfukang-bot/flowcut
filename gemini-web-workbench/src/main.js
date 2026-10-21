@@ -255,7 +255,7 @@ const broadcast = createStateBroadcast(() => {
 });
 
 function tickBridgeSoon() {
-  if (bridge) setTimeout(() => void bridge.tick(), 50);
+  if (bridge && !app.isQuitting) setTimeout(() => { if (!app.isQuitting) void bridge.tick(); }, 50);
 }
 
 let startupBlockedMessage = "";

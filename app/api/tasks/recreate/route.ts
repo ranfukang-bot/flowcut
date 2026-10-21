@@ -1,6 +1,7 @@
 import { getProviderConfig } from "../../../../lib/provider-config";
 import { ensureWorkspace, getDb, jsonError, runtimeEnv } from "../../../../lib/storage";
 import { clipStart } from "../../../../lib/task-batches";
+import { CHILD_ROLES, CONCAT_REVIEW_STATUSES, VIDEO_DONE_STATUSES } from '../../../../lib/task-statuses';
 
 // A fresh task identity keeps old callbacks/downloads/publication records isolated.
 export async function POST(request: Request) {
@@ -43,11 +44,11 @@ export async function POST(request: Request) {
     if (source.task_role === "concat") {
       return Response.json({ error: "拼接成片不能重新生成；如需重拼，请删除这条拼接成片，参与拼接的片段会回到待检查" }, { status: 409 });
     }
-    if (['merging','merged'].includes(source.review_status)) {
+    if (CONCAT_REVIEW_STATUSES.includes(source.review_status)) {
       return Response.json({ error: "这条视频已用于拼接，不能单独重做；删除拼接成片后它会回到待检查" }, { status: 409 });
     }
     if (['approved','approving','deleting'].includes(source.review_status)) return Response.json({error:'成片正在删除、已送入发布流程或正在放行，不能直接重做删除'}, {status:409});
-    if (!["video_ready", "scheduled"].includes(source.status)) {
+    if (!VIDEO_DONE_STATUSES.includes(source.status)) {
       return Response.json({ error: "请等原任务成片完成后再重新生成；进行中的任务不会被中断" }, { status: 409 });
     }
     const activeCopy = () => db.prepare(`SELECT id, status FROM tasks WHERE regenerated_from_task_id = ?
@@ -86,7 +87,7 @@ export async function POST(request: Request) {
           AND status NOT IN ('video_ready', 'scheduled', 'failed'))`;
     // A clip of a code-block batch is remade from its own prompt: no Gemini
     // round, same group and position, a fresh video from Seedance.
-    const remakeClip = ['clip','fission_child'].includes(source.task_role||'') && Boolean(source.batch_parent_id) && String(source.prompt || "").trim().length >= 300;
+    const remakeClip = CHILD_ROLES.includes(source.task_role||'') && Boolean(source.batch_parent_id) && String(source.prompt || "").trim().length >= 300;
     if(source.task_role==='fission_child'&&!remakeClip)return Response.json({error:'本商品提示词或分组信息缺失，不能作为普通商品任务重做'},{status:409});
     let clipStatement: ReturnType<typeof db.prepare> | null = null;
     if (remakeClip) {

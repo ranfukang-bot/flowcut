@@ -4,6 +4,7 @@ const { createHash } = require('node:crypto');
 const { randomUUID } = require('node:crypto');
 const { accountVideoDirectory } = require('../../vendor/seedance-engine/video-download');
 const { concatClips: defaultConcatClips } = require('./clip-concat');
+const { VIDEO_DONE_STATUSES } = require('../../lib/task-statuses.ts');
 const MAX_CONCAT_CLIPS = 10;
 
 function reviewDirectory(userData, taskId) {
@@ -160,7 +161,7 @@ class VideoReview {
     return this.request('/api/tasks/review?id=' + encodeURIComponent(id));
   }
   checkedSource(task) {
-    if (!['video_ready', 'scheduled'].includes(task.status) || !task.download_path) throw Error('视频尚未下载完成');
+    if (!VIDEO_DONE_STATUSES.includes(task.status) || !task.download_path) throw Error('视频尚未下载完成');
     if (path.extname(task.download_path).toLowerCase() !== '.mp4') throw Error('只能打开已归档的 MP4 成片');
     const source = fs.realpathSync(task.download_path);
     if (!fs.statSync(source).isFile()) throw Error('成片文件不存在');
@@ -188,7 +189,7 @@ class VideoReview {
     try {
       const task = await this.request('/api/tasks/review?id=' + encodeURIComponent(id) + '&optional=1');
       if (!task) { await this.beforeDelete(id); return true; }
-      if (!['pending','deleting'].includes(task.review_status) || !['video_ready','scheduled'].includes(task.status)) throw Error('只能删除待检查的任务及视频，已放行或重做的任务不能这样删除');
+      if (!['pending','deleting'].includes(task.review_status) || !VIDEO_DONE_STATUSES.includes(task.status)) throw Error('只能删除待检查的任务及视频，已放行或重做的任务不能这样删除');
       const folder = path.resolve(reviewDirectory(this.userData, id));
       const file = path.resolve(task.download_path || '');
       if (!task.download_path || !within(folder, file) || path.extname(file).toLowerCase() !== '.mp4') throw Error('视频不在该任务的临时存放目录中，未删除');
@@ -294,7 +295,7 @@ class VideoReview {
       if (task.review_status === 'approved') {
         return { file: task.approved_path, alreadyApproved: true, ...(task.task_role === 'concat' ? await this.consumeAfterApproval(id) : {}) };
       }
-      if (!['video_ready', 'scheduled'].includes(task.status)) throw Error('视频尚未完成');
+      if (!VIDEO_DONE_STATUSES.includes(task.status)) throw Error('视频尚未完成');
       const folder = task.archive_directory ? path.resolve(task.archive_directory)
         : accountVideoDirectory(this.defaultDirectory(), task.tiktok_account_name);
       const recordFile = path.join(reviewDirectory(this.userData, id), 'approval.json');

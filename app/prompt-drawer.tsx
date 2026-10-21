@@ -11,6 +11,7 @@ import { api, desktopBridge } from './studio-client';
 import type { Gem, Task } from './studio-types';
 import { formatTime } from './studio-ui';
 import { TaskChain, taskStatusClass, taskStatusLabel } from './task-status';
+import { APPROVED_REVIEW_STATUSES, CONCAT_REVIEW_STATUSES, PROMPT_ONLY_STATUSES, VIDEO_DONE_STATUSES, VIDEO_RUNNING_STATUSES } from '../lib/task-statuses';
 
 export function PromptDrawer({
   task,
@@ -30,7 +31,7 @@ export function PromptDrawer({
   const isGroup = task.task_role === "group" || isFission;
   const isClip = task.task_role === "clip" || isFissionChild;
   const isConcat = task.task_role === "concat";
-  const merged = ['merging', 'merged'].includes(task.review_status || '');
+  const merged = CONCAT_REVIEW_STATUSES.includes(task.review_status || '');
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState("");
   const [recreateError, setRecreateError] = useState("");
@@ -217,13 +218,13 @@ export function PromptDrawer({
             <b>{task.review_status === 'approved' ? '成片已审核通过' : '成片已下载 · 请检查'}</b>
             <span>{task.approved_path || task.download_path}</span>
             <button className="secondary" disabled={Boolean(busy) || task.review_status === 'replaced'} onClick={() => reviewAction('open')}>外部打开视频</button>
-            {!['approved','replaced'].includes(task.review_status || '') && <button className="secondary" disabled={Boolean(busy)} onClick={() => reviewAction('folder')}>打开临时存放目录</button>}
+            {!APPROVED_REVIEW_STATUSES.includes(task.review_status || '') && <button className="secondary" disabled={Boolean(busy)} onClick={() => reviewAction('folder')}>打开临时存放目录</button>}
             {!['approved','replaced','deleting','merging','merged'].includes(task.review_status || '') && <button className="primary" disabled={Boolean(busy)} onClick={() => reviewAction('approve')}>通过检查并送入发布目录</button>}
             {task.approved_path && <span>已放行至：{task.approved_path}</span>}
             {!task.download_path.includes('review-videos') && task.review_status !== 'approved' && <span>这是旧版已下载的文件，可能早已在发布目录中。此状态不会撤回已开始的发布。</span>}
           </div>
         )}
-        {isConcat && ["video_ready", "scheduled"].includes(task.status) && ['pending','deleting'].includes(task.review_status || 'pending') && task.download_path && (
+        {isConcat && VIDEO_DONE_STATUSES.includes(task.status) && ['pending','deleting'].includes(task.review_status || 'pending') && task.download_path && (
           <div className="download-result">
             <b>拼接成片不满意？</b>
             <span>删除这条拼接成片后，参与拼接的原视频会回到待检查，可以单独通过、重做或重新拼接。</span>
@@ -232,7 +233,7 @@ export function PromptDrawer({
             </button>
           </div>
         )}
-        {!isConcat && !merged && ["video_ready", "scheduled"].includes(task.status) && !['approved','approving'].includes(task.review_status || '') && (
+        {!isConcat && !merged && VIDEO_DONE_STATUSES.includes(task.status) && !['approved','approving'].includes(task.review_status || '') && (
           <div className="download-result">
             <b>{isClip ? "这条视频不满意？" : "成片不满意？用这些素材重新制作"}</b>
             <span>{isClip
@@ -287,7 +288,7 @@ export function PromptDrawer({
               {busy === "regenerate" ? "Gemini 识别中…" : "重新用 Gemini 识别并生成视频"}
             </button>
           )}
-          {["prompt_ready", "seedance_blocked"].includes(task.status) &&
+          {PROMPT_ONLY_STATUSES.includes(task.status) &&
             task.provider !== "demo-engine" && (
             <button
               className="primary"
@@ -297,7 +298,7 @@ export function PromptDrawer({
               {busy === "queue" ? "提交中…" : task.status === "seedance_blocked" ? "重试提交 Seedance" : "提交 Seedance"}
             </button>
           )}
-          {["video_queued", "video_generating"].includes(task.status) &&
+          {VIDEO_RUNNING_STATUSES.includes(task.status) &&
             task.provider_status_url &&
             task.provider !== "seedance-bridge" && (
               <button

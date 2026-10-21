@@ -12,6 +12,7 @@ import { validateTikTokAccountName } from "../../../lib/tiktok-accounts";
 import { listTasks, taskDetail } from '../../../lib/task-list';
 import { validateVariantRequest } from "../../../lib/prompt-blocks";
 import { ORPHAN_GROUP_DELETE } from "../../../lib/task-batches";
+import { PROMPT_ONLY_STATUSES, VIDEO_DONE_STATUSES } from '../../../lib/task-statuses';
 
 export async function GET(request: Request) {
   try {
@@ -469,7 +470,7 @@ export async function PATCH(request: Request) {
       if (task.task_role === "group" || task.task_role === "concat" || task.task_role === 'fission') {
         return Response.json({ error: "分组或拼接任务不能直接提交 Seedance，请在其中的单条视频上操作" }, { status: 409 });
       }
-      if(task.task_role==='fission_child' && (!['prompt_ready','seedance_blocked'].includes(task.status)||task.provider_job_id)) return Response.json({error:'这条视频已在执行或尚未完成提示词，请使用原任务继续处理'},{status:409});
+      if(task.task_role==='fission_child' && (!PROMPT_ONLY_STATUSES.includes(task.status)||task.provider_job_id)) return Response.json({error:'这条视频已在执行或尚未完成提示词，请使用原任务继续处理'},{status:409});
       if (task.provider === "demo-engine") {
         return Response.json(
           {
@@ -584,7 +585,7 @@ export async function DELETE(request: Request) {
       return Response.json({ ok: true, deleted: ids.length, ids });
     }
     if (url.searchParams.get("completed") === "1") {
-      const completedStatuses = ["video_ready", "scheduled"];
+      const completedStatuses = VIDEO_DONE_STATUSES;
       // A concatenated video keeps its row until the desktop has removed the
       // clips merged into it; otherwise those clips would be stranded.
       const completedWhere = `status IN (?, ?) AND review_status IN ('approved','replaced')

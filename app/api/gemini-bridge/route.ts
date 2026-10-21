@@ -13,6 +13,7 @@ import { buildRewritePrompt } from "../../../lib/script-pipeline";
 import { ensureWorkspace, getDb, jsonError } from "../../../lib/storage";
 import { renderVariantRequest, splitPromptBlocks, type PromptBlockMode } from "../../../lib/prompt-blocks";
 import { clipInsertStatements, clipStart, clipTaskId } from "../../../lib/task-batches";
+import { GEMINI_STATUSES } from '../../../lib/task-statuses';
 
 type GeminiKind = "standard" | "variant" | "reference-remix" | "script-pipeline";
 
@@ -843,7 +844,7 @@ export async function POST(request: Request) {
       const appliedPrompt = split ? prompt : parsed.prompts[0];
       if (
         String(task.prompt || "").trim() === appliedPrompt &&
-        !["prompt_queued", "prompt_generating", "variant_queued", "variant_generating"].includes(task.status)
+        !GEMINI_STATUSES.includes(task.status)
       ) {
         return Response.json({ ok: true, alreadyApplied: true });
       }

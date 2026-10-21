@@ -1,6 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import { confirmAction } from "./confirm-action";
+import { VIDEO_DONE_STATUSES } from '../lib/task-statuses';
 
 export type BatchTask = {
   id: string;
@@ -25,7 +26,7 @@ export type BatchTask = {
 type ConcatBridge = { concatReviewVideos?: (groupId: string, ids: string[], confirmed: boolean) => Promise<{ id: string; file: string }> };
 
 export function concatEligible(task: BatchTask) {
-  return task.task_role === "clip" && ["video_ready", "scheduled"].includes(task.status)
+  return task.task_role === "clip" && VIDEO_DONE_STATUSES.includes(task.status)
     && Boolean(task.download_path) && (task.review_status || "pending") === "pending";
 }
 

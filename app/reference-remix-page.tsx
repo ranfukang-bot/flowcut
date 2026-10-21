@@ -8,7 +8,7 @@ import { SeedanceTaskDetail } from './seedance-task-detail';
 import { api } from './studio-client';
 import type { TikTokAccount, ReferenceRemixTask, Workspace } from './studio-types';
 import { PageIntro, EmptyState } from './studio-ui';
-import { statusLabels } from './task-status';
+import { PROMPT_ONLY_STATUSES, TASK_STATUS_LABELS, VIDEO_FAILED_STATUSES, VIDEO_RUNNING_STATUSES } from '../lib/task-statuses';
 
 export function ReferenceRemixPage({
   tasks,
@@ -286,14 +286,14 @@ export function ReferenceRemixPage({
         {!tasks.length ? (
           <EmptyState icon="◎" title="还没有复刻任务" text="上传一条对标视频和产品图，系统会自动跑完双轮对话与视频生成。" />
         ) : tasks.map((task) => {
-          const activeStage = task.status === "reference_queued" ? 1 : ["reference_analyzing", "product_adapting"].includes(task.status) ? 2 : ["prompt_ready", "seedance_blocked"].includes(task.status) ? 3 : ["video_queued", "video_generating"].includes(task.status) ? 4 : task.status === "video_ready" ? 5 : 0;
+          const activeStage = task.status === "reference_queued" ? 1 : ["reference_analyzing", "product_adapting"].includes(task.status) ? 2 : PROMPT_ONLY_STATUSES.includes(task.status) ? 3 : VIDEO_RUNNING_STATUSES.includes(task.status) ? 4 : task.status === "video_ready" ? 5 : 0;
           const isExpanded = expanded === task.id;
           return (
             <article className="remix-task-card" key={task.id}>
               <button className="remix-task-summary" type="button" onClick={() => setExpanded(isExpanded ? "" : task.id)}>
                 <div><b>{task.title}</b><span>{task.duration}秒 · {task.region} · TK：{task.tiktok_account_name}</span></div>
                 <div className="remix-progress"><i style={{ width: `${task.progress}%` }} /></div>
-                <span className={`status ${task.status}`}>{statusLabels[task.status] || task.status}</span>
+                <span className={`status ${task.status}`}>{TASK_STATUS_LABELS[task.status] || task.status}</span>
                 <em>{isExpanded ? "收起" : "详情"}</em>
               </button>
               <div className="remix-stage-chain">
@@ -312,7 +312,7 @@ export function ReferenceRemixPage({
                   <div className="row-actions">
                     {task.prompt && <button type="button" onClick={() => navigator.clipboard.writeText(task.prompt).then(() => onNotice("最终提示词已复制"))}>复制最终提示词</button>}
                     {task.status === "prompt_ready" && <button type="button" onClick={() => action(task.id, "queue")}>提交 Seedance</button>}
-                    {["failed", "seedance_blocked"].includes(task.status) && <button type="button" onClick={() => action(task.id, "retry")}>从第一轮重试</button>}
+                    {VIDEO_FAILED_STATUSES.includes(task.status) && <button type="button" onClick={() => action(task.id, "retry")}>从第一轮重试</button>}
                     <button className="danger-text" type="button" onClick={() => action(task.id, "delete")}>删除</button>
                   </div>
                 </div>

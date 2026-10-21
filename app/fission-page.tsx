@@ -9,6 +9,7 @@ import { validateVariantRequest } from '../lib/prompt-blocks';
 import { confirmAction } from './confirm-action';
 import { productIdFromImageName } from './use-image-product-id';
 import type { Task, Product, Gem, TikTokAccount } from './studio-types';
+import { VIDEO_DONE_STATUSES } from '../lib/task-statuses';
 
 // A product card: either images dropped in (grouped by the product ID in the
 // file or folder name) or a product picked from the library.
@@ -353,7 +354,7 @@ export function FissionPage({ products, gems, accounts, request, onUpload, onCre
     <section className="fission-batches"><h2>最近的裂变</h2>{listError && <p role="alert">{listError}</p>}
       {batches.map(batch => {
         const children = batch.children || [];
-        const ready = children.filter(child => ['video_ready', 'scheduled'].includes(child.status)).length;
+        const ready = children.filter(child => VIDEO_DONE_STATUSES.includes(child.status)).length;
         return <article className="fission-batch-card" key={batch.id}>
           <div className="fission-row-head"><h3>{children.length} 个商品 · {batch.region} · {batch.tiktok_account_name}</h3><span className="status">{statusLabel(batch)}</span><span>{ready}/{children.length} 条已出片</span><button className="secondary" onClick={() => onOpenTask(batch)}>查看</button></div>
           <div className="fission-batch-children">{children.map(child => <button type="button" key={child.id} onClick={() => onOpenTask(child)}>

@@ -9,6 +9,7 @@ import { VariantConfigBlock, type VariantConfig } from './variant-config';
 import type { Product, Task, Workspace, Page, SeedanceRuntime } from './studio-types';
 import { formatTime, EmptyState } from './studio-ui';
 import { taskStatusClass, taskStatusLabel } from './task-status';
+import { APPROVED_REVIEW_STATUSES, VIDEO_DONE_STATUSES, VIDEO_FAILED_STATUSES } from '../lib/task-statuses';
 
 export function ProductImagePicker({products, selectedId, onChoose, onClose}: {
   products: Product[]; selectedId: string; onChoose: (id:string) => void; onClose: () => void;
@@ -551,10 +552,10 @@ export function Dashboard({
 
       <section className="workflow-summary" aria-label="任务概况">
         <span>共 <b>{data.taskCounts?.total ?? data.tasks.length}</b> 条任务</span>
-        <span>处理中 <b>{data.taskCounts?.active ?? data.tasks.filter((task) => !["video_ready", "scheduled", "failed", "seedance_blocked"].includes(task.status)).length}</b></span>
-        <span>待检查 <b>{data.taskCounts?.review ?? data.tasks.filter(task => ['video_ready','scheduled'].includes(task.status) && !['approved','replaced'].includes(task.review_status || '')).length}</b></span>
-        <span>已完成 <b>{data.taskCounts?.completed ?? data.tasks.filter((task) => ["video_ready", "scheduled"].includes(task.status) && ['approved','replaced'].includes(task.review_status || '')).length}</b></span>
-        <button onClick={() => onNavigate("tasks")}>需处理 <b>{data.taskCounts?.attention ?? data.tasks.filter((task) => ["failed", "seedance_blocked"].includes(task.status)).length}</b> →</button>
+        <span>处理中 <b>{data.taskCounts?.active ?? data.tasks.filter((task) => ![...VIDEO_DONE_STATUSES, ...VIDEO_FAILED_STATUSES].includes(task.status)).length}</b></span>
+        <span>待检查 <b>{data.taskCounts?.review ?? data.tasks.filter(task => VIDEO_DONE_STATUSES.includes(task.status) && !APPROVED_REVIEW_STATUSES.includes(task.review_status || '')).length}</b></span>
+        <span>已完成 <b>{data.taskCounts?.completed ?? data.tasks.filter((task) => VIDEO_DONE_STATUSES.includes(task.status) && APPROVED_REVIEW_STATUSES.includes(task.review_status || '')).length}</b></span>
+        <button onClick={() => onNavigate("tasks")}>需处理 <b>{data.taskCounts?.attention ?? data.tasks.filter((task) => VIDEO_FAILED_STATUSES.includes(task.status)).length}</b> →</button>
       </section>
 
       <section className="content-grid">

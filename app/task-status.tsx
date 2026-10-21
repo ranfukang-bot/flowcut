@@ -1,35 +1,7 @@
 "use client";
 
 import type { Task } from './studio-types';
-
-export const statusLabels: Record<string, string> = {
-  prompt_queued: "等待 Gemini",
-  prompt_generating: "Gemini 识别中",
-  prompt_ready: "提示词就绪",
-  seedance_blocked: "Seedance 未提交",
-  video_queued: "等待 Seedance",
-  video_generating: "视频生成中",
-  video_ready: "成片已就绪",
-  scheduled: "已排期",
-  failed: "执行失败",
-  reference_queued: "等待拆解",
-  reference_analyzing: "拆解对标视频",
-  product_adapting: "同对话换产品",
-  rewrite_queued: "等待剧本改写",
-  rewriting: "正在改写剧本",
-  extracting: "提取角色场景",
-  storyboarding: "拆解完整分镜",
-  grouping: "合并视频段落",
-  optimization_queued: "等待 Gem 优化",
-  optimizing: "Gem 优化提示词",
-  completed: "提示词已完成",
-  variant_queued: "等待变体 Gem",
-  variant_generating: "变体 Gem 生成中",
-  split_done: "已按代码块拆分",
-  concat_running: "正在拼接",
-  fission_wait: "等待母版",
-  fission_ready: "母版就绪",
-};
+import { APPROVED_REVIEW_STATUSES, PROMPT_ROUND_STATUSES, TASK_STATUS_LABELS, VARIANT_ROUND_STATUSES, VIDEO_DONE_STATUSES, VIDEO_FAILED_STATUSES } from '../lib/task-statuses';
 
 export type TaskStage = {
   number: string;
@@ -50,20 +22,20 @@ export function taskStages(task: Task): TaskStage[] {
       {number:'1',label:'商品批次',detail:`${task.batch_size||children.length} 个不同商品`,state:'done'},
       {number:'2',label:'共用母版',detail:ready?'母版已保存':taskStatusLabel(task),state:ready?'done':task.status==='failed'?'blocked':'active'},
       {number:'3',label:'逐品变体',detail:'每个商品使用自己的图片',state:ready?'active':'waiting'},
-      {number:'4',label:'逐品视频',detail:`${children.filter(c=>['video_ready','scheduled'].includes(c.status)).length}/${children.length} 条就绪`,state:'waiting'},
+      {number:'4',label:'逐品视频',detail:`${children.filter(c=>VIDEO_DONE_STATUSES.includes(c.status)).length}/${children.length} 条就绪`,state:'waiting'},
     ];
   }
   if (task.task_role === "concat") {
-    const done = ["video_ready", "scheduled"].includes(task.status);
+    const done = VIDEO_DONE_STATUSES.includes(task.status);
     return [
       { number: "1", label: "选择视频", detail: `${task.batch_size || "多"} 条视频`, state: "done" },
       { number: "2", label: "本机拼接", detail: done ? "已拼接" : task.status === "concat_running" ? "正在拼接" : "未完成", state: done ? "done" : task.status === "concat_running" ? "active" : "blocked" },
-      { number: "3", label: "检查", detail: done ? taskStatusLabel(task) : "等待拼接", state: done && ['approved', 'replaced'].includes(task.review_status || '') ? "done" : done ? "active" : "waiting" },
+      { number: "3", label: "检查", detail: done ? taskStatusLabel(task) : "等待拼接", state: done && APPROVED_REVIEW_STATUSES.includes(task.review_status || '') ? "done" : done ? "active" : "waiting" },
     ];
   }
-  if (task.task_role === "group" && !["prompt_queued", "prompt_generating"].includes(task.status)) {
+  if (task.task_role === "group" && !PROMPT_ROUND_STATUSES.includes(task.status)) {
     const clips = (task.children || []).filter(child => child.task_role === "clip").length;
-    const variantWaiting = ["variant_queued", "variant_generating"].includes(task.status);
+    const variantWaiting = VARIANT_ROUND_STATUSES.includes(task.status);
     return [
       { number: "1", label: "商品图片", detail: `${Math.max(Number(task.image_count || 0), 1)} 张参考图已保存`, state: "done" },
       { number: "2", label: task.variant_mode ? "母版提示词" : "Gemini 识别与提示词", detail: "已生成", state: "done" },
@@ -173,20 +145,20 @@ export function taskStatusClass(task: Task) {
   if(task.task_role==='fission'&&task.status==='fission_ready'){
     const children=task.children||[];
     if(children.some(clipAwaitingReview))return 'review_pending';
-    return children.some(c=>['failed','seedance_blocked'].includes(c.status))?'failed':children.every(c=>['video_ready','scheduled'].includes(c.status))?'video_ready':'video_generating';
+    return children.some(c=>VIDEO_FAILED_STATUSES.includes(c.status))?'failed':children.every(c=>VIDEO_DONE_STATUSES.includes(c.status))?'video_ready':'video_generating';
   }
   if (task.task_role === "group" && task.status === "split_done") {
     const children = task.children || [];
     if (children.some(clipAwaitingReview)) return 'review_pending';
-    if (children.some(child => ["failed", "seedance_blocked"].includes(child.status))) return 'failed';
-    return children.length && children.every(child => ["video_ready", "scheduled"].includes(child.status)) ? 'video_ready' : 'video_generating';
+    if (children.some(child => VIDEO_FAILED_STATUSES.includes(child.status))) return 'failed';
+    return children.length && children.every(child => VIDEO_DONE_STATUSES.includes(child.status)) ? 'video_ready' : 'video_generating';
   }
   return taskStatusLabel(task) === '待检查' ? 'review_pending' : task.status;
 }
 
 export function taskStatusLabel(task: Task) {
   if(task.task_role==='fission'&&task.status==='fission_ready'){
-    const children=task.children||[],ready=children.filter(c=>['video_ready','scheduled'].includes(c.status)).length,failed=children.filter(c=>['failed','seedance_blocked'].includes(c.status)).length;
+    const children=task.children||[],ready=children.filter(c=>VIDEO_DONE_STATUSES.includes(c.status)).length,failed=children.filter(c=>VIDEO_FAILED_STATUSES.includes(c.status)).length;
     return `${children.length} 个商品 · ${ready} 条视频就绪${failed?` · ${failed} 条需处理`:''}`;
   }
   if (task.provider === "demo-engine") return "需重新用 Gemini 识别";
@@ -195,11 +167,11 @@ export function taskStatusLabel(task: Task) {
     const videos = children.filter(child => child.task_role !== "concat").length;
     const joined = children.length - videos;
     const review = children.filter(clipAwaitingReview).length;
-    const failed = children.filter(child => ["failed", "seedance_blocked"].includes(child.status)).length;
+    const failed = children.filter(child => VIDEO_FAILED_STATUSES.includes(child.status)).length;
     return [videos ? `${videos} 条视频` : "", joined ? `${joined} 条拼接成片` : "", review ? `${review} 条待检查` : "", failed ? `${failed} 条需处理` : ""]
       .filter(Boolean).join(" · ") || "本组已清空";
   }
-  if (["video_ready", "scheduled"].includes(task.status)) {
+  if (VIDEO_DONE_STATUSES.includes(task.status)) {
     if (task.review_status === 'merging') return '正在拼接';
     if (task.review_status === 'merged') return '已用于拼接';
     if (task.review_status === 'replaced') return '已重做';
@@ -208,5 +180,5 @@ export function taskStatusLabel(task: Task) {
     if (task.review_status === 'deleting') return '删除待完成';
     return task.download_path ? '待检查' : '成片下载中';
   }
-  return statusLabels[task.status] || task.status;
+  return TASK_STATUS_LABELS[task.status] || task.status;
 }

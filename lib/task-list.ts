@@ -1,3 +1,4 @@
+import { APPROVED_REVIEW_STATUSES, CONCAT_REVIEW_STATUSES, GROUP_DONE_STATUSES, GROUP_ROLES, VIDEO_DONE_STATUSES, VIDEO_FAILED_STATUSES, sqlList } from './task-statuses.ts';
 export type TaskCounts = { total: number; active: number; review: number; completed: number; attention: number };
 type TaskRow = Record<string, unknown> & { id: string; created_at: string };
 type TaskQuery = { status?: string; q?: string; cursor?: string; limit?: number };
@@ -10,10 +11,10 @@ const FILTERS = ['all', 'active', 'review', 'completed', 'attention'] as const;
 type Filter = (typeof FILTERS)[number];
 function condition(filter: Filter, a: string) {
   switch (filter) {
-    case 'active': return `${a}.status NOT IN ('video_ready','scheduled','failed','seedance_blocked','split_done','fission_ready')`;
-    case 'review': return `${a}.status IN ('video_ready','scheduled') AND COALESCE(${a}.review_status,'') NOT IN ('approved','replaced','merging','merged')`;
-    case 'completed': return `${a}.status IN ('video_ready','scheduled') AND ${a}.review_status IN ('approved','replaced')`;
-    case 'attention': return `${a}.status IN ('failed','seedance_blocked')`;
+    case 'active': return `${a}.status NOT IN (${sqlList([...VIDEO_DONE_STATUSES, ...VIDEO_FAILED_STATUSES, ...GROUP_DONE_STATUSES])})`;
+    case 'review': return `${a}.status IN (${sqlList(VIDEO_DONE_STATUSES)}) AND COALESCE(${a}.review_status,'') NOT IN (${sqlList([...APPROVED_REVIEW_STATUSES, ...CONCAT_REVIEW_STATUSES])})`;
+    case 'completed': return `${a}.status IN (${sqlList(VIDEO_DONE_STATUSES)}) AND ${a}.review_status IN (${sqlList(APPROVED_REVIEW_STATUSES)})`;
+    case 'attention': return `${a}.status IN (${sqlList(VIDEO_FAILED_STATUSES)})`;
     default: return '1 = 1';
   }
 }
@@ -45,7 +46,7 @@ function decodeCursor(value: string): [string, string] {
 // Clips belong to their group: the list shows top-level rows only and each
 // group carries its clips (and concatenated videos) in batch order.
 async function attachChildren(db: TaskDatabase, rows: TaskRow[]) {
-  const groupIds = rows.filter(row => ['group','fission'].includes(String(row.task_role))).map(row => row.id);
+  const groupIds = rows.filter(row => GROUP_ROLES.includes(String(row.task_role))).map(row => row.id);
   if (!groupIds.length) return rows;
   const children = await db.prepare(`SELECT ${listColumns} ${joins} WHERE t.batch_parent_id IN (${groupIds.map(() => '?').join(',')})
     ORDER BY CASE WHEN t.task_role='concat' THEN 1 ELSE 0 END, t.batch_round ASC, t.batch_index ASC, t.created_at ASC, t.id ASC`)
@@ -55,7 +56,7 @@ async function attachChildren(db: TaskDatabase, rows: TaskRow[]) {
     const key = String(child.batch_parent_id);
     byGroup.set(key, [...(byGroup.get(key) || []), child]);
   }
-  return rows.map(row => ['group','fission'].includes(String(row.task_role)) ? { ...row, children: byGroup.get(row.id) || [] } : row);
+  return rows.map(row => GROUP_ROLES.includes(String(row.task_role)) ? { ...row, children: byGroup.get(row.id) || [] } : row);
 }
 
 export async function listTasks(db: TaskDatabase, query: TaskQuery = {}) {

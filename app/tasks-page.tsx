@@ -9,6 +9,7 @@ import { desktopBridge } from './studio-client';
 import type { Task, Workspace } from './studio-types';
 import { formatTime, PageIntro, EmptyState } from './studio-ui';
 import { withChildren, TaskChain, taskStatusClass, taskStatusLabel } from './task-status';
+import { APPROVED_REVIEW_STATUSES, CONCAT_REVIEW_STATUSES, GEMINI_STATUSES, GROUP_ROLES, VIDEO_DONE_STATUSES, VIDEO_FAILED_STATUSES } from '../lib/task-statuses';
 
 export function TasksPage({
   tasks,
@@ -38,11 +39,11 @@ export function TasksPage({
       await desktop.openReviewVideo(task.id);
     } catch (error) { setVideoError(error instanceof Error ? error.message : '视频打开失败'); }
   }
-  const completed = (task: Task) => ["video_ready", "scheduled"].includes(task.status) && ['approved','replaced'].includes(task.review_status || '');
-  const pendingReview = (task: Task) => ["video_ready", "scheduled"].includes(task.status) && !completed(task) && !['merging','merged'].includes(task.review_status || '');
-  const failed = (task: Task) => ["failed", "seedance_blocked"].includes(task.status);
+  const completed = (task: Task) => VIDEO_DONE_STATUSES.includes(task.status) && APPROVED_REVIEW_STATUSES.includes(task.review_status || '');
+  const pendingReview = (task: Task) => VIDEO_DONE_STATUSES.includes(task.status) && !completed(task) && !CONCAT_REVIEW_STATUSES.includes(task.review_status || '');
+  const failed = (task: Task) => VIDEO_FAILED_STATUSES.includes(task.status);
   const progressText = (task: Task) => {
-    if (["prompt_queued", "prompt_generating", "variant_queued", "variant_generating"].includes(task.status)) {
+    if (GEMINI_STATUSES.includes(task.status)) {
       if (!geminiRuntime?.online) return "Gemini 执行器离线，请在账号与设置中检查";
       const active = geminiRuntime.activeJobs?.find((job) => job.taskId === task.id);
       if (active) return `${active.accountName || "Gemini"} · ${active.stage || "正在处理"}`;
@@ -105,7 +106,7 @@ export function TasksPage({
             <TaskChain task={task} compact />
             <div className="task-live-status"><span className={`status ${taskStatusClass(task)}`}>{taskStatusLabel(task)}</span><small>{progressText(task)}</small></div>
             <div className="row-actions">{task.download_path && task.review_status === 'approved' && <button onClick={() => void openVideo(task)}>查看视频</button>}<button onClick={() => onPreview(task)}>{failed(task) ? "查看 / 继续" : pendingReview(task) ? "审核" : "查看"}</button><button aria-label={task.task_role === "group" ? "删除整组" : "删除任务"} onClick={() => onDelete(task)}>×</button></div>
-            {['group','fission'].includes(task.task_role||'') && Boolean(task.children?.length) && <div className="task-batch-rows" role="list" aria-label="本组视频">
+            {GROUP_ROLES.includes(task.task_role||'') && Boolean(task.children?.length) && <div className="task-batch-rows" role="list" aria-label="本组视频">
               {task.children!.map(child => <div className="task-batch-row" role="listitem" key={child.id}>
                 <button className="task-name" onClick={() => onPreview(child)}><b>{task.task_role==='fission'?(child.product_name||child.title):clipLabel(child)}</b><small>{task.task_role==='fission'?`商品 ID：${child.product_external_id}`:`${child.duration || task.duration} 秒`}</small></button>
                 <div className="task-live-status"><span className={`status ${taskStatusClass(child)}`}>{taskStatusLabel(child)}</span><small>{progressText(child)}</small></div>

@@ -23,6 +23,7 @@ import type { Gem, Product, Task, TikTokAccount, Workspace, Page, SeedanceRuntim
 import { withChildren, taskStatusLabel } from './task-status';
 import { TasksPage } from './tasks-page';
 import { TikTokAccountModal, TikTokAccountManager } from './tiktok-accounts';
+import { APPROVED_REVIEW_STATUSES, GROUP_ROLES, VIDEO_RUNNING_STATUSES } from '../lib/task-statuses';
 
 const nav: Array<{ id: Page; label: string; icon: string }> = [
   { id: "dashboard", label: "创作中心", icon: "✦" },
@@ -287,7 +288,7 @@ export function StudioApp() {
         (task) =>
           task.provider !== "seedance-local" &&
           Boolean(task.provider_status_url) &&
-          ["video_queued", "video_generating"].includes(task.status)
+          VIDEO_RUNNING_STATUSES.includes(task.status)
       ) || [];
     if (!pollable.length) return;
     const timer = window.setInterval(async () => {
@@ -306,7 +307,7 @@ export function StudioApp() {
   }, [data?.tasks, reload]);
 
   const readyTasks = useMemo(
-    () => withChildren(data?.tasks || []).filter((task) => task.status === "video_ready" && ['approved','replaced'].includes(task.review_status || '')) || [],
+    () => withChildren(data?.tasks || []).filter((task) => task.status === "video_ready" && APPROVED_REVIEW_STATUSES.includes(task.review_status || '')) || [],
     [data]
   );
 
@@ -695,7 +696,7 @@ export function StudioApp() {
             tasks={data.tasks}
             geminiRuntime={data.integrations.geminiRuntime}
             onPreview={openTask}
-            onDelete={(task) => deleteRecord("/api/tasks", task.id, ['group','fission'].includes(task.task_role||'')
+            onDelete={(task) => deleteRecord("/api/tasks", task.id, GROUP_ROLES.includes(task.task_role||'')
               ? `确认删除这一整组任务（含 ${task.children?.length || 0} 条视频记录）？已下载到待检查文件夹的视频文件会保留。`
               : "确认删除这个任务？")}
             onClearCompleted={clearCompletedTasks}

@@ -7,7 +7,7 @@ import { SeedanceTaskDetail } from './seedance-task-detail';
 import { api } from './studio-client';
 import type { ScriptPromptGroup, ScriptPipelineTask, Workspace } from './studio-types';
 import { formatTime, PageIntro, EmptyState } from './studio-ui';
-import { statusLabels } from './task-status';
+import { TASK_STATUS_LABELS } from '../lib/task-statuses';
 
 export function parsePromptGroups(value: string): ScriptPromptGroup[] {
   try {
@@ -185,9 +185,9 @@ export function ScriptPipelinePage({
           return (
             <article className="script-task-card" key={task.id}>
               <button type="button" className="script-task-summary" onClick={() => setExpanded(isExpanded ? "" : task.id)}>
-                <div><b>{task.title}</b><span>{formatTime(task.created_at)} · {hasFinalPrompts ? `${optimizedGroups.length} 条最终提示词` : statusLabels[task.status] || task.status}</span></div>
+                <div><b>{task.title}</b><span>{formatTime(task.created_at)} · {hasFinalPrompts ? `${optimizedGroups.length} 条最终提示词` : TASK_STATUS_LABELS[task.status] || task.status}</span></div>
                 <div className="remix-progress"><i style={{ width: `${task.progress}%` }} /></div>
-                <span className={`status ${task.status}`}>{statusLabels[task.status] || task.status}</span><em>{isExpanded ? "收起" : "详情"}</em>
+                <span className={`status ${task.status}`}>{TASK_STATUS_LABELS[task.status] || task.status}</span><em>{isExpanded ? "收起" : "详情"}</em>
               </button>
               <div className="script-stage-chain">
                 {stages.map((stage, index) => <div className={activeIndex > index ? "done" : activeIndex === index ? "active" : "waiting"} key={stage.label}><span>{activeIndex > index ? "✓" : index + 1}</span><b>{stage.label}</b></div>)}

@@ -48,7 +48,7 @@ test("task queue can clear all completed records without deleting product assets
   assert.match(tasks, /DELETE FROM schedules/);
   assert.match(tasks, /completedWhere = `status IN \(\?, \?\) AND review_status IN \('approved','replaced'\)/);
   assert.match(tasks, /DELETE FROM tasks WHERE \$\{completedWhere\}/);
-  assert.match(tasks, /"video_ready", "scheduled"/);
+  assert.match(tasks, /const completedStatuses = VIDEO_DONE_STATUSES;/);
   assert.doesNotMatch(tasks, /DELETE FROM products WHERE status/);
 });
 

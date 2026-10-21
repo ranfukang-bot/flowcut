@@ -136,6 +136,9 @@ test('fission UI: drop images grouped by product ID, fix one card, pick from lib
 
   // Gem and account choices are remembered for the next visit.
   await open();
+  // Settings hydrate asynchronously after mount; visibility alone does not
+  // mean the remembered values are ready, particularly on the CI runner.
+  await page.waitForFunction(()=>document.querySelector('select[aria-label="变体 Gem"]')?.value==='variant' && document.querySelector('select[aria-label="TK 归档账号"]')?.value==='隔离归档账号');
   assert.equal(await page.getByLabel('变体 Gem',{exact:true}).inputValue(),'variant');
   assert.equal(await page.getByLabel('TK 归档账号',{exact:true}).inputValue(),'隔离归档账号');
   await page.locator('.fission-more summary').click();

@@ -73,8 +73,14 @@ app.whenReady().then(async () => {
       busy = true;
       try {
         if (input.action === 'start') {
-          if (active) throw Object.assign(Error('请先完成或取消当前登录'), { code: 'LOGIN_ALREADY_STARTED' });
           const browser = browsers.find(b => b.kind === input.browser); if (!browser) throw Object.assign(Error('未安装这个浏览器'), { code: 'BROWSER_NOT_FOUND' });
+          if (active) {
+            // Switching is one explicit action: clean the unfinished source
+            // before opening the other browser, so a failed A cannot lock B.
+            await active.run.cancel();
+            active.row.status = 'cancelled'; active.row.tempRemoved = true;
+            active = null; save();
+          }
           const account = store.addAccount(`登录实验 · ${browser.kind} · ${new Date().toLocaleTimeString('zh-CN')}`);
           store.setAccountEnabled(account.id, false);
           const row = { id: account.id, partition: account.partition, browser: browser.kind, startedAt: new Date().toISOString(), status: 'waiting-for-user', checks: [] };

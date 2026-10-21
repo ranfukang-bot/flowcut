@@ -4,6 +4,15 @@ export type GeminiLoginState = {
   busy: boolean; error: string; downloadUrl: string;
 };
 
+export function GeminiAccountAccessButtons({ disabled, onOpen, onRelogin }: {
+  disabled: boolean; onOpen: () => void; onRelogin: () => void;
+}) {
+  return <>
+    <button type="button" disabled={disabled} onClick={onOpen} title="查看该账号当前的 Gemini 页面；运行中显示任务窗口">打开 Gemini</button>
+    <button type="button" disabled={disabled} onClick={onRelogin}>重新登录</button>
+  </>;
+}
+
 export function GeminiLoginDialog({ flow, busy, onAction }: {
   flow: GeminiLoginState | null; busy: boolean;
   onAction: (action: "login-open" | "login-import" | "login-cancel") => void;

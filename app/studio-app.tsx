@@ -23,7 +23,7 @@ import { useImageProductId } from "./use-image-product-id";
 import { DEFAULT_GEM_REQUEST, renderGemRequest, validateGemRequest } from "../lib/gem-request";
 import { ApprovalStats } from './approval-stats';
 import { GeminiModelSettingsPanel, GeminiModelInfo, type GeminiModelSettings, type ModelState } from './gemini-model-settings';
-import { GeminiLoginDialog, type GeminiLoginState } from './gemini-login';
+import { GeminiAccountAccessButtons, GeminiLoginDialog, type GeminiLoginState } from './gemini-login';
 import { useTaskPage } from './use-task-page';
 import { SeedanceTaskDetail } from './seedance-task-detail';
 import { LocalBackups } from './local-backups';
@@ -534,6 +534,7 @@ type FlowCutDesktopBridge = {
   ) => (() => void);
   addAccount: (name: string) => Promise<unknown>;
   openLogin: (id: string) => Promise<unknown>;
+  openGeminiAccountWindow?: (id: string) => Promise<unknown>;
   hideLogin: (id: string) => Promise<unknown>;
   openGeminiLoginBrowser?: () => Promise<unknown>;
   importGeminiLogin?: () => Promise<{ geminiLoginResult?: string }>;
@@ -3426,7 +3427,7 @@ function SettingsPage({
   }
 
   async function desktopAccountAction(
-    action: "add" | "open" | "login-open" | "login-import" | "login-cancel" | "check" | "default" | "remove",
+    action: "add" | "view" | "open" | "login-open" | "login-import" | "login-cancel" | "check" | "default" | "remove",
     accountId = ""
   ) {
     const desktop = desktopBridge();
@@ -3441,6 +3442,10 @@ function SettingsPage({
         await desktop.addAccount(accountName.trim() || "Gemini 账号");
         setAccountName("");
         setMessage("请在对话框中打开 Firefox 并完成登录");
+      } else if (action === "view") {
+        if (!desktop.openGeminiAccountWindow) throw new Error("请更新 FlowCut 桌面程序后打开 Gemini");
+        await desktop.openGeminiAccountWindow(accountId);
+        setMessage("已打开该账号当前的 Gemini 页面，关闭窗口只会隐藏，不会中止任务");
       } else if (action === "open") {
         await desktop.openLogin(accountId);
         setMessage("请在对话框中通过 Firefox 重新登录");
@@ -3620,12 +3625,9 @@ function SettingsPage({
                         <button type="button" disabled={Boolean(busy)} onClick={() => void updateManagedAccount("gemini", account.id, { enabled: account.enabled === false }).catch(() => {})}>
                           {account.enabled === false ? "恢复使用" : "暂停使用"}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => desktopAccountAction("open", account.id)}
-                        >
-                          重新登录
-                        </button>
+                        <GeminiAccountAccessButtons disabled={Boolean(busy)}
+                          onOpen={() => void desktopAccountAction("view", account.id)}
+                          onRelogin={() => void desktopAccountAction("open", account.id)} />
                         <button
                           type="button"
                           onClick={() => desktopAccountAction("check", account.id)}

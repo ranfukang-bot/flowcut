@@ -30,3 +30,19 @@ test('Firefox login dialog opens, confirms, retries failures, cancels and links 
     assert.equal((await page.evaluate(() => calls)).at(-1), 'login-cancel');
   } finally { await browser.close(); }
 });
+
+test('existing account has independent view and Firefox relogin buttons', async () => {
+  const executablePath = process.env.CHROMIUM_PATH || ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].find(existsSync);
+  const browser = await chromium.launch(executablePath ? { executablePath } : {});
+  try {
+    const page = await browser.newPage();await page.setContent('<div id="root"></div>');
+    const bundle = require('esbuild').buildSync({ stdin: { contents: `
+      import {createRoot} from 'react-dom/client';import {GeminiAccountAccessButtons} from './gemini-login';
+      window.calls=[];window.draw=disabled=>createRoot(document.getElementById('root')).render(<GeminiAccountAccessButtons disabled={disabled} onOpen={()=>window.calls.push('view-existing-session')} onRelogin={()=>window.calls.push('firefox-relogin')}/>);
+      window.draw(false);`, loader: 'tsx', resolveDir: path.resolve(__dirname, '../../app') }, bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' } }).outputFiles[0].text;
+    await page.addScriptTag({ content: bundle });
+    await page.getByRole('button', { name: '打开 Gemini', exact: true }).click();assert.deepEqual(await page.evaluate(() => calls), ['view-existing-session']);
+    assert.equal(await page.getByRole('dialog').count(), 0);
+    await page.getByRole('button', { name: '重新登录', exact: true }).click();assert.deepEqual(await page.evaluate(() => calls), ['view-existing-session', 'firefox-relogin']);
+  } finally { await browser.close(); }
+});

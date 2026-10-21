@@ -1,5 +1,14 @@
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function restoreGeminiWorkerPlacement(window) {
+  const original = window.flowcutActivationRestore;
+  if (!original) return;
+  if (original.bounds) window.setBounds?.(original.bounds, false);
+  window.setOpacity?.(original.opacity);
+  window.setSkipTaskbar?.(false);
+  delete window.flowcutActivationRestore;
+}
+
 let uploadTurn = Promise.resolve();
 // Native upload uses focus/input events: two account windows must not steal
 // focus from one another. Only serialize this short step, not text generation.
@@ -33,6 +42,7 @@ async function activateGeminiWorker({
 
   try {
     if (concealWorker) {
+      workerWindow.flowcutActivationRestore = { bounds: originalBounds, opacity: originalOpacity };
       workerWindow.setSkipTaskbar?.(true);
       workerWindow.setOpacity?.(0);
       if (originalBounds) {
@@ -60,11 +70,10 @@ async function activateGeminiWorker({
   } finally {
     workerWindow.setAlwaysOnTop?.(false);
     if (concealWorker && !workerWindow.isDestroyed?.()) {
-      workerWindow.hide?.();
-      if (originalBounds) workerWindow.setBounds?.(originalBounds, false);
-      workerWindow.setOpacity?.(originalOpacity);
-      workerWindow.setSkipTaskbar?.(false);
-    } else if (!wasVisible && !debugVisible && !workerWindow.isDestroyed?.()) {
+      restoreGeminiWorkerPlacement(workerWindow);
+      if (workerWindow.flowcutUserVisible) workerWindow.show?.();
+      else workerWindow.hide?.();
+    } else if (!wasVisible && !debugVisible && !workerWindow.flowcutUserVisible && !workerWindow.isDestroyed?.()) {
       workerWindow.hide?.();
     } else if (wasFocused && !workerWindow.isDestroyed?.()) {
       workerWindow.focus?.();
@@ -72,6 +81,7 @@ async function activateGeminiWorker({
 
     if (
       ownerWasFocused &&
+      !workerWindow.flowcutUserVisible &&
       ownerWindow &&
       !ownerWindow.isDestroyed?.()
     ) {
@@ -84,4 +94,5 @@ async function activateGeminiWorker({
 
 module.exports = {
   runWithActivatedGeminiWorker,
+  restoreGeminiWorkerPlacement,
 };

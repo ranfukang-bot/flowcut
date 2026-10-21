@@ -28,6 +28,7 @@ const desktopApi = {
   publisherRelease: (taskId, confirmed) => ipcRenderer.invoke("publisher:release", { taskId, confirmed }),
   addAccount: (name) => ipcRenderer.invoke("account:add", name),
   openLogin: (id) => ipcRenderer.invoke("account:open-login", id),
+  openGeminiAccountWindow: id => ipcRenderer.invoke('account:open-view', id),
   openGeminiLoginBrowser: () => ipcRenderer.invoke('account:login-open'),
   importGeminiLogin: () => ipcRenderer.invoke('account:login-import'),
   cancelGeminiLogin: () => ipcRenderer.invoke('account:login-cancel'),

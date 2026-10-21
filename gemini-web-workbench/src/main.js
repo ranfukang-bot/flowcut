@@ -41,6 +41,7 @@ const { VideoReview } = require("./video-review");
 const { startRuntimeLogMaintenance } = require("./runtime-log-maintenance");
 const { version: appVersion } = require("../package.json");
 const { GeminiLoginFlow } = require("./gemini-login-flow");
+const { GeminiAccountWindows } = require('./gemini-account-windows');
 const { normalizeModelSettings, modelSettingsKey, needsThinkingCheck, modelRuntimeSource } = require('./gemini-model-selection');
 const { callModelPage, temporaryModelError, modelSucceeded, modelWatchdogError } = require('./model-selection-errors');
 const modelSessionChecks = new Map();
@@ -83,6 +84,12 @@ let shutdownStarted = false;
 let stopRuntimeLogMaintenance = null;
 let geminiLoginFlow;
 const workerWindows = new Map();
+const geminiAccountWindows = new GeminiAccountWindows({
+  windows: workerWindows, getAccount: accountById,
+  createWindow: account => createGeminiWindow(account, false), loadPage: loadGeminiPage,
+  isBusy: id => Boolean(bridge?.active.has(id) || gemSetupAccounts.has(id)),
+  isQuitting: () => Boolean(app.isQuitting),
+});
 const pendingJobs = new Map();
 const desktopRuntimeToken = randomBytes(48).toString("base64url");
 const protectedIntegrity =
@@ -696,16 +703,10 @@ function createGeminiWindow(account, visible) {
 }
 
 function workerWindow(account, fresh = false) {
-  let window = workerWindows.get(account.id);
   // A reused Gemini renderer can upload bytes into a disposed composer after
   // navigation. Start each job with a new page; the account partition retains
   // cookies, login and saved Gem bindings.
-  if (fresh && window && !window.isDestroyed()) window.destroy();
-  if (!window || window.isDestroyed()) {
-    window = createGeminiWindow(account, false);
-    workerWindows.set(account.id, window);
-    window.on("closed", () => workerWindows.delete(account.id));
-  }
+  const window = geminiAccountWindows.worker(account, fresh);
   if (showGeminiWorkerForDebug && !window.isDestroyed()) {
     window.setTitle(`${account.name} · Gemini 实时调试`);
     window.show();
@@ -870,7 +871,7 @@ async function runGeminiJob(account, job) {
   } finally {
     uploadMonitors.delete(contentsId);
     await uploadMonitor.stop();
-    if (!window.isDestroyed()) window.destroy();
+    geminiAccountWindows.finish(window);
     // A locked temp file must not replace a finished Gemini result with an error.
     for (const files of [temporary, referenceTemporary]) {
       try {
@@ -1412,6 +1413,7 @@ function bindIpc() {
     seedanceRuntime.openDownloadDirectory(),
   );
   handle("account:add", async (_event, name) => { await geminiLoginFlow.prepare({ name: String(name || '').trim() }); return publicState(); });
+  handle('account:open-view', async (_event, id) => { await geminiAccountWindows.open(id); return publicState(); });
   handle("account:open-login", async (_event, id) => { await geminiLoginFlow.prepare({ accountId: id }); return publicState(); });
   handle("account:login-open", async () => { await geminiLoginFlow.open(); return publicState(); });
   const finishFirefoxLogin = async () => {
@@ -1468,8 +1470,7 @@ function bindIpc() {
     const account = accountById(id);
     if (!account) return publicState();
     if (geminiLoginFlow.heldAccountId === id) throw new Error("请先取消该账号的 Firefox 登录");
-    workerWindows.get(id)?.destroy();
-    workerWindows.delete(id);
+    geminiAccountWindows.forget(id);
     await accountSession(account).clearStorageData();
     store.removeAccount(id);
     store.log(`已移除账号：${account.name}`);

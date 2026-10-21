@@ -3,6 +3,7 @@ const test = require("node:test");
 
 const {
   runWithActivatedGeminiWorker,
+  restoreGeminiWorkerPlacement,
 } = require("../src/gemini-worker-activation");
 
 function mockWindow({ visible = false, focused = false } = {}) {
@@ -92,6 +93,26 @@ test("hidden Gemini worker is focused off-screen for upload then restored", asyn
     ownerWindow.calls.some((call) => call[0] === "focus"),
     true
   );
+});
+
+test('opening a viewer during native upload restores its placement and stays visible after upload', async () => {
+  const workerWindow = mockWindow(), ownerWindow = mockWindow({ visible: true, focused: true });
+  await runWithActivatedGeminiWorker({ workerWindow, ownerWindow, action: async () => {
+    assert.equal(workerWindow.getOpacity(), 0);
+    workerWindow.flowcutUserVisible = true;restoreGeminiWorkerPlacement(workerWindow);workerWindow.show();
+    assert.equal(workerWindow.getOpacity(), 1);assert.equal(workerWindow.getBounds().x, 100);
+  } });
+  assert.equal(workerWindow.isVisible(), true);assert.equal(workerWindow.getOpacity(), 1);
+  assert.equal(ownerWindow.calls.some(c => c[0] === 'focus'), false, 'The requested viewer keeps focus');
+});
+
+test('hiding a viewer while upload is in progress stays hidden without cancelling the upload', async () => {
+  const workerWindow = mockWindow();let finished = false;
+  await runWithActivatedGeminiWorker({ workerWindow, action: async () => {
+    workerWindow.flowcutUserVisible = true;restoreGeminiWorkerPlacement(workerWindow);
+    workerWindow.flowcutUserVisible = false;workerWindow.hide();finished = true;
+  } });
+  assert.equal(finished, true);assert.equal(workerWindow.isVisible(), false);assert.equal(workerWindow.getOpacity(), 1);
 });
 
 test("worker state is restored even when native upload fails", async () => {

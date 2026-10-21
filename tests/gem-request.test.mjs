@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_GEM_REQUEST, renderGemRequest, validateGemRequest } from '../lib/gem-request.ts';
+import { DEFAULT_GEM_REQUEST, SINGLE_PROMPT_INSTRUCTION, buildGemRequest, buildSingleGemRequest, renderGemRequest, validateGemRequest } from '../lib/gem-request.ts';
 
 test('default Gem request contains no unrequested conservative-processing instruction', () => {
   assert.doesNotMatch(DEFAULT_GEM_REQUEST, /信息不足|保守处理|无人值守/);
@@ -15,4 +15,15 @@ test('custom request is sent literally without extra text; only known placeholde
 test('empty or oversized requests are rejected instead of silently reverting to a default', () => {
   for (const value of ['', ' \n', null, 123, 'x'.repeat(12001)]) assert.throws(() => validateGemRequest(value));
   assert.equal(validateGemRequest('我的文字'), '我的文字');
+});
+
+test('a single-video request keeps the full video in one block, including legacy saved text, without changing split requests', () => {
+  const input={duration:15,region:'菲律宾',shooting_style:'iPhone实拍质感'};
+  const legacy='请按图片写提示词。\n时长：15秒\n地区：菲律宾';
+  const request=buildSingleGemRequest(legacy,input);
+  assert.ok(request.startsWith(legacy));
+  assert.ok(request.includes('口播语言：Taglish'));
+  assert.ok(request.endsWith(SINGLE_PROMPT_INSTRUCTION));
+  assert.equal(buildSingleGemRequest(request,input),request);
+  assert.ok(!buildGemRequest(legacy,input).includes(SINGLE_PROMPT_INSTRUCTION));
 });

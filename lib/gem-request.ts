@@ -1,5 +1,6 @@
 import { resolveSpokenLanguage } from './spoken-language.ts';
 export const DIRECT_PROMPT_INSTRUCTION = '不要提问，直接按以上信息输出提示词，每条提示词放在单独的代码块里';
+export const SINGLE_PROMPT_INSTRUCTION = '本轮只需要 1 条完整的视频提示词（包含整段全部镜头），全部放在唯一一个代码块中。不要把预设、章节、分镜或口播拆成多个代码块。';
 export const DEFAULT_GEM_REQUEST = [
   "请根据本次上传的商品图片，按这个 Gem 的设定生成完整的视频提示词。只输出文字，不要生成图片或视频。",
   "时长：{时长}秒",
@@ -30,6 +31,11 @@ export function buildGemRequest(template: string, input: GemRequestInput) {
   else text+=`\n口播语言：${language}`;
   if(!text.includes(DIRECT_PROMPT_INSTRUCTION))text+='\n'+DIRECT_PROMPT_INSTRUCTION;
   return text;
+}
+
+export function buildSingleGemRequest(template:string,input:GemRequestInput) {
+  const text=buildGemRequest(template,input);
+  return text.includes(SINGLE_PROMPT_INSTRUCTION)?text:text+'\n'+SINGLE_PROMPT_INSTRUCTION;
 }
 
 export function validateGemRequest(value: unknown): string {

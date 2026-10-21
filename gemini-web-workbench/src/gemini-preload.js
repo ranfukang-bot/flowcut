@@ -923,7 +923,8 @@ async function readPromptWithCodeBlocks(job, baseline) {
     }
     replies.push(prompt);
     const {blocks,markup}=responseCodeBlocks();
-    if(blocks.length) return {prompt,codeBlocks:blocks,codeBlockHint:false,correctionUsed:attempt===1};
+    if(blocks.length && (job.blockMode!=='single' || blocks.length===1)) return {prompt,codeBlocks:blocks,codeBlockHint:false,correctionUsed:attempt===1};
+    if(attempt===1 && blocks.length>1) throw Object.assign(codedError(`本轮只需要 1 条完整提示词，但 Gem 原对话补充后仍输出了 ${blocks.length} 个代码块，已停止，不会新建对话重试`,'PROMPT_BLOCKS_INVALID_FINAL'),{rawReply:replies.join('\n\n【同一对话补充后的回复】\n')});
     if(attempt===1) throw Object.assign(codedError('Gem 没有输出提示词（回复里没有代码块）','GEM_NO_PROMPT_BLOCKS'),{
       rawReply:replies.join('\n\n【同一对话补充后的回复】\n'),
     });
@@ -932,7 +933,10 @@ async function readPromptWithCodeBlocks(job, baseline) {
     geminiProgress=markup?'代码块未能读取，正在原对话补充一次':'Gem 未输出代码块，正在原对话补充一次';
     const language=String(job.spokenLanguage || '该地区最常用的本地日常口语');
     try {
-      await typePrompt(`不要提问，按默认值直接输出：口播语言 ${language}，每条提示词放在单独的代码块里。`);
+      const correction=blocks.length>1
+        ? `不要提问，不要新增方案或改写内容。请把刚才全部预设、场景、人物、完整时间轴和口播合并成 1 条完整视频提示词，全部放在唯一一个代码块里，不要按章节或镜头分块。口播语言 ${language}。`
+        : `不要提问，按默认值直接输出：口播语言 ${language}，每条提示词放在单独的代码块里。`;
+      await typePrompt(correction);
       baseline=responseSnapshot();
       await submitPrompt();
     } catch(error) {

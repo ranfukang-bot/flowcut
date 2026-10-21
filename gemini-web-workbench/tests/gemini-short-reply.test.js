@@ -90,6 +90,34 @@ test('no-code reply receives exactly one correction in the same conversation, th
   }
 });
 
+test('single-video mode corrects section blocks once in the original conversation, while split mode keeps independent videos',async()=>{
+  for(const mode of ['single','split']) for(const success of [true,false]) {
+    const {context}=pageRuntime('unused');
+    context.round=0;context.sent=[];context.mode=mode;context.success=success;
+    context.full='完整的五镜头与口播提示词'.repeat(40);
+    vm.runInContext(`
+      waitForResponse=async()=>{round++;return round===1?'预设、场景、人物与完整时间轴':success?full:'仍然按章节分块';};
+      responseCodeBlocks=()=>({blocks:round===2&&success?[full]:['预设','场景','人物','时间轴','口播','结束'],markup:true});
+      typePrompt=async text=>sent.push(text);submitPrompt=async()=>{};
+      ensureFreshConversation=()=>{throw Error('must keep the original chat');};
+      uploadFiles=()=>{throw Error('must not upload again');};
+      globalThis.readPrompt=()=>readPromptWithCodeBlocks({blockMode:mode,spokenLanguage:'Taglish'},[]);
+    `,context);
+    if(mode==='split') {
+      const result=await context.readPrompt();assert.equal(result.codeBlocks.length,6);
+      assert.equal(result.correctionUsed,false);assert.equal(context.round,1);assert.equal(context.sent.length,0);
+    } else {
+      if(success) {const result=await context.readPrompt();assert.equal(result.codeBlocks.length,1);assert.equal(result.codeBlocks[0],context.full);assert.equal(result.correctionUsed,true);}
+      else await assert.rejects(context.readPrompt(),error=>{
+        assert.equal(error.code,'PROMPT_BLOCKS_INVALID_FINAL');assert.equal(isRetryableJobError(error),false);
+        assert.ok(error.rawReply.includes('预设、场景、人物与完整时间轴'));assert.ok(error.rawReply.includes('仍然按章节分块'));return true;
+      });
+      assert.equal(context.round,2);assert.equal(context.sent.length,1);
+      assert.ok(context.sent[0].includes('唯一一个代码块'));assert.ok(context.sent[0].includes('口播语言 Taglish'));
+    }
+  }
+});
+
 test('a missing-code-block failure never defers or creates another generation and keeps its durable raw reply',async()=>{
   const account={id:'a',name:'隔离账号'},reports=[];
   const store={state:{settings:{},pendingResults:[],pendingErrors:[]},log(){},movePendingResultToError(p,error){this.state.pendingErrors.push({...p,error});},removePendingError(id){this.state.pendingErrors=this.state.pendingErrors.filter(p=>p.taskId!==id);}};

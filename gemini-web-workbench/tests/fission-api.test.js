@@ -34,6 +34,7 @@ test('fission: one mother releases four independent products, with frozen own im
   assert.ok(f.children(id).every(c=>c.status==='fission_wait'));
   const [mother]=await f.claim(4);
   assert.equal(mother.id,id);assert.equal(mother.kind,'standard');assert.equal(mother.blockMode,'single');
+  assert.ok(mother.prompt.includes('全部放在唯一一个代码块中'));
   assert.equal(mother.gem.content,'母版内容');assert.deepEqual(mother.imageUrls.map(u=>new URL(u).searchParams.get('key')),['products/p3/own.png']);
   assert.deepEqual(await f.claim(4),[]);
   const text=block('共用母版');
@@ -47,6 +48,7 @@ test('fission: one mother releases four independent products, with frozen own im
   assert.equal(jobs.length,4);
   for(const [i,job] of jobs.entries()){
     assert.equal(job.kind,'variant');assert.equal(job.blockMode,'single');assert.equal(job.gem.content,'变体内容');
+    assert.ok(job.prompt.includes('全部放在唯一一个代码块中'));
     assert.ok(job.prompt.includes(text)&&job.prompt.includes('目标国家：泰国'));
     assert.deepEqual(job.imageUrls.map(u=>new URL(u).searchParams.get('key')),[`products/p${i+1}/own.png`]);
     assert.equal((await f.submit(job,block(i+1))).status,200);
@@ -90,7 +92,7 @@ test('fission: mother request uses the supplied creation-centre template, freeze
   assert.equal(created.status,201,JSON.stringify(created.body));
   const [job]=await f.claim();
   const saved=f.row('SELECT gemini_request_text FROM tasks WHERE id=?',created.body.id).gemini_request_text;
-  assert.equal(saved,'本次目标：泰国，口播语言按当地语言。时长 15 秒，iPhone实拍质感。只输出完整文字。\n口播语言：泰语\n不要提问，直接按以上信息输出提示词，每条提示词放在单独的代码块里');
+  assert.equal(saved,'本次目标：泰国，口播语言按当地语言。时长 15 秒，iPhone实拍质感。只输出完整文字。\n口播语言：泰语\n不要提问，直接按以上信息输出提示词，每条提示词放在单独的代码块里\n本轮只需要 1 条完整的视频提示词（包含整段全部镜头），全部放在唯一一个代码块中。不要把预设、章节、分镜或口播拆成多个代码块。');
   assert.ok(job.prompt.includes(saved));
   assert.equal((await f.create({motherRequestTemplate:' '})).status,400);
   assert.equal((await f.create({motherRequestTemplate:'字'.repeat(12001)})).status,400);

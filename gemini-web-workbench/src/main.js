@@ -830,6 +830,7 @@ async function runGeminiJob(account, job) {
     referenceFiles: referencePageFiles,
     referenceFilePaths: referenceTemporary.filePaths,
     spokenLanguage: job.spokenLanguage,
+    blockMode: job.blockMode,
   };
   if (protectedGeminiPageRuntime) {
     void (async () => {

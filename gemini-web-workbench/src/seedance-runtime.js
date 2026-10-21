@@ -19,7 +19,6 @@ const {
   accountVideoDirectory,
   availableVideoPath,
   buildArchivedVideoFilename,
-  buildVideoFilename,
   downloadVideo,
 } = require("../../vendor/seedance-engine/video-download.js");
 

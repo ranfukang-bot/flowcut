@@ -1,8 +1,5 @@
 // A group task owns the clips cut from one Gemini reply (one clip per code
 // block). Clips are ordinary tasks for Seedance, review and publishing.
-export const TASK_ROLE_GROUP = "group";
-export const TASK_ROLE_CLIP = "clip";
-export const TASK_ROLE_CONCAT = "concat";
 
 // A split group is a container, not a video; it is removed once empty.
 export const ORPHAN_GROUP_DELETE = `DELETE FROM tasks WHERE ((task_role = 'group' AND status = 'split_done') OR task_role = 'fission')

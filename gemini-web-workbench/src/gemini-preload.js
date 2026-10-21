@@ -172,26 +172,6 @@ function attachmentCount() {
   return items.filter((item) => !items.some((child) => child !== item && item.contains(child))).length;
 }
 
-function fileNamesVisible(files) {
-  if (!files.length) return true;
-  const searchable = all(
-    'rich-textarea [aria-label], rich-textarea [title], rich-textarea [data-test-id], rich-textarea'
-  )
-    .filter(visible)
-    .map((element) =>
-      [
-        element.innerText,
-        element.getAttribute?.("aria-label"),
-        element.getAttribute?.("title"),
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase()
-    )
-    .join("\n");
-  return files.every((file) => searchable.includes(file.name.toLowerCase()));
-}
-
 function uploadConfirmed(files, expectedCount) {
   return attachmentCount() === expectedCount;
 }

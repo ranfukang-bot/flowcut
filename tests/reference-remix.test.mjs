@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { uiSource } from "./helpers/ui-source.mjs";
+import { bridgeSource, uiSource } from "./helpers/sources.mjs";
 
 const root = new URL("../", import.meta.url);
 const source = async (path) => (await readFile(new URL(path, root), "utf8")).replace(/\r\n/g, "\n");
@@ -25,7 +25,7 @@ test("reference remix is isolated from the editable Gem library", async () => {
 test("Gemini runs video analysis and product adaptation in one conversation", async () => {
   const [preload, bridgeRoute, desktopBridge, promptBuilder] = await Promise.all([
     source("gemini-web-workbench/src/gemini-preload.js"),
-    source("app/api/gemini-bridge/route.ts"),
+    Promise.resolve(bridgeSource()),
     source("gemini-web-workbench/src/bridge-engine.js"),
     source("lib/reference-remix.ts"),
   ]);

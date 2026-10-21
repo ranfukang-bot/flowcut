@@ -38,7 +38,7 @@ test('upgrade releases only legacy unclaimed retries, preserving counters and ac
 });
 
 test('real claim SELECT skips waiting tasks and places ready retries behind already queued work', () => {
-  const source = readFileSync(new URL('../app/api/gemini-bridge/route.ts', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../lib/gemini-bridge/claim.ts', import.meta.url), 'utf8');
   const sql = source.match(/`(SELECT t.id, t.product_id,[\s\S]*?LIMIT 32)`/)[1];
   const db = new DatabaseSync(':memory:');
   try {

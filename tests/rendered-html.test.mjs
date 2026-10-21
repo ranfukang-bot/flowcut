@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { uiSource } from "./helpers/ui-source.mjs";
+import { bridgeSource, uiSource } from "./helpers/sources.mjs";
 
 const root = new URL("../", import.meta.url);
 
@@ -54,12 +54,12 @@ test("task queue can clear all completed records without deleting product assets
 
 test("Gemini web transient failures are persisted for delayed automatic recovery", async () => {
   const [bridge, storage, desktopBridge] = await Promise.all([
-    source("app/api/gemini-bridge/route.ts"),
+    Promise.resolve(bridgeSource()),
     source("lib/storage.ts"),
     source("gemini-web-workbench/src/bridge-engine.js"),
   ]);
 
-  assert.match(bridge, /body\.action === "defer"/);
+  assert.match(bridge, /job\.action === "defer"/);
   assert.match(bridge, /gemini_retry_at/);
   assert.match(
     bridge,
@@ -74,7 +74,7 @@ test("desktop runtime hides developer overlays and accepts idempotent Gemini wri
   const [viteConfig, settingsRoute, bridgeRoute] = await Promise.all([
     source("vite.config.ts"),
     source("app/api/settings/route.ts"),
-    source("app/api/gemini-bridge/route.ts"),
+    Promise.resolve(bridgeSource()),
   ]);
   assert.match(viteConfig, /isDesktopRuntime \? \{ overlay: false \}/);
   assert.match(viteConfig, /"\*\*\/release\/\*\*"/);
@@ -90,7 +90,7 @@ test("studio exposes encrypted providers, concurrent tasks and Seedance bridge",
     source("app/api/settings/route.ts"),
     source("app/api/tasks/route.ts"),
     source("app/api/seedance-bridge/route.ts"),
-    source("app/api/gemini-bridge/route.ts"),
+    Promise.resolve(bridgeSource()),
     source("lib/provider-config.ts"),
     source("app/api/tiktok-accounts/route.ts"),
   ]);
@@ -121,7 +121,7 @@ test("studio exposes encrypted providers, concurrent tasks and Seedance bridge",
   assert.match(tasks, /validateTikTokAccountName/);
   assert.match(tiktokAccounts, /INSERT INTO tiktok_accounts/);
   assert.match(bridge, /action === "heartbeat"/);
-  assert.match(geminiBridge, /body\.action === "retrying"/);
+  assert.match(geminiBridge, /job\.action === "retrying"/);
   assert.match(geminiBridge, /activeTaskIds/);
   assert.match(geminiBridge, /bridge_claimed_at = \?/);
   assert.match(settings, /saveProviderConfig/);

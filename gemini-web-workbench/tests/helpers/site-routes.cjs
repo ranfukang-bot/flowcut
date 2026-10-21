@@ -21,7 +21,11 @@ async function bundle(route) {
       entryPoints:[path.join(ROOT,'app/api',route,'route.ts')],bundle:true,write:false,platform:'node',format:'cjs',logLevel:'silent',
       plugins:[{name:'fixture',setup(build){
         build.onResolve({filter:/^cloudflare:workers$/},()=>({path:'cloudflare:workers',namespace:'fixture'}));
-        build.onResolve({filter:/lib\/(provider-config|seedance)$/},args=>({path:args.path.split('/').pop(),namespace:'fixture'}));
+        // lib/provider-config and lib/seedance, however they are imported.
+        build.onResolve({filter:/(?:^|\/)(provider-config|seedance)$/},args=>{
+          const name=args.path.split('/').pop();
+          return path.resolve(args.resolveDir,args.path)===path.join(ROOT,'lib',name)?{path:name,namespace:'fixture'}:undefined;
+        });
         build.onLoad({filter:/.*/,namespace:'fixture'},args=>({contents:STUBS[args.path],loader:'js'}));
       }}],
     }).then(result=>result.outputFiles[0].text));

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { uiSource } from './helpers/ui-source.mjs';
+import { uiSource } from './helpers/sources.mjs';
 import * as statuses from '../lib/task-statuses.ts';
 test('待检查单独用橙黄状态，已通过和生成中不被染色',()=>{
   const statusSource=fs.readFileSync(new URL('../app/task-status.tsx',import.meta.url),'utf8');

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { uiSource } from "./helpers/ui-source.mjs";
 
 const root = new URL("../", import.meta.url);
 
@@ -10,7 +11,7 @@ async function source(path) {
 
 test("studio exposes multi-image product upload", async () => {
   const [studio, products] = await Promise.all([
-    source("app/studio-app.tsx"),
+    Promise.resolve(uiSource()),
     source("app/api/products/route.ts"),
   ]);
 
@@ -37,7 +38,7 @@ test("studio exposes multi-image product upload", async () => {
 
 test("task queue can clear all completed records without deleting product assets", async () => {
   const [studio, tasks] = await Promise.all([
-    source("app/studio-app.tsx"),
+    Promise.resolve(uiSource()),
     source("app/api/tasks/route.ts"),
   ]);
 
@@ -85,7 +86,7 @@ test("desktop runtime hides developer overlays and accepts idempotent Gemini wri
 
 test("studio exposes encrypted providers, concurrent tasks and Seedance bridge", async () => {
   const [studio, settings, tasks, bridge, geminiBridge, providerConfig, tiktokAccounts] = await Promise.all([
-    source("app/studio-app.tsx"),
+    Promise.resolve(uiSource()),
     source("app/api/settings/route.ts"),
     source("app/api/tasks/route.ts"),
     source("app/api/seedance-bridge/route.ts"),

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { uiSource } from "./helpers/ui-source.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
@@ -9,7 +10,7 @@ const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 test("script prompt pipeline is persisted and exposed in the studio", () => {
   const storage = read("lib/storage.ts");
   const workspace = read("app/api/workspace/route.ts");
-  const studio = read("app/studio-app.tsx");
+  const studio = uiSource();
   assert.match(storage, /CREATE TABLE IF NOT EXISTS script_pipeline_tasks/);
   assert.match(workspace, /scriptPipelineTasks/);
   assert.match(studio, /全自动剧本提示词/);

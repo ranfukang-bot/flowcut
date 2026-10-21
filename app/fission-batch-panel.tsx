@@ -1,5 +1,5 @@
 "use client";
-import type { Task } from './studio-app';
+import type { Task } from './studio-types';
 
 export function FissionBatchPanel({task,statusLabel,onOpenTask}:{task:Task;statusLabel:(task:Task)=>string;onOpenTask:(task:Task)=>void}){
   return <section className="fission-batch-panel" aria-label="多品裂变商品进度">

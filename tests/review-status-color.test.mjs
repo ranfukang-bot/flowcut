@@ -2,9 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { uiSource } from './helpers/ui-source.mjs';
 test('待检查单独用橙黄状态，已通过和生成中不被染色',()=>{
-  const source=fs.readFileSync(new URL('../app/studio-app.tsx',import.meta.url),'utf8');
-  const functions=source.slice(source.indexOf('function taskStatusClass('),source.indexOf('\nasync function api(')).replaceAll('task: Task','task');
+  const statusSource=fs.readFileSync(new URL('../app/task-status.tsx',import.meta.url),'utf8');
+  const functions=statusSource.slice(statusSource.indexOf('export function clipAwaitingReview(')).replaceAll('export function','function').replaceAll('task: Task','task').replace('): boolean {',') {');
+  const source=uiSource();
   const context=vm.createContext({statusLabels:{video_generating:'视频生成中'}});vm.runInContext(functions,context);
   const ready={status:'video_ready',download_path:'file.mp4',review_status:'pending'};
   assert.equal(context.taskStatusClass(ready),'review_pending');

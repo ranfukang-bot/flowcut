@@ -8,7 +8,7 @@ import { DEFAULT_TASK_DURATION, DEFAULT_TASK_REGION, DEFAULT_SHOOTING_STYLE, TAS
 import { validateVariantRequest } from '../lib/prompt-blocks';
 import { confirmAction } from './confirm-action';
 import { productIdFromImageName } from './use-image-product-id';
-import type { Task, Product, Gem, TikTokAccount } from './studio-app';
+import type { Task, Product, Gem, TikTokAccount } from './studio-types';
 
 // A product card: either images dropped in (grouped by the product ID in the
 // file or folder name) or a product picked from the library.

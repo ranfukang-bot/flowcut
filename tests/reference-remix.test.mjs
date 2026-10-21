@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { uiSource } from "./helpers/ui-source.mjs";
 
 const root = new URL("../", import.meta.url);
 const source = async (path) => (await readFile(new URL(path, root), "utf8")).replace(/\r\n/g, "\n");
 
 test("reference remix is isolated from the editable Gem library", async () => {
   const [studio, storage, remix, gemPolicy] = await Promise.all([
-    source("app/studio-app.tsx"),
+    Promise.resolve(uiSource()),
     source("lib/storage.ts"),
     source("app/api/reference-remix/route.ts"),
     source("tests/gemini-prompt-policy.test.mjs"),

@@ -34,7 +34,7 @@ test('fission: one mother releases four independent products, with frozen own im
   assert.ok(f.children(id).every(c=>c.status==='fission_wait'));
   const [mother]=await f.claim(4);
   assert.equal(mother.id,id);assert.equal(mother.kind,'standard');assert.equal(mother.blockMode,'single');
-  assert.ok(mother.prompt.includes('全部放在唯一一个代码块中'));
+  assert.doesNotMatch(mother.prompt,/代码块/,'nothing about code boxes is added to the mother request');
   assert.equal(mother.gem.content,'母版内容');assert.deepEqual(mother.imageUrls.map(u=>new URL(u).searchParams.get('key')),['products/p3/own.png']);
   assert.deepEqual(await f.claim(4),[]);
   const text=block('共用母版');
@@ -48,7 +48,7 @@ test('fission: one mother releases four independent products, with frozen own im
   assert.equal(jobs.length,4);
   for(const [i,job] of jobs.entries()){
     assert.equal(job.kind,'variant');assert.equal(job.blockMode,'single');assert.equal(job.gem.content,'变体内容');
-    assert.ok(job.prompt.includes('全部放在唯一一个代码块中'));
+    assert.doesNotMatch(job.prompt.replace(text,''),/代码块/,'nothing about code boxes is added to the product request');
     assert.ok(job.prompt.includes(text)&&job.prompt.includes('目标国家：泰国'));
     assert.deepEqual(job.imageUrls.map(u=>new URL(u).searchParams.get('key')),[`products/p${i+1}/own.png`]);
     assert.equal((await f.submit(job,block(i+1))).status,200);
@@ -92,7 +92,7 @@ test('fission: mother request uses the supplied creation-centre template, freeze
   assert.equal(created.status,201,JSON.stringify(created.body));
   const [job]=await f.claim();
   const saved=f.row('SELECT gemini_request_text FROM tasks WHERE id=?',created.body.id).gemini_request_text;
-  assert.equal(saved,'本次目标：泰国，口播语言按当地语言。时长 15 秒，iPhone实拍质感。只输出完整文字。\n口播语言：泰语\n不要提问，直接按以上信息输出提示词，每条提示词放在单独的代码块里\n本轮只需要 1 条完整的视频提示词（包含整段全部镜头），全部放在唯一一个代码块中。不要把预设、章节、分镜或口播拆成多个代码块。');
+  assert.equal(saved,'本次目标：泰国，口播语言按当地语言。时长 15 秒，iPhone实拍质感。只输出完整文字。\n口播语言：泰语\n不要提问，直接按以上信息输出提示词');
   assert.ok(job.prompt.includes(saved));
   assert.equal((await f.create({motherRequestTemplate:' '})).status,400);
   assert.equal((await f.create({motherRequestTemplate:'字'.repeat(12001)})).status,400);
@@ -107,25 +107,34 @@ test('fission: mother request uses the supplied creation-centre template, freeze
   assert.ok(f.row('SELECT gemini_request_text FROM tasks WHERE id=?',unknown.body.id).gemini_request_text.includes('口播语言：该地区最常用的本地日常口语'));
 });
 
-test('fission: rejects multiple, short, or unreadable blocks; defer preserves reply and retries normally',async t=>{
+test('fission: the whole reply is the prompt however many code boxes it has; only a short reply is refused and kept for retry',async t=>{
   const f=await fixture(t),c=await f.create({motherSource:'paste',motherPrompt:block('母版')});
   const [job]=await f.claim();
-  for(const blocks of [[block(1),block(2)],['short']])assert.equal((await f.submit(job,blocks.join('\n'),blocks)).status,400);
-  assert.equal((await f.submit(job,'Plaintext\n'+block(1),[])).status,400);
+  assert.equal((await f.submit(job,'short',['short'])).status,400);
   assert.equal(f.row('SELECT prompt FROM tasks WHERE id=?',job.id).prompt,'');
-  const raw=block(1)+'\n'+block(2);
-  assert.equal((await f.call('gemini-bridge','POST',{body:{action:'defer',kind:'variant',taskId:job.id,workerId:'desk',rawReply:raw,error:'两个代码块'}})).status,200);
-  assert.equal(f.row('SELECT gemini_raw_reply FROM tasks WHERE id=?',job.id).gemini_raw_reply,raw);
+  const question='请问口播用什么语言？';
+  assert.equal((await f.call('gemini-bridge','POST',{body:{action:'defer',kind:'variant',taskId:job.id,workerId:'desk',rawReply:question,error:'Gemini 只回复了 10 字'}})).status,200);
+  assert.equal(f.row('SELECT gemini_raw_reply FROM tasks WHERE id=?',job.id).gemini_raw_reply,question);
   f.sqlite.prepare('UPDATE tasks SET gemini_retry_at=NULL WHERE id=?').run(job.id);
   const retried=(await f.claim(4)).find(j=>j.id===job.id);assert.ok(retried);
-  assert.equal((await f.submit(retried)).status,200);
+  const sections=['预设：'+block(1),'场景：'+block(2),'时间轴：'+block(3)];
+  const whole=sections.join('\n\n');
+  assert.equal((await f.submit(retried,whole,sections)).status,200);
+  const row=f.row('SELECT status,prompt,prompt_note FROM tasks WHERE id=?',job.id);
+  assert.equal(row.status,'video_queued');assert.equal(row.prompt,whole);assert.ok(!row.prompt_note);
   assert.equal(f.children(c.body.id).length,4);
+  assert.equal(f.row("SELECT COUNT(*) AS n FROM tasks WHERE task_role='clip'").n,0);
 });
 
-test('fission: visible plain reply falls back with a note, never creates clips',async t=>{
-  const f=await fixture(t);await f.create({motherSource:'paste',motherPrompt:block('母版')});
-  const [job]=await f.claim();assert.equal((await f.submit(job,block('整段'),[])).status,200);
-  assert.equal(f.row('SELECT prompt_note FROM tasks WHERE id=?',job.id).prompt_note,'未识别到代码块，按整段回复处理');
+test('fission: the mother round also uses the whole reply even when the Gem splits it into many code boxes',async t=>{
+  const f=await fixture(t),c=await f.create();
+  const [mother]=await f.claim();
+  const sections=Array.from({length:10},(_,i)=>`第${i+1}段：`+block(i+1));
+  const whole='好的，以下是母版：\n'+sections.join('\n');
+  assert.equal((await f.submit(mother,whole,sections)).status,200);
+  assert.equal(f.row('SELECT prompt FROM tasks WHERE id=?',c.body.id).prompt,whole);
+  const jobs=await f.claim(4);assert.equal(jobs.length,4);
+  assert.ok(jobs.every(job=>job.prompt.includes(whole)),'every product receives the full mother text');
 });
 
 test('fission: mother failure blocks children, child failure is independent, recovery uses the right round',async t=>{

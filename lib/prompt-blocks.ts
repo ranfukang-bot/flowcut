@@ -5,7 +5,9 @@ export const MIN_PROMPT_LENGTH = 300;
 export const RAW_REPLY_NOTE = "未识别到代码块，按整段回复处理";
 
 // raw:    legacy dual 30-second tasks; the dual parser reads the whole reply.
-// single: the first round of a two-round variant task produces one mother prompt.
+// single: rounds that produce exactly one prompt (variant/fission mother, one
+//         prompt per fission product). The whole reply is that prompt; code
+//         blocks are ignored, however many there are.
 // split:  every code block becomes its own video task.
 export type PromptBlockMode = "raw" | "single" | "split";
 
@@ -31,11 +33,10 @@ export function splitPromptBlocks(input: {
   blocks?: unknown;
   hint?: boolean;
   mode?: PromptBlockMode;
-  singleLabel?: string;
 }): PromptBlockResult {
   const text = String(input.text || "").trim();
   const mode = input.mode || "split";
-  if (mode === "raw") {
+  if (mode === "raw" || mode === "single") {
     if (text.length < MIN_PROMPT_LENGTH) throw promptBlocksError(`Gemini 返回内容只有 ${text.length} 字，不是完整 Seedance 提示词，已阻止进入下一步`);
     return { prompts: [text], note: "" };
   }
@@ -49,11 +50,6 @@ export function splitPromptBlocks(input: {
   }
   if (blocks.length > MAX_PROMPT_BLOCKS) {
     throw promptBlocksError(`识别到 ${blocks.length} 个代码块，超过上限 ${MAX_PROMPT_BLOCKS} 个；整轮未拆分、未提交`);
-  }
-  if (mode === "single" && blocks.length > 1) {
-    throw promptBlocksError(input.singleLabel
-      ? `${input.singleLabel} 输出了 ${blocks.length} 个代码块；本轮只能是 1 条提示词，请只输出一个代码块`
-      : `母版 Gem 输出了 ${blocks.length} 个代码块；母版只能是 1 条提示词，请让母版 Gem 只输出一个代码块`);
   }
   const seen = new Map<string, number>();
   blocks.forEach((block, index) => {

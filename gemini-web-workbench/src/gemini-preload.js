@@ -259,8 +259,38 @@ function codeBlocksIn(root) {
   return { blocks, markup };
 }
 
+// The whole reply as the user reads it, for rounds that produce one prompt.
+// Code text stays where it is; only the code box's own label and buttons
+// ("Plaintext", "复制代码") are dropped.
+function replyPlainText(root) {
+  if (!root) return "";
+  const lines = String(root.innerText || "").replace(/\r\n?/g, "\n").split("\n");
+  const chrome = [];
+  for (const pre of root.querySelectorAll("pre")) {
+    if (pre.parentElement?.closest("pre")) continue;
+    const box = pre.closest("code-block, .code-block");
+    if (!box || !root.contains(box)) continue;
+    const code = new Set(String(pre.innerText || "").split("\n").map((line) => line.trim()));
+    for (const line of String(box.innerText || "").split("\n")) {
+      const label = line.trim();
+      if (label && !code.has(label)) chrome.push(label);
+    }
+  }
+  const dropped = new Set();
+  let cursor = 0;
+  for (const label of chrome) {
+    const index = lines.findIndex((line, i) => i >= cursor && !dropped.has(i) && line.trim() === label);
+    if (index >= 0) { dropped.add(index); cursor = index + 1; }
+  }
+  return lines.filter((_, i) => !dropped.has(i)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function responseCodeBlocks() {
   return codeBlocksIn(responseElements().at(-1));
+}
+
+function responsePlainText() {
+  return replyPlainText(responseElements().at(-1));
 }
 
 function userMessageCount() {
@@ -912,31 +942,38 @@ async function waitForResponse(initialResponses, minLength = 200, allowShortRepl
   }
 }
 
-async function readPromptWithCodeBlocks(job, baseline) {
+// A reply of 200+ characters is the Gem's answer. In single mode (mother
+// prompt, one prompt per fission product, first variant round) the whole
+// reply is that one prompt, however many code boxes it uses. Otherwise code
+// blocks, if any, are split into separate videos later.
+// A shorter reply is the Gem asking or refusing: answer it once in the same
+// conversation. Never open a new chat or upload again for that.
+async function readPromptReply(job, baseline) {
   const replies=[];
+  const single=job.blockMode==='single';
+  const joined=()=>replies.join('\n\n【同一对话补充后的回复】\n');
   for(let attempt=0;attempt<2;attempt++) {
-    let prompt;
-    try { prompt=await waitForResponse(baseline,200,true); }
+    let reply;
+    try { reply=await waitForResponse(baseline,200,true); }
     catch(error) {
       if(attempt===0) throw error;
       throw Object.assign(codedError(`Gem 原对话补充后未完成回复：${error.message}`,'GEM_CORRECTION_FAILED'),{rawReply:replies.join('\n\n')});
     }
-    replies.push(prompt);
+    replies.push(reply);
+    const unusable=classifyUnusableResponse(reply);
+    if(unusable) throw Object.assign(unusable,{rawReply:joined()});
     const {blocks,markup}=responseCodeBlocks();
-    if(blocks.length && (job.blockMode!=='single' || blocks.length===1)) return {prompt,codeBlocks:blocks,codeBlockHint:false,correctionUsed:attempt===1};
-    if(attempt===1 && blocks.length>1) throw Object.assign(codedError(`本轮只需要 1 条完整提示词，但 Gem 原对话补充后仍输出了 ${blocks.length} 个代码块，已停止，不会新建对话重试`,'PROMPT_BLOCKS_INVALID_FINAL'),{rawReply:replies.join('\n\n【同一对话补充后的回复】\n')});
-    if(attempt===1) throw Object.assign(codedError('Gem 没有输出提示词（回复里没有代码块）','GEM_NO_PROMPT_BLOCKS'),{
-      rawReply:replies.join('\n\n【同一对话补充后的回复】\n'),
-    });
-    // Keep the uploaded image and conversation. Do not create a new chat or
-    // re-upload the product merely because the Gem asked a question.
-    geminiProgress=markup?'代码块未能读取，正在原对话补充一次':'Gem 未输出代码块，正在原对话补充一次';
+    const prompt=single?(responsePlainText()||reply):reply;
+    if(prompt.length>=200 || (!single && blocks.length)) {
+      return single
+        ? {prompt,codeBlocks:[],codeBlockHint:false,correctionUsed:attempt===1}
+        : {prompt,codeBlocks:blocks,codeBlockHint:markup && !blocks.length,correctionUsed:attempt===1};
+    }
+    if(attempt===1) throw Object.assign(codedError(`Gem 没有输出提示词：原对话补充一次后仍只回复了 ${reply.length} 字`,'GEM_NO_PROMPT'),{rawReply:joined()});
+    geminiProgress='Gem 回复过短，正在原对话补充一次';
     const language=String(job.spokenLanguage || '该地区最常用的本地日常口语');
     try {
-      const correction=blocks.length>1
-        ? `不要提问，不要新增方案或改写内容。请把刚才全部预设、场景、人物、完整时间轴和口播合并成 1 条完整视频提示词，全部放在唯一一个代码块里，不要按章节或镜头分块。口播语言 ${language}。`
-        : `不要提问，按默认值直接输出：口播语言 ${language}，每条提示词放在单独的代码块里。`;
-      await typePrompt(correction);
+      await typePrompt(`不要提问，按默认值直接输出完整的视频提示词。口播语言：${language}。`);
       baseline=responseSnapshot();
       await submitPrompt();
     } catch(error) {
@@ -968,7 +1005,7 @@ async function runJob(job) {
   await typePrompt(job.prompt);
   const baseline = responseSnapshot();
   await submitPrompt();
-  return readPromptWithCodeBlocks(job,baseline);
+  return readPromptReply(job,baseline);
 }
 
 async function runReferenceRemixJob(job) {

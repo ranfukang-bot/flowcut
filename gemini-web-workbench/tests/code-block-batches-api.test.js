@@ -139,9 +139,9 @@ test('two-round variant: mother prompt, then the variant Gem with the mother and
   assert.equal(first.kind,'standard');
   assert.equal(first.blockMode,'single');
   assert.equal(first.gem.content,'主 Gem 设定');
-  assert.equal((await submit(f,first,{prompt:reply([block(1),block(2)]),codeBlocks:[block(1),block(2)]})).status,400,'round one must return one mother prompt');
-  const mother=block(9,'母版');
-  const motherResult=await submit(f,first,{prompt:reply([mother]),codeBlocks:[mother]});
+  assert.equal((await submit(f,first,{prompt:'请先告诉我目标国家。',codeBlocks:[]})).status,400,'a short question is not a mother prompt');
+  const mother=reply([block(9,'母版前段'),block(10,'母版后段')]);
+  const motherResult=await submit(f,first,{prompt:mother,codeBlocks:[block(9,'母版前段'),block(10,'母版后段')]});
   assert.equal(motherResult.status,200,JSON.stringify(motherResult.body));
   assert.deepEqual(f.row('SELECT status,prompt,task_role FROM tasks WHERE id=?',first.id),{status:'variant_queued',prompt:mother,task_role:'group'});
 
@@ -149,7 +149,7 @@ test('two-round variant: mother prompt, then the variant Gem with the mother and
   assert.equal(second.kind,'variant');
   assert.equal(second.id,first.id);
   assert.equal(second.gem.content,'变体 Gem 设定');
-  assert.equal(second.prompt,`目标国家：泰国\n母版如下：\n${mother}\n每条放一个代码块。\n口播语言：泰语\n不要提问，直接按以上信息输出提示词，每条提示词放在单独的代码块里`);
+  assert.equal(second.prompt,`目标国家：泰国\n母版如下：\n${mother}\n每条放一个代码块。\n口播语言：泰语\n不要提问，直接按以上信息输出提示词`);
   assert.equal(second.spokenLanguage,'泰语');
   assert.deepEqual(second.imageUrls,first.imageUrls,'the same product images go to the variant Gem');
   const variants=[block(11),block(12)];

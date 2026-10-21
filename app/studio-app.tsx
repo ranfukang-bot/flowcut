@@ -2000,7 +2000,7 @@ function Dashboard({
                 value={gemRequestTemplate} onChange={event => onGemRequestTemplate(event.target.value)}
                 style={{ width: "100%", resize: "vertical", marginTop: 8 }} />
             </label>
-            <p style={{ fontSize: 12, color: "#a6b5c6" }}>会记住你的修改。可用 {"{时长}、{地区}、{口播语言}、{拍摄风格}"} 自动带入参数；发送时会补齐口播语言和直接输出代码块的要求，Gem 设定保持原样。</p>
+            <p style={{ fontSize: 12, color: "#a6b5c6" }}>会记住你的修改。可用 {"{时长}、{地区}、{口播语言}、{拍摄风格}"} 自动带入参数；发送时会补齐口播语言，不会附加代码块要求，Gem 设定保持原样。</p>
             <details>
               <summary>查看实际发送内容</summary>
               <pre data-testid="gem-request-preview" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{buildGemRequest(gemRequestTemplate, { duration: selectedDuration, region: selectedRegion, shooting_style: selectedShootingStyle,spoken_language:spokenLanguage })}</pre>

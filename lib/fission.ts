@@ -1,11 +1,11 @@
-import { DEFAULT_GEM_REQUEST, buildSingleGemRequest, validateGemRequest } from './gem-request';
+import { DEFAULT_GEM_REQUEST, buildGemRequest, validateGemRequest } from './gem-request';
 import { resolveSpokenLanguage } from './spoken-language';
 import { MIN_PROMPT_LENGTH, validateVariantRequest } from './prompt-blocks';
 import { normalizeTaskDuration, normalizeTaskRegion, normalizeShootingStyle } from './task-config';
 
 export const DEFAULT_FISSION_REQUEST = [
   '目标国家：{地区}',
-  '以下是母版提示词。请保持母版的结构、节奏和风格，把产品换成本次上传图片中的产品，输出 1 条完整的视频提示词，放在一个代码块中：',
+  '以下是母版提示词。请保持母版的结构、节奏和风格，把产品换成本次上传图片中的产品，输出 1 条完整的视频提示词：',
   '{母版提示词}',
 ].join('\n');
 
@@ -43,8 +43,8 @@ export function validateFissionInput(body: FissionInput) {
   const region=normalizeTaskRegion(body.region),shooting_style=normalizeShootingStyle(body.shootingStyle);
   resolveSpokenLanguage(region,body.spokenLanguage);
   const params={duration,region,shooting_style,spoken_language:body.spokenLanguage};
-  const variantRequest=buildSingleGemRequest(validateVariantRequest(body.variantRequestText ?? DEFAULT_FISSION_REQUEST),params);
-  const motherRequest=buildSingleGemRequest(body.motherSource==='generate' ? validateGemRequest(body.motherRequestTemplate ?? DEFAULT_GEM_REQUEST) : DEFAULT_GEM_REQUEST,params);
+  const variantRequest=buildGemRequest(validateVariantRequest(body.variantRequestText ?? DEFAULT_FISSION_REQUEST),params);
+  const motherRequest=buildGemRequest(body.motherSource==='generate' ? validateGemRequest(body.motherRequestTemplate ?? DEFAULT_GEM_REQUEST) : DEFAULT_GEM_REQUEST,params);
   if(body.requestId && !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(body.requestId)) throw Error('批次请求标识无效');
   return {duration,region,shooting_style,motherProductId,motherPrompt,variantRequest,motherRequest};
 }

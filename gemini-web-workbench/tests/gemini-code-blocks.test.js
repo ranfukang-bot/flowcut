@@ -42,3 +42,26 @@ test('a code block that renders but cannot be read is reported, so the reply is 
   assert.deepEqual(await read(t,'<p>说明</p><code-block><div class="code-block"><span>Plaintext</span></div></code-block>'),{blocks:[],markup:true});
   assert.deepEqual(await read(t,'<p>说明</p>'+codeBlock('   ')),{blocks:[],markup:true});
 });
+
+async function plain(t,html) {
+  const page=await browser.newPage();
+  t.after(()=>page.close());
+  await page.setContent(`<div id="model-response-message-content-r1">${html}</div>`);
+  return page.evaluate(`(() => { ${extract}
+ return replyPlainText(document.querySelector('#model-response-message-content-r1')); })()`);
+}
+
+test('a one-prompt round reads the whole reply in order: prose and every code box kept, only the box label and copy button dropped',async t=>{
+  const preset='预设：9:16 竖屏，15 秒\n人物：年轻女性';
+  const timeline='0-3 秒：产品特写\n3-15 秒：口播 Plaintext 字样也保留';
+  const text=await plain(t,`<p>好的，以下是母版：</p><h3>预设</h3>${codeBlock(preset)}<p>时间轴如下</p>${codeBlock(timeline)}<p>以上。</p>`);
+  assert.equal(text.split('\n').filter(line=>line.trim()==='Plaintext').length,0);
+  assert.doesNotMatch(text,/复制代码/);
+  const order=['好的，以下是母版：','预设','预设：9:16 竖屏，15 秒','人物：年轻女性','时间轴如下','0-3 秒：产品特写','3-15 秒：口播 Plaintext 字样也保留','以上。'];
+  let at=-1;
+  for(const part of order){const next=text.indexOf(part,at+1);assert.ok(next>at,`「${part}」 missing or out of order in:\n${text}`);at=next;}
+});
+
+test('a reply without code boxes is read unchanged',async t=>{
+  assert.equal(await plain(t,'<p>第一段</p><p>第二段</p>'),'第一段\n\n第二段');
+});

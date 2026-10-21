@@ -1,6 +1,6 @@
 import { getProviderConfig } from "./provider-config";
 import { runtimeEnv } from "./storage";
-import { DEFAULT_GEM_REQUEST, buildGemRequest, buildSingleGemRequest } from "./gem-request";
+import { DEFAULT_GEM_REQUEST, buildGemRequest } from "./gem-request";
 
 type ProductInput = {
   duration: number;
@@ -9,8 +9,6 @@ type ProductInput = {
   name?: string;
   features?: string;
   gemini_request_text?: string | null;
-  variant_mode?: boolean | number;
-  task_role?: string | null;
 };
 
 export function buildGeminiPrompt(gemContent: string, product: ProductInput) {
@@ -26,8 +24,7 @@ export function buildGeminiPrompt(gemContent: string, product: ProductInput) {
 // The web executor opens a saved Gem. Instructions belong in that Gem, not in
 // every user turn. API callers retain buildGeminiPrompt above.
 export function buildSavedGemPrompt(product: ProductInput) {
-  const build=product.variant_mode || product.task_role==='fission' ? buildSingleGemRequest : buildGemRequest;
-  return build(product.gemini_request_text ?? DEFAULT_GEM_REQUEST, product);
+  return buildGemRequest(product.gemini_request_text ?? DEFAULT_GEM_REQUEST, product);
 }
 
 export async function resolveGeminiApiModel(

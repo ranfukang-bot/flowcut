@@ -17,7 +17,7 @@ test('all configured markets use the requested local language, manual overrides 
   assert.throws(()=>resolveSpokenLanguage('菲律宾','自造语言'));
 });
 
-test('legacy and custom templates gain language and code-block instructions, and saved manual choices survive the send-time upgrade',()=>{
+test('legacy and custom templates gain the language line and the no-question line (never a code-box rule), and saved manual choices survive the send-time upgrade',()=>{
   const params={duration:15,region:'菲律宾',shooting_style:'实拍'};
   assert.equal(buildGemRequest('自定义内容：{地区}',params),`自定义内容：菲律宾\n口播语言：Taglish\n${DIRECT_PROMPT_INSTRUCTION}`);
   const custom=buildGemRequest('产品真实，保持原要求。\n口播语言：泰语',{...params,spoken_language:'中文'});

@@ -35,7 +35,7 @@ const BRIDGE_REQUEST_TIMEOUT_MS = 10_000;
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function isRetryableJobError(error) {
-  if(['GEM_NO_PROMPT_BLOCKS','GEM_CORRECTION_FAILED','PROMPT_BLOCKS_INVALID_FINAL'].includes(error?.code)) return false;
+  if(['GEM_NO_PROMPT','GEM_CORRECTION_FAILED','PROMPT_BLOCKS_INVALID_FINAL'].includes(error?.code)) return false;
   if (isAccountLimitedError(error)) return true;
   if (RETRYABLE_JOB_CODES.has(error?.code || "")) return true;
   if (error?.name === "TimeoutError" || error?.name === "AbortError") return true;
@@ -443,7 +443,7 @@ class BridgeEngine {
         // One code block is one video. Check before anything is written back:
         // a reply that cannot be split is retried, never sent as one prompt.
         try {
-          splitPromptBlocks({ text: result.prompt, blocks: result.codeBlocks, hint: result.codeBlockHint === true, mode: job.blockMode, singleLabel:job.kind==='variant'?'变体 Gem':undefined });
+          splitPromptBlocks({ text: result.prompt, blocks: result.codeBlocks, hint: result.codeBlockHint === true, mode: job.blockMode });
         } catch (error) {
           if(result.correctionUsed)error.code='PROMPT_BLOCKS_INVALID_FINAL';
           throw Object.assign(error, { rawReply: result.prompt });
@@ -535,7 +535,7 @@ class BridgeEngine {
           );
         }
       } else {
-        if(['GEM_NO_PROMPT_BLOCKS','GEM_CORRECTION_FAILED','PROMPT_BLOCKS_INVALID_FINAL'].includes(code)) {
+        if(['GEM_NO_PROMPT','GEM_CORRECTION_FAILED','PROMPT_BLOCKS_INVALID_FINAL'].includes(code)) {
           try {
             this.store.movePendingResultToError?.({taskId:job.id,kind:job.kind,workerId:this.workerId,rawReply:error.rawReply},message);
           } catch {

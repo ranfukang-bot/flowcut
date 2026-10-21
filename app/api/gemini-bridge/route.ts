@@ -1,5 +1,5 @@
 import { buildSavedGemPrompt } from "../../../lib/gemini";
-import { buildGemRequest, buildSingleGemRequest } from '../../../lib/gem-request';
+import { buildGemRequest } from '../../../lib/gem-request';
 import { requestSpokenLanguage } from '../../../lib/spoken-language';
 import { chooseGeminiAccount, availableGemAccounts } from "../../../lib/gemini-account-routing";
 import { geminiRetryPlan } from "../../../lib/gemini-retry";
@@ -469,7 +469,7 @@ export async function GET(request: Request) {
           accountId,
           blockMode: variantTask.task_role==='fission_child' ? "single" : "split",
           gem: { id: variantTask.gem_id, name: variantTask.gem_name, content: variantTask.content },
-          prompt: renderVariantRequest((variantTask.task_role==='fission_child'?buildSingleGemRequest:buildGemRequest)(variantTask.variant_request_text || "",{duration:variantTask.duration,region:variantTask.region,shooting_style:variantTask.shooting_style,spoken_language:requestSpokenLanguage(variantTask.gemini_request_text || '',variantTask.region)}), variantTask.mother_prompt),
+          prompt: renderVariantRequest(buildGemRequest(variantTask.variant_request_text || "",{duration:variantTask.duration,region:variantTask.region,shooting_style:variantTask.shooting_style,spoken_language:requestSpokenLanguage(variantTask.gemini_request_text || '',variantTask.region)}), variantTask.mother_prompt),
           spokenLanguage: requestSpokenLanguage(variantTask.gemini_request_text || '',variantTask.region),
           imageUrls: (variantTask.image_keys_snapshot ? JSON.parse(variantTask.image_keys_snapshot) as string[] : (images?.results || []).map(image => image.object_key))
             .map(key => mediaUrl(request.url, key)),
@@ -835,7 +835,7 @@ export async function POST(request: Request) {
       const mode: PromptBlockMode = fissionChild ? 'single' : variantRound ? "split" : Number(task.duration) === 30 ? "raw" : task.variant_mode ? "single" : "split";
       let parsed;
       try {
-        parsed = splitPromptBlocks({ text: prompt, blocks: body.codeBlocks, hint: body.codeBlockHint === true, mode, singleLabel:fissionChild?'变体 Gem':undefined });
+        parsed = splitPromptBlocks({ text: prompt, blocks: body.codeBlocks, hint: body.codeBlockHint === true, mode });
       } catch (error) {
         return Response.json({ error: error instanceof Error ? error.message : "代码块校验失败" }, { status: 400 });
       }

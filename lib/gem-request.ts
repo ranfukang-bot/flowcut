@@ -1,6 +1,12 @@
 import { resolveSpokenLanguage } from './spoken-language.ts';
-export const DIRECT_PROMPT_INSTRUCTION = '不要提问，直接按以上信息输出提示词，每条提示词放在单独的代码块里';
-export const SINGLE_PROMPT_INSTRUCTION = '本轮只需要 1 条完整的视频提示词（包含整段全部镜头），全部放在唯一一个代码块中。不要把预设、章节、分镜或口播拆成多个代码块。';
+export const DIRECT_PROMPT_INSTRUCTION = '不要提问，直接按以上信息输出提示词';
+// Code-box wording that 1.4.51–1.4.52 added to every request. Saved texts and
+// queued tasks may still carry it; it must never reach the Gem again, because
+// the Gem's own settings decide how it lays out its answer.
+const LEGACY_CODE_BLOCK_WORDING = [
+  /(?<=不要提问，直接按以上信息输出提示词)，每条提示词放在单独的代码块里/g,
+  /\n?本轮只需要 1 条完整的视频提示词（包含整段全部镜头），全部放在唯一一个代码块中。不要把预设、章节、分镜或口播拆成多个代码块。/g,
+];
 export const DEFAULT_GEM_REQUEST = [
   "请根据本次上传的商品图片，按这个 Gem 的设定生成完整的视频提示词。只输出文字，不要生成图片或视频。",
   "时长：{时长}秒",
@@ -24,18 +30,13 @@ export function renderGemRequest(template: string, input: GemRequestInput) {
 // Also upgrade saved/legacy custom request text at send time, without editing
 // the Gem itself or changing the task's frozen images/instructions.
 export function buildGemRequest(template: string, input: GemRequestInput) {
-  let text=renderGemRequest(template,input);
+  let text=LEGACY_CODE_BLOCK_WORDING.reduce((value,pattern)=>value.replace(pattern,''),renderGemRequest(template,input));
   const explicit=text.match(/^口播语言[：:]\s*([^\r\n]+)/m)?.[1]?.trim();
   const language=input.spoken_language === undefined && explicit ? explicit : resolveSpokenLanguage(input.region,input.spoken_language);
   if(explicit) text=text.replace(/^口播语言[：:][^\r\n]*/m,`口播语言：${language}`);
   else text+=`\n口播语言：${language}`;
   if(!text.includes(DIRECT_PROMPT_INSTRUCTION))text+='\n'+DIRECT_PROMPT_INSTRUCTION;
   return text;
-}
-
-export function buildSingleGemRequest(template:string,input:GemRequestInput) {
-  const text=buildGemRequest(template,input);
-  return text.includes(SINGLE_PROMPT_INSTRUCTION)?text:text+'\n'+SINGLE_PROMPT_INSTRUCTION;
 }
 
 export function validateGemRequest(value: unknown): string {

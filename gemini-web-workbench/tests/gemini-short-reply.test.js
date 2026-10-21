@@ -70,58 +70,52 @@ test('packaged page-runtime wrapper also returns short-reply text; normal replie
   for (const length of [200, 350]) assert.equal(await pageRuntime('文'.repeat(length)).context.readReply(), '文'.repeat(length));
 });
 
-test('no-code reply receives exactly one correction in the same conversation, then succeeds or fails terminally with both replies',async()=>{
-  for(const success of [true,false]) {
+test('a short reply (the Gem asking) gets exactly one plain correction in the same conversation, then succeeds or fails terminally with both replies',async()=>{
+  for(const mode of ['split','single']) for(const success of [true,false]) {
     const {context}=pageRuntime('unused');
-    context.round=0;context.sent=[];context.block='完整提示词'.repeat(90);context.success=success;
+    context.round=0;context.sent=[];context.full='完整提示词'.repeat(90);context.success=success;context.mode=mode;
     vm.runInContext(`
-      waitForResponse=async()=>{round++;return round===1?'口播用什么语言？':success?block:'请先确认语言。';};
-      responseCodeBlocks=()=>({blocks:round===2&&success?[block]:[],markup:round===2&&success});
+      waitForResponse=async()=>{round++;return round===1?'口播用什么语言？':success?full:'请先确认语言。';};
+      responseCodeBlocks=()=>({blocks:[],markup:false});
+      responsePlainText=()=>round===1?'口播用什么语言？':success?full:'请先确认语言。';
       typePrompt=async text=>sent.push(text);
       submitPrompt=async()=>{};
       ensureFreshConversation=()=>{throw Error('must stay in this conversation');};
       uploadFiles=()=>{throw Error('must keep the uploaded image');};
-      globalThis.readPrompt=()=>readPromptWithCodeBlocks({spokenLanguage:'Taglish'},[]);
+      globalThis.readPrompt=()=>readPromptReply({blockMode:mode,spokenLanguage:'Taglish'},[]);
     `,context);
-    if(success){const result=await context.readPrompt();assert.equal(result.correctionUsed,true);assert.equal(result.codeBlocks[0],context.block);}
-    else await assert.rejects(context.readPrompt(),error=>{assert.equal(error.code,'GEM_NO_PROMPT_BLOCKS');assert.equal(error.message,'Gem 没有输出提示词（回复里没有代码块）');assert.ok(error.rawReply.includes('口播用什么语言？'));assert.ok(error.rawReply.includes('请先确认语言。'));return true;});
+    if(success){const result=await context.readPrompt();assert.equal(result.correctionUsed,true);assert.equal(result.prompt,context.full);}
+    else await assert.rejects(context.readPrompt(),error=>{assert.equal(error.code,'GEM_NO_PROMPT');assert.equal(isRetryableJobError(error),false);assert.ok(error.rawReply.includes('口播用什么语言？'));assert.ok(error.rawReply.includes('请先确认语言。'));return true;});
     assert.equal(context.round,2);assert.equal(context.sent.length,1);
-    assert.equal(context.sent[0],'不要提问，按默认值直接输出：口播语言 Taglish，每条提示词放在单独的代码块里。');
+    assert.equal(context.sent[0],'不要提问，按默认值直接输出完整的视频提示词。口播语言：Taglish。');
+    assert.doesNotMatch(context.sent[0],/代码块/);
   }
 });
 
-test('single-video mode corrects section blocks once in the original conversation, while split mode keeps independent videos',async()=>{
-  for(const mode of ['single','split']) for(const success of [true,false]) {
+test('a full reply is accepted at once with no correction: single mode takes the whole text however many code boxes, split mode keeps the boxes for splitting',async()=>{
+  for(const mode of ['single','split']) for(const boxes of [0,1,6]) {
     const {context}=pageRuntime('unused');
-    context.round=0;context.sent=[];context.mode=mode;context.success=success;
-    context.full='完整的五镜头与口播提示词'.repeat(40);
+    context.sent=[];context.mode=mode;context.boxes=Array.from({length:boxes},(_,i)=>`第${i+1}段`+'镜头与口播'.repeat(70));
+    context.full='好的，以下是提示词：\n'+(context.boxes.join('\n')||'整段提示词'.repeat(60));
     vm.runInContext(`
-      waitForResponse=async()=>{round++;return round===1?'预设、场景、人物与完整时间轴':success?full:'仍然按章节分块';};
-      responseCodeBlocks=()=>({blocks:round===2&&success?[full]:['预设','场景','人物','时间轴','口播','结束'],markup:true});
+      waitForResponse=async()=>'Plaintext\\n'+full;
+      responseCodeBlocks=()=>({blocks:boxes,markup:boxes.length>0});
+      responsePlainText=()=>full;
       typePrompt=async text=>sent.push(text);submitPrompt=async()=>{};
-      ensureFreshConversation=()=>{throw Error('must keep the original chat');};
-      uploadFiles=()=>{throw Error('must not upload again');};
-      globalThis.readPrompt=()=>readPromptWithCodeBlocks({blockMode:mode,spokenLanguage:'Taglish'},[]);
+      globalThis.readPrompt=()=>readPromptReply({blockMode:mode,spokenLanguage:'Taglish'},[]);
     `,context);
-    if(mode==='split') {
-      const result=await context.readPrompt();assert.equal(result.codeBlocks.length,6);
-      assert.equal(result.correctionUsed,false);assert.equal(context.round,1);assert.equal(context.sent.length,0);
-    } else {
-      if(success) {const result=await context.readPrompt();assert.equal(result.codeBlocks.length,1);assert.equal(result.codeBlocks[0],context.full);assert.equal(result.correctionUsed,true);}
-      else await assert.rejects(context.readPrompt(),error=>{
-        assert.equal(error.code,'PROMPT_BLOCKS_INVALID_FINAL');assert.equal(isRetryableJobError(error),false);
-        assert.ok(error.rawReply.includes('预设、场景、人物与完整时间轴'));assert.ok(error.rawReply.includes('仍然按章节分块'));return true;
-      });
-      assert.equal(context.round,2);assert.equal(context.sent.length,1);
-      assert.ok(context.sent[0].includes('唯一一个代码块'));assert.ok(context.sent[0].includes('口播语言 Taglish'));
-    }
+    const result=await context.readPrompt();
+    assert.equal(context.sent.length,0,'no correction is typed into the conversation');
+    assert.equal(result.correctionUsed,false);
+    if(mode==='single') {assert.equal(result.prompt,context.full);assert.deepEqual([...result.codeBlocks],[]);}
+    else {assert.deepEqual([...result.codeBlocks],context.boxes);assert.equal(result.prompt,'Plaintext\n'+context.full);}
   }
 });
 
-test('a missing-code-block failure never defers or creates another generation and keeps its durable raw reply',async()=>{
+test('a no-prompt failure never defers or creates another generation and keeps its durable raw reply',async()=>{
   const account={id:'a',name:'隔离账号'},reports=[];
   const store={state:{settings:{},pendingResults:[],pendingErrors:[]},log(){},movePendingResultToError(p,error){this.state.pendingErrors.push({...p,error});},removePendingError(id){this.state.pendingErrors=this.state.pendingErrors.filter(p=>p.taskId!==id);}};
-  const engine=new BridgeEngine({store,getAuthenticatedAccounts:()=>[],onChange(){},runJob:async()=>{throw Object.assign(Error('Gem 没有输出提示词（回复里没有代码块）'),{code:'GEM_NO_PROMPT_BLOCKS',rawReply:'口播语言？\n仍是反问'});}});
+  const engine=new BridgeEngine({store,getAuthenticatedAccounts:()=>[],onChange(){},runJob:async()=>{throw Object.assign(Error('Gem 没有输出提示词：原对话补充一次后仍只回复了 4 字'),{code:'GEM_NO_PROMPT',rawReply:'口播语言？\n仍是反问'});}});
   engine.downloadFiles=async()=>[];engine.report=async(id,action,detail)=>{reports.push({id,action,...detail});throw Error('服务暂时离线');};
   engine.active.set('a',{taskId:'task'});await engine.execute(account,{id:'task',kind:'standard'});
   assert.deepEqual(reports.map(r=>r.action),['error']);assert.equal(store.state.pendingErrors[0].rawReply,'口播语言？\n仍是反问');
@@ -136,7 +130,7 @@ test('a timeout after the single correction is terminal and keeps the original q
   vm.runInContext(`let reads=0;
     waitForResponse=async()=>{if(++reads===1)return '口播用什么语言？';throw Object.assign(Error('超时'),{code:'RESPONSE_TIMEOUT'});};
     responseCodeBlocks=()=>({blocks:[],markup:false});typePrompt=async()=>{};submitPrompt=async()=>{};
-    globalThis.readPrompt=()=>readPromptWithCodeBlocks({spokenLanguage:'Taglish'},[]);`,context);
+    globalThis.readPrompt=()=>readPromptReply({spokenLanguage:'Taglish'},[]);`,context);
   await assert.rejects(context.readPrompt(),error=>{assert.equal(error.code,'GEM_CORRECTION_FAILED');assert.ok(error.rawReply.includes('口播用什么语言？'));return true;});
 });
 

@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } from 'react';
 import { DEFAULT_FISSION_REQUEST } from '../lib/fission';
-import { DEFAULT_GEM_REQUEST, buildSingleGemRequest, validateGemRequest } from '../lib/gem-request';
+import { DEFAULT_GEM_REQUEST, buildGemRequest, validateGemRequest } from '../lib/gem-request';
 import { SpokenLanguageSelect } from './spoken-language-select';
 import { SPOKEN_LANGUAGE_OPTIONS } from '../lib/spoken-language';
 import { DEFAULT_TASK_DURATION, DEFAULT_TASK_REGION, DEFAULT_SHOOTING_STYLE, TASK_DURATIONS, TASK_REGIONS, SHOOTING_STYLES } from '../lib/task-config';
@@ -334,7 +334,7 @@ export function FissionPage({ products, gems, accounts, request, onUpload, onCre
           {!paste && <>
             <label>第一轮发给母版 Gem 的文字<textarea aria-label="第一轮发给母版 Gem 的文字" rows={5} maxLength={12000} value={motherRequestTemplate} onChange={event => change({ motherRequestTemplate: event.target.value })} /></label>
             <p className="fission-hint">{settings.motherRequestTemplate === undefined ? '沿用创作中心保存的「发送给 Gem 的文字」' : '本模块单独设置'}；可用 {'{时长}{地区}{拍摄风格}'}。{settings.motherRequestTemplate !== undefined && <button type="button" className="text-button" onClick={() => change({ motherRequestTemplate: undefined })}>沿用创作中心</button>}</p>
-            <pre data-testid="fission-mother-request-preview" style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{buildSingleGemRequest(motherRequestTemplate,{duration:settings.duration,region:settings.region,shooting_style:settings.style,spoken_language:settings.spokenLanguage})}</pre>
+            <pre data-testid="fission-mother-request-preview" style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{buildGemRequest(motherRequestTemplate,{duration:settings.duration,region:settings.region,shooting_style:settings.style,spoken_language:settings.spokenLanguage})}</pre>
           </>}
           <label>第二轮发给变体 Gem 的文字<textarea aria-label="第二轮发给变体 Gem 的文字" rows={4} maxLength={12000} value={settings.template} onChange={event => change({ template: event.target.value })} /></label>
           <p className="fission-hint">必须保留 {'{母版提示词}'}；可用 {'{时长}{地区}{拍摄风格}'}。{settings.template !== DEFAULT_FISSION_REQUEST && <button type="button" className="text-button" onClick={() => change({ template: DEFAULT_FISSION_REQUEST })}>恢复默认</button>}</p>

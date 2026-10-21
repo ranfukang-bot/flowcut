@@ -33,10 +33,14 @@ test('the whole round is refused for a short, repeated or excessive block', () =
   assert.throws(() => splitPromptBlocks({ text: '太短', blocks: [] }), /只有 2 字/);
 });
 
-test('the mother round accepts exactly one prompt; the legacy 30-second mode reads the whole reply', () => {
-  assert.deepEqual(splitPromptBlocks({ text: reply, blocks: [prompt(1)], mode: 'single' }).prompts, [prompt(1)]);
-  assert.throws(() => splitPromptBlocks({ text: reply, blocks: [prompt(1), prompt(2)], mode: 'single' }), /母版只能是 1 条/);
-  assert.deepEqual(splitPromptBlocks({ text: reply, blocks: [prompt(1), prompt(2)], mode: 'raw' }), { prompts: [reply], note: '' });
+test('one-prompt rounds and the legacy 30-second mode use the whole reply, however many code boxes it has', () => {
+  for (const mode of ['single', 'raw']) {
+    for (const blocks of [[], [prompt(1)], [prompt(1), prompt(2)], Array.from({ length: 12 }, (_, i) => `第${i + 1}段`)]) {
+      assert.deepEqual(splitPromptBlocks({ text: reply, blocks, mode }), { prompts: [reply], note: '' });
+    }
+    assert.deepEqual(splitPromptBlocks({ text: 'Plaintext\n' + prompt(1), blocks: [], hint: true, mode }).prompts, ['Plaintext\n' + prompt(1)]);
+    assert.throws(() => splitPromptBlocks({ text: '请问口播用什么语言？', blocks: [], mode }), /只有 10 字/);
+  }
 });
 
 test('the second-round text needs the mother prompt placeholder and fills country and mother literally', () => {

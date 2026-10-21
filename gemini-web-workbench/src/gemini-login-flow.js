@@ -31,7 +31,7 @@ class GeminiLoginFlow {
       const browser = await this.browserFinder();
       if (!browser) { this.flow.phase = 'missing'; this.flow.error = '未找到 Firefox，请安装后重试'; return this.state(); }
       this.run = this.browserFactory({ root: path.join(this.root, 'login-temp'), browser });
-      await this.run.start(); this.flow.phase = 'waiting-for-user'; this.flow.error = '';
+      await this.run.start(); this.flow.phase = 'waiting-for-user'; this.flow.error = ''; this.flow.errorCode = '';
       return this.state();
     } catch { this.flow.phase = 'failed'; this.flow.error = 'Firefox 登录窗口打开失败，请重试'; throw loginError('FIREFOX_LAUNCH_FAILED', this.flow.error); }
     finally { this.busy = false; this.changed(); }
@@ -68,7 +68,21 @@ class GeminiLoginFlow {
       if (candidate) { try { await this.clearSession(candidate.partition); } catch { clean = false; } }
       flow.phase = 'failed';
       const code = /^[A-Z_]{3,70}$/.test(error?.code || '') ? error.code : 'LOGIN_IMPORT_FAILED';
-      flow.error = clean ? (code === 'ACCOUNT_BUSY' ? '该账号正在执行任务，请等任务结束后重新打开 Firefox' : '登录导入或检查失败，原账号保持不变，请重新打开 Firefox 登录')
+      flow.errorCode = clean ? code : 'LOGIN_CLEANUP_FAILED';
+      const reason = {
+        ACCOUNT_BUSY: '该账号正在执行任务，请等任务结束',
+        BROWSER_CLOSE_FAILED: '临时 Firefox 关闭失败',
+        BROWSER_STILL_RUNNING: '临时 Firefox 尚未退出',
+        BROWSER_PROCESS_QUERY_FAILED: '无法确认临时 Firefox 已退出',
+        LOGIN_NOT_FINISHED: '尚未读到已完成的 Google 登录',
+        LOGIN_COOKIES_MISSING: 'Firefox 尚未保存登录资料',
+        COOKIE_READ_FAILED: 'Firefox 登录资料读取失败',
+        COOKIE_IMPORT_FAILED: '登录资料写入新会话失败',
+        PARTITIONED_COOKIE_UNSUPPORTED: '登录资料含暂不支持的分区 Cookie',
+        LOGIN_CHECK_FAILED: '导入后的 Gemini 登录或模型检查未通过',
+        LOGIN_SAVE_FAILED: '新登录配置保存失败',
+      }[code] || '登录导入或检查失败';
+      flow.error = clean ? `${reason}，原账号保持不变，请重新打开 Firefox 登录（${flow.errorCode}）`
         : '登录未完成，临时资料清理失败，请关闭本次 Firefox 登录窗口后点击取消重试清理';
       throw loginError(clean ? code : 'LOGIN_CLEANUP_FAILED', flow.error);
     } finally { this.busy = false; this.changed(); }

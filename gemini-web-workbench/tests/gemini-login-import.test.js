@@ -6,7 +6,7 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { DatabaseSync } = require('node:sqlite');
 const { normalizeGoogleCookies, readFirefoxGoogleCookies, importIntoEmptyGoogleSession } = require('../src/gemini-login-import');
-const { TemporaryBrowserLogin, assertTempProfile } = require('../src/gemini-browser-login');
+const { TemporaryBrowserLogin, assertTempProfile, closeBrowser } = require('../src/gemini-browser-login');
 const future = Date.now() / 1000 + 86400;
 const raw = (extra = {}) => ({ name: 'SID', value: 'synthetic-test-cookie', domain: '.google.com', path: '/', secure: true, httpOnly: true, sameSite: 'Lax', expires: future, ...extra });
 const directory = t => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'flowcut-login-test-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true })); return dir; };
@@ -92,4 +92,36 @@ test('browser launch failure removes its temp directory before returning', async
   } });
   await assert.rejects(run.start(), { code: 'BROWSER_LAUNCH_FAILED' });
   assert.equal(fs.existsSync(run.profile), false);
+});
+
+test('Firefox close error after process exit does not discard the login before Cookie reading', async t => {
+  const root = directory(t), target = jar(), order = [];
+  const run = new TemporaryBrowserLogin({ root, browser: { kind: 'firefox', executable: process.execPath },
+    launch() { const child = new EventEmitter(); queueMicrotask(() => child.emit('spawn')); return child; },
+    stop: profile => closeBrowser(profile, { processes: async (_profile, action) => {
+      assert.equal(_profile, run.profile); order.push(action || 'query');
+      if (action === 'close') throw Error('process already exited');
+      return [];
+    }, wait: async () => assert.fail('An exited profile needs no wait') }),
+    read() { order.push('read'); return normalizeGoogleCookies([raw()]); } });
+  await run.start();const result = await run.complete({ userConfirmed: true, target });
+  assert.equal(result.importedCount, 1);assert.equal(result.tempRemoved, true);
+  assert.ok(order.indexOf('query') < order.indexOf('read'));assert.equal(target.values.length, 1);
+});
+
+test('Firefox close waits for actual exit after a raced close error', async () => {
+  let queries = 0, waits = 0;
+  await closeBrowser('owned-profile', { processes: async (_profile, action) => {
+    if (action === 'close') throw Error('child exited while parent is closing');
+    return ++queries < 3 ? [123] : [];
+  }, wait: async () => { waits++; } });
+  assert.equal(queries, 3);assert.equal(waits, 2);
+});
+
+test('Firefox close never assumes success when its profile still runs or process queries fail', async () => {
+  await assert.rejects(closeBrowser('owned-profile', { processes: async (_profile, action) => {
+    if (action === 'close') throw Error('private native detail');return [123];
+  }, wait: async () => {} }), e => e.code === 'BROWSER_CLOSE_FAILED' && !e.message.includes('private'));
+  await assert.rejects(closeBrowser('owned-profile', { processes: async () => { throw Error('private native detail'); } }),
+    e => e.code === 'BROWSER_PROCESS_QUERY_FAILED' && !e.message.includes('private'));
 });

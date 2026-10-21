@@ -19,7 +19,7 @@ function fixture(t, options = {}) {
     confirmReplace: async () => { calls.push(['confirm']); return options.confirm !== false; },
     browserFinder: async () => options.missing ? null : { kind: 'firefox', executable: 'test-firefox' },
     browserFactory: () => ({ start: async () => { calls.push(['open']); }, cancel: async () => { calls.push(['cleanup']); },
-      complete: async ({ userConfirmed }) => { assert.equal(userConfirmed, true); calls.push(['import', 'cleanup']); if (options.importFails) throw Error('secret fixture cookie'); } }),
+      complete: async ({ userConfirmed }) => { assert.equal(userConfirmed, true); calls.push(['import', 'cleanup']); if (options.importFails) throw Object.assign(Error('secret fixture cookie'), { code: options.importCode }); } }),
   });
   return { store, original, calls, jars, flow };
 }
@@ -71,4 +71,13 @@ test('failed config save restores account references and default without modifyi
   store.save = () => false;
   assert.throws(() => store.commitGeminiLogin({ accountId: original.id, candidate: { id: 'new', partition: 'persist:staging' }, checkedAt: 'now' }), { code: 'LOGIN_SAVE_FAILED' });
   assert.deepEqual(store.state, before);
+});
+
+test('failed import reports a safe failure category without exposing native error or Cookie content', async t => {
+  for (const code of ['BROWSER_PROCESS_QUERY_FAILED', 'COOKIE_READ_FAILED', 'LOGIN_NOT_FINISHED']) {
+    const { flow, store, original } = fixture(t, { importFails: true, importCode: code }), before = structuredClone(original);
+    await flow.prepare({ name: 'New account' });await flow.open();await assert.rejects(flow.finish(), { code });
+    assert.equal(flow.state().errorCode, code);assert.ok(flow.state().error.includes(code));
+    assert.equal(flow.state().error.includes('secret'), false);assert.deepEqual(store.state.accounts, [before]);
+  }
 });

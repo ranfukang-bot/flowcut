@@ -18,6 +18,10 @@
 
 Firefox 临时目录在 userData/login-temp/login-UUID 下。成功、失败、取消或程序正常退出时清理本次浏览器并删除临时资料；关闭进程只匹配本次随机资料目录及其子进程，不能按 Firefox 名称批量关闭。递归删除前验证绝对路径、父目录、随机名称及链接。异常清理失败会明确显示并保留取消清理入口，不误报完成。
 
+Firefox 关闭父进程时子进程可能同时退出，Windows 的关闭调用因此可能报错。程序会重新查询本次资料的进程，确认全部退出后才读取 Cookie；查询失败或仍在运行时不读取、不提交账号。关闭过程的原始系统异常不会写入账号提示或 Cookie 日志。
+
+失败提示和 FlowCut 日志使用固定原因及错误编号，区分关闭确认、资料读取/写入、登录检查和配置保存；不转发原始系统异常、Cookie 值或浏览器命令行。关闭竞态及进程仍在、查询失败的保护均有行为测试。
+
 Cookie 通过进程内对象传给 Electron API，不另存明文导出文件，不写日志、报告或 Git。浏览器自身的一次性 cookies.sqlite 用完即删除。仅导入 google.com、youtube.com 及其子域，拒绝相似后缀域；保留 host-only、domain、path、secure、httpOnly、SameSite 与有效期，跳过过期值。不能保持原作用域的分区或容器 Cookie 明确拒绝，不能扩展为普通 Cookie。
 
 Firefox schema 16 起 expiry 为毫秒，按数据库 user_version 转成 Electron 所需的秒；兼容旧 rawSameSite 和新 SAMESITE_UNSET=256。读取错误对用户只返回固定错误类别，不透传原 Cookie 或数据库内容。

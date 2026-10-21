@@ -1415,7 +1415,14 @@ function bindIpc() {
   handle("account:open-login", async (_event, id) => { await geminiLoginFlow.prepare({ accountId: id }); return publicState(); });
   handle("account:login-open", async () => { await geminiLoginFlow.open(); return publicState(); });
   const finishFirefoxLogin = async () => {
-    const result = await geminiLoginFlow.finish();
+    let result;
+    try { result = await geminiLoginFlow.finish(); }
+    catch (error) {
+      // Flow errors contain fixed categories only, never native Cookie/SQL
+      // errors or the browser process command line.
+      store.log(geminiLoginFlow.state()?.error || 'Firefox 登录未完成，原账号保持不变', 'warn');
+      throw error;
+    }
     if (!result.cancelled) {
       workerWindows.get(result.accountId)?.destroy(); workerWindows.delete(result.accountId); modelSessionChecks.delete(result.accountId);
       store.log('Firefox 登录导入及检查成功，新登录已保存');

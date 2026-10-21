@@ -39,7 +39,7 @@ function assertTempProfile(root, profile) {
 async function windowsBrowserProcesses(profile, action = 'list') {
   // Never terminate by executable name. Ownership is the random profile path,
   // then descendants of that process. The script outputs IDs only.
-  const script = `$ErrorActionPreference='Stop'; $items=@(Get-CimInstance Win32_Process -Filter "name='firefox.exe'"); $ids=[Collections.Generic.HashSet[int]]::new(); foreach($item in $items){if($item.CommandLine -and $item.CommandLine.Contains($env:FLOWCUT_LOGIN_TEMP_PROFILE)){[void]$ids.Add([int]$item.ProcessId)}}; do{$added=$false;foreach($item in $items){if($ids.Contains([int]$item.ParentProcessId) -and $ids.Add([int]$item.ProcessId)){$added=$true}}}while($added); if($env:FLOWCUT_LOGIN_PROCESS_ACTION -eq 'close'){foreach($idValue in $ids){$p=Get-Process -Id $idValue -ErrorAction SilentlyContinue;if($p){[void]$p.CloseMainWindow()}}}; @($ids) | ConvertTo-Json -Compress`;
+  const script = `$ErrorActionPreference='Stop'; $items=@(Get-CimInstance Win32_Process -Filter "name='firefox.exe'"); $ids=[Collections.Generic.HashSet[int]]::new(); foreach($item in $items){if($item.CommandLine -and $item.CommandLine.Contains($env:FLOWCUT_LOGIN_TEMP_PROFILE)){[void]$ids.Add([int]$item.ProcessId)}}; do{$added=$false;foreach($item in $items){if($ids.Contains([int]$item.ParentProcessId) -and $ids.Add([int]$item.ProcessId)){$added=$true}}}while($added); if($env:FLOWCUT_LOGIN_PROCESS_ACTION -eq 'close'){foreach($idValue in $ids){$p=Get-Process -Id $idValue -ErrorAction SilentlyContinue;if($p){try{[void]$p.CloseMainWindow()}catch{if(Get-Process -Id $idValue -ErrorAction SilentlyContinue){throw}}finally{$p.Dispose()}}}}; @($ids) | ConvertTo-Json -Compress`;
   const { stdout } = await exec(path.join(process.env.SystemRoot || 'C:/Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe'),
     ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
     { windowsHide: true, timeout: 15000, env: { ...process.env, FLOWCUT_LOGIN_TEMP_PROFILE: profile, FLOWCUT_LOGIN_PROCESS_ACTION: action } });
@@ -47,12 +47,20 @@ async function windowsBrowserProcesses(profile, action = 'list') {
   return Array.isArray(value) ? value : [value];
 }
 
-async function closeBrowser(profile) {
-  await windowsBrowserProcesses(profile, 'close');
+async function closeBrowser(profile, { processes = windowsBrowserProcesses, wait = sleep } = {}) {
+  // Closing the parent can make a child exit between Get-Process and
+  // CloseMainWindow. A close-command error must not discard a completed login
+  // when a fresh process query proves this profile has already exited.
+  let closeFailed = false;
+  try { await processes(profile, 'close'); } catch { closeFailed = true; }
   for (let attempt = 0; attempt < 25; attempt++) {
-    if (!(await windowsBrowserProcesses(profile)).length) return;
-    await sleep(300);
+    let remaining;
+    try { remaining = await processes(profile); }
+    catch { throw loginError('BROWSER_PROCESS_QUERY_FAILED', '无法确认临时 Firefox 是否已退出，请关闭本次登录窗口后重试'); }
+    if (!remaining.length) return;
+    await wait(300);
   }
+  if (closeFailed) throw loginError('BROWSER_CLOSE_FAILED', '临时 Firefox 关闭失败，请关闭本次登录窗口后重试');
   throw loginError('BROWSER_STILL_RUNNING', '临时登录浏览器尚未退出，请关闭该实验窗口后重试清理');
 }
 
@@ -115,4 +123,4 @@ class TemporaryBrowserLogin {
   async cancel() { await this.cleanup(); this.phase = 'cancelled'; return { cancelled: true, tempRemoved: !this.profile || !fs.existsSync(this.profile) }; }
 }
 
-module.exports = { TemporaryBrowserLogin, assertTempProfile, windowsBrowserProcesses, LOGIN_URL, findFirefox, FIREFOX_DOWNLOAD_URL };
+module.exports = { TemporaryBrowserLogin, assertTempProfile, windowsBrowserProcesses, closeBrowser, LOGIN_URL, findFirefox, FIREFOX_DOWNLOAD_URL };

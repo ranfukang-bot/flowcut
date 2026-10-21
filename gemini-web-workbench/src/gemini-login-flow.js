@@ -52,7 +52,7 @@ class GeminiLoginFlow {
       const id = randomUUID(), partition = 'persist:flowcut-gemini-' + id;
       candidate = { id, name: flow.name, partition };
       const target = this.sessionFactory(partition);
-      await this.run.complete({ userConfirmed: true, target });
+      const importResult = await this.run.complete({ userConfirmed: true, target });
       const checked = await this.verify(candidate);
       if (!checked?.authenticated) throw loginError('LOGIN_CHECK_FAILED', '导入后的 Gemini 登录检查未通过，原登录保持不变');
       await target.cookies?.flushStore?.(); target.flushStorageData?.();
@@ -61,7 +61,7 @@ class GeminiLoginFlow {
       const account = this.store.commitGeminiLogin({ accountId: flow.accountId, candidate,
         checkedAt: new Date().toISOString(), modelCatalog: checked.modelCatalog });
       candidate = null; this.run = null; this.flow = null;
-      return { accountId: account.id, cancelled: false };
+      return { accountId: account.id, cancelled: false, skippedPartitioned: importResult?.skippedPartitioned || 0 };
     } catch (error) {
       let clean = true;
       try { await this.run?.cancel(); } catch { clean = false; }

@@ -37,9 +37,71 @@ for (const schema of [14, 17]) test(`Firefox SQLite schema ${schema} preserves a
   assert.equal(result[1].domain, undefined); assert.equal(result[1].sameSite, 'lax');
 });
 
-test('unsupported partitioning stops instead of broadening cookie scope', () => {
-  assert.throws(() => normalizeGoogleCookies([raw({ partitionKey: { topLevelSite: 'https://google.com' } })]), { code: 'PARTITIONED_COOKIE_UNSUPPORTED' });
-  assert.throws(() => normalizeGoogleCookies([{ ...raw(), host: '.google.com', originAttributes: '^userContextId=1' }], { source: 'firefox' }), { code: 'PARTITIONED_COOKIE_UNSUPPORTED' });
+test('partitioned cookies are skipped while normal cookies are imported, reporting skippedPartitioned count', async () => {
+  const target = jar();
+  const ffRows = [
+    { ...raw(), host: '.google.com' },
+    { ...raw({ name: '__Host-test' }), host: 'accounts.google.com' },
+    { ...raw({ name: 'p_key', partitionKey: { topLevelSite: 'https://google.com' } }), host: '.google.com' },
+    { ...raw({ name: 'p_opaque', partitionKeyOpaque: 'opaque-partition-token' }), host: '.google.com' },
+    { ...raw({ name: 'p_set', isPartitionedAttributeSet: 1 }), host: '.google.com' },
+    { ...raw({ name: 'p_ff' }), host: '.google.com', originAttributes: '^userContextId=1' },
+  ];
+  const normalized = normalizeGoogleCookies(ffRows, { source: 'firefox' });
+  assert.equal(normalized.length, 2);
+  assert.equal(normalized.skippedPartitioned, 4);
+  assert.deepEqual(normalized.map(c => c.name).sort(), ['SID', '__Host-test']);
+
+  const importResult = await importIntoEmptyGoogleSession(target, normalized);
+  assert.deepEqual(importResult, { importedCount: 2, skippedPartitioned: 4 });
+  assert.equal(target.values.length, 2);
+  assert.deepEqual(target.values.map(c => c.name).sort(), ['SID', '__Host-test']);
+  assert.ok(!target.values.some(c => c.name.startsWith('p_')), 'partitioned cookies must not be written as normal cookies');
+
+  const electronTarget = jar();
+  const electronRows = [
+    raw(),
+    raw({ name: 'p_key', partitionKey: { topLevelSite: 'https://google.com' } }),
+    raw({ name: 'p_opaque', partitionKeyOpaque: 'opaque' }),
+    raw({ name: 'p_set', isPartitionedAttributeSet: 1 }),
+  ];
+  const electronResult = await importIntoEmptyGoogleSession(electronTarget, electronRows);
+  assert.deepEqual(electronResult, { importedCount: 1, skippedPartitioned: 3 });
+  assert.equal(electronTarget.values.length, 1);
+});
+
+test('only partitioned cookies left fails with LOGIN_NOT_FINISHED', async () => {
+  const target = jar();
+  const partitionedOnly = [
+    raw({ partitionKey: { topLevelSite: 'https://google.com' } }),
+    raw({ partitionKeyOpaque: 'opaque-token' }),
+    raw({ isPartitionedAttributeSet: 1 }),
+  ];
+  await assert.rejects(importIntoEmptyGoogleSession(target, partitionedOnly), { code: 'LOGIN_NOT_FINISHED' });
+  assert.equal(target.values.length, 0);
+
+  const ffPartitioned = [
+    { ...raw(), host: '.google.com', originAttributes: '^userContextId=2' },
+    { ...raw(), host: '.google.com', isPartitionedAttributeSet: 1 },
+  ];
+  const ffNormalized = normalizeGoogleCookies(ffPartitioned, { source: 'firefox' });
+  assert.equal(ffNormalized.length, 0);
+  assert.equal(ffNormalized.skippedPartitioned, 2);
+  await assert.rejects(importIntoEmptyGoogleSession(target, ffNormalized), { code: 'LOGIN_NOT_FINISHED' });
+});
+
+test('Firefox cookie with empty originAttributes is imported normally without skipping', async () => {
+  const target = jar();
+  const rows = [
+    { ...raw(), host: '.google.com', originAttributes: '' },
+    { ...raw({ name: 'HSID' }), host: 'accounts.google.com', originAttributes: '' },
+  ];
+  const normalized = normalizeGoogleCookies(rows, { source: 'firefox' });
+  assert.equal(normalized.length, 2);
+  assert.equal(normalized.skippedPartitioned, 0);
+  const result = await importIntoEmptyGoogleSession(target, normalized);
+  assert.deepEqual(result, { importedCount: 2, skippedPartitioned: 0 });
+  assert.equal(target.values.length, 2);
 });
 
 function jar(initial = [], failAt = -1) {
@@ -59,7 +121,7 @@ test('failed import rolls back only newly written cookies and never exposes raw 
 });
 test('successful import keeps every normalized cookie including host-only values', async () => {
   const target = jar(), rows = normalizeGoogleCookies([raw(), raw({ name: '__Host-test', domain: 'accounts.google.com' })]);
-  assert.deepEqual(await importIntoEmptyGoogleSession(target, rows), { importedCount: 2 }); assert.deepEqual(target.values, rows);
+  assert.deepEqual(await importIntoEmptyGoogleSession(target, rows), { importedCount: 2, skippedPartitioned: 0 }); assert.deepEqual(target.values, rows);
 });
 
 for (const outcome of ['success', 'read-failure', 'write-failure', 'cancel']) test(`temporary login cleans its own profile on ${outcome}, waits for user confirmation before reading`, async t => {

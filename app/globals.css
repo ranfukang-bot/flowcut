@@ -896,7 +896,9 @@ body {
 .task-toolbar > div { display:flex; gap:8px; }
 .task-toolbar button { padding:9px 15px; border:1px solid #dce3e8; background:white; border-radius:9px; cursor:pointer; }
 .task-toolbar button.active { background:#172f39; color:white; border-color:#172f39; }
-.task-toolbar input { padding:10px 14px; min-width:280px; border:1px solid #dce3e8; border-radius:9px; }
+.task-toolbar input, .task-toolbar select { padding:10px 14px; border:1px solid #dce3e8; border-radius:9px; background:white; }
+.task-toolbar select { cursor:pointer; min-width:140px; }
+.task-toolbar input { min-width:280px; }
 .task-live-status { min-width:0; }
 .task-live-status small { display:block; margin-top:8px; font-size:11px; line-height:1.5; color:#667784; overflow-wrap:anywhere; }
 

@@ -1,6 +1,6 @@
 export type TaskCounts = { total: number; active: number; review: number; completed: number; attention: number };
 type TaskRow = Record<string, unknown> & { id: string; created_at: string };
-type TaskQuery = { status?: string; q?: string; cursor?: string; limit?: number };
+type TaskQuery = { status?: string; q?: string; cursor?: string; limit?: number; account?: string };
 type TaskDatabase = Pick<D1Database, 'prepare'>;
 
 // Status filters, written for any table alias so the same rule can be applied
@@ -68,6 +68,11 @@ export async function listTasks(db: TaskDatabase, query: TaskQuery = {}) {
   const where = ['t.batch_parent_id IS NULL', filter === 'all' ? '1 = 1'
     : `((${condition(filter, 't')}) OR (t.task_role IN ('group','fission') AND EXISTS (SELECT 1 FROM tasks c WHERE c.batch_parent_id = t.id AND ${condition(filter, 'c')})))`];
   const args: (string | number)[] = [];
+  const account = query.account?.trim();
+  if (account && account !== 'all') {
+    where.push("(lower(COALESCE(t.tiktok_account_name,'')) = lower(?) OR (t.task_role IN ('group','fission') AND EXISTS (SELECT 1 FROM tasks c WHERE c.batch_parent_id = t.id AND lower(COALESCE(c.tiktok_account_name,'')) = lower(?))))");
+    args.push(account, account);
+  }
   if (query.q?.trim()) {
     where.push("(instr(lower(COALESCE(NULLIF(p.name,''),t.title,'') || ' ' || COALESCE(t.product_external_id_snapshot,p.external_id,'') || ' ' || COALESCE(t.tiktok_account_name,'')),lower(?)) > 0 OR (t.task_role='fission' AND EXISTS (SELECT 1 FROM tasks c LEFT JOIN products cp ON cp.id=c.product_id WHERE c.batch_parent_id=t.id AND instr(lower(COALESCE(cp.name,'') || ' ' || COALESCE(c.product_external_id_snapshot,'')),lower(?))>0)))");
     args.push(query.q.trim(),query.q.trim());

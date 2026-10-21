@@ -13,6 +13,7 @@ function googleDomain(value) {
 function normalizeGoogleCookies(rows, { source = 'electron', now = Date.now() / 1000 } = {}) {
   if (!Array.isArray(rows)) throw loginError('COOKIE_DATA_INVALID', '浏览器返回的登录资料无效');
   const normalized = new Map();
+  let skippedPartitioned = typeof rows.skippedPartitioned === 'number' ? rows.skippedPartitioned : 0;
   for (const row of rows) {
     let domain = source === 'firefox' ? row.host : row.domain;
     if (!domain && source === 'electron' && row.url) {
@@ -23,7 +24,8 @@ function normalizeGoogleCookies(rows, { source = 'electron', now = Date.now() / 
     // ordinary Electron cookie jar. Do not silently turn it into a global one.
     if (row.partitionKey || row.partitionKeyOpaque || row.isPartitionedAttributeSet ||
         (source === 'firefox' && row.originAttributes)) {
-      throw loginError('PARTITIONED_COOKIE_UNSUPPORTED', '登录资料包含暂不支持的分区 Cookie，未导入');
+      skippedPartitioned++;
+      continue;
     }
     const secure = source === 'firefox' ? Boolean(row.isSecure) : Boolean(row.secure);
     const httpOnly = source === 'firefox' ? Boolean(row.isHttpOnly) : Boolean(row.httpOnly);
@@ -57,7 +59,9 @@ function normalizeGoogleCookies(rows, { source = 'electron', now = Date.now() / 
     }
     normalized.set([hostOnly, host, cookie.path, cookie.name].join('\0'), cookie);
   }
-  return [...normalized.values()];
+  const result = [...normalized.values()];
+  Object.defineProperty(result, 'skippedPartitioned', { value: skippedPartitioned, writable: true, enumerable: false, configurable: true });
+  return result;
 }
 
 function readFirefoxGoogleCookies(profile, options = {}) {
@@ -99,7 +103,7 @@ async function importIntoEmptyGoogleSession(target, rows) {
   try {
     for (const cookie of cookies) { await target.cookies.set(cookie); written.push(cookie); }
     await target.cookies.flushStore();
-    return { importedCount: written.length };
+    return { importedCount: written.length, skippedPartitioned: cookies.skippedPartitioned ?? 0 };
   } catch {
     let rolledBack = true;
     for (const cookie of written.reverse()) {

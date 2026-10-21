@@ -113,3 +113,114 @@ test('a split group is listed once with its clips; counts treat clips as videos,
   assert.equal((await taskDetail(db, 'group')).variant_mode, 1, 'the detail view knows a two-round task');
   assert.equal((await listTasks(db, { limit: 1 })).tasks[0].variant_mode, 1);
 });
+
+
+test('account filter stacks with status, search, and cursor pagination', async t => {
+  const { db } = fixture(t);
+  let cursor, rows = [];
+  do {
+    const page = await listTasks(db, { account: '归档账号1', limit: 20, cursor });
+    rows.push(...page.tasks);
+    cursor = page.nextCursor;
+  } while (cursor);
+  assert.equal(rows.length, 67);
+  assert.equal(new Set(rows.map(r => r.id)).size, 67);
+  assert.ok(rows.every(r => r.tiktok_account_name === '归档账号1'));
+
+  const reviewPage = await listTasks(db, { account: '归档账号1', status: '待检查', limit: 100 });
+  assert.equal(reviewPage.tasks.length, 10);
+  assert.ok(reviewPage.tasks.every(r => r.tiktok_account_name === '归档账号1' && r.status === 'video_ready'));
+
+  const attentionPage = await listTasks(db, { account: '归档账号1', status: 'attention', limit: 100 });
+  assert.equal(attentionPage.tasks.length, 7);
+
+  const completedPage = await listTasks(db, { account: '归档账号1', status: 'completed', limit: 100 });
+  assert.equal(completedPage.tasks.length, 8);
+
+  const activePage = await listTasks(db, { account: '归档账号1', status: 'active', limit: 100 });
+  assert.equal(activePage.tasks.length, 42);
+
+  // Stacking account + status + search
+  const found = await listTasks(db, { account: '归档账号1', status: 'completed', q: '商品52' });
+  assert.deepEqual(found.tasks.map(r => r.id), ['task-052']);
+
+  const notFound = await listTasks(db, { account: '归档账号0', status: 'completed', q: '商品52' });
+  assert.deepEqual(notFound.tasks, []);
+});
+
+test('task groups are matched when any subtask belongs to the filtered account', async t => {
+  const { db, sqlite } = fixture(t);
+  const at = '2026-10-17T00:00:00.000Z';
+  const add = sqlite.prepare(`INSERT INTO tasks(id,product_id,gem_id,title,status,provider,tiktok_account_name,review_status,created_at,updated_at,
+    task_role,batch_parent_id,batch_index,batch_round,batch_size) VALUES(?,'product-000','gem',?,?,'gemini-web',?,?,?,?,?,?,?,?,?)`);
+
+  // Split group: parent has 'OtherAccount', child 2 has 'TargetAccount'
+  add.run('grp-split', '分条父任务', 'split_done', 'OtherAccount', 'pending', at, at, 'group', null, null, 1, 2);
+  add.run('grp-clip-1', '片段 1', 'video_ready', 'OtherAccount', 'pending', at, at, 'clip', 'grp-split', 1, 1, 2);
+  add.run('grp-clip-2', '片段 2', 'video_ready', 'TargetAccount', 'pending', at, at, 'clip', 'grp-split', 2, 1, 2);
+
+  // Fission group: parent has no account (''), child A has 'TargetAccount'
+  add.run('grp-fission', '裂变父任务', 'fission_ready', '', 'pending', at, at, 'fission', null, null, 1, 1);
+  add.run('grp-fission-a', '裂变子任务 A', 'video_ready', 'TargetAccount', 'pending', at, at, 'fission_child', 'grp-fission', 1, 1, 1);
+
+  // Unrelated group: all belong to 'UnrelatedAccount'
+  add.run('grp-unrelated', '未关联父任务', 'split_done', 'UnrelatedAccount', 'pending', at, at, 'group', null, null, 1, 1);
+  add.run('grp-clip-unrelated', '片段 X', 'video_ready', 'UnrelatedAccount', 'pending', at, at, 'clip', 'grp-unrelated', 1, 1, 1);
+
+  const targetResult = await listTasks(db, { account: 'TargetAccount' });
+  const targetGroupIds = targetResult.tasks.map(r => r.id);
+  assert.ok(targetGroupIds.includes('grp-split'), 'split group should match when a child belongs to TargetAccount');
+  assert.ok(targetGroupIds.includes('grp-fission'), 'fission group should match when a child belongs to TargetAccount');
+  assert.ok(!targetGroupIds.includes('grp-unrelated'), 'unrelated group should not match TargetAccount');
+
+  // Verify children are attached
+  const splitGroup = targetResult.tasks.find(r => r.id === 'grp-split');
+  assert.equal(splitGroup.children.length, 2);
+
+  const unrelatedResult = await listTasks(db, { account: 'UnrelatedAccount' });
+  const unrelatedGroupIds = unrelatedResult.tasks.map(r => r.id);
+  assert.ok(unrelatedGroupIds.includes('grp-unrelated'));
+  assert.ok(!unrelatedGroupIds.includes('grp-fission'));
+});
+
+test('account name matching is case-insensitive exact equality, not substring or fuzzy', async t => {
+  const { db, sqlite } = fixture(t);
+  const at = '2026-10-18T00:00:00.000Z';
+  const add = sqlite.prepare(`INSERT INTO tasks(id,product_id,gem_id,title,status,provider,tiktok_account_name,review_status,created_at,updated_at)
+    VALUES(?,'product-000','gem','精确匹配测试','prompt_queued','gemini-web',?,'pending',?,?)`);
+
+  add.run('acc-mixed', 'TikTok_Creator', at, at);
+  add.run('acc-lower', 'tiktok_creator', at, at);
+  add.run('acc-upper', 'TIKTOK_CREATOR', at, at);
+  add.run('acc-prefix', 'TikTok_Creator_Extra', at, at);
+  add.run('acc-suffix', 'Prefix_TikTok_Creator', at, at);
+  add.run('acc-sub', 'Creator', at, at);
+  add.run('acc-sub2', 'TikTok', at, at);
+
+  // Exact match with different cases:
+  const matchLower = await listTasks(db, { account: 'tiktok_creator' });
+  const idsLower = matchLower.tasks.filter(r => r.id.startsWith('acc-')).map(r => r.id).sort();
+  assert.deepEqual(idsLower, ['acc-lower', 'acc-mixed', 'acc-upper']);
+
+  const matchUpper = await listTasks(db, { account: 'TIKTOK_CREATOR' });
+  const idsUpper = matchUpper.tasks.filter(r => r.id.startsWith('acc-')).map(r => r.id).sort();
+  assert.deepEqual(idsUpper, ['acc-lower', 'acc-mixed', 'acc-upper']);
+
+  const matchMixed = await listTasks(db, { account: 'TikTok_Creator' });
+  const idsMixed = matchMixed.tasks.filter(r => r.id.startsWith('acc-')).map(r => r.id).sort();
+  assert.deepEqual(idsMixed, ['acc-lower', 'acc-mixed', 'acc-upper']);
+
+  // Substring should NOT match:
+  const matchSub = await listTasks(db, { account: 'Creator' });
+  const idsSub = matchSub.tasks.filter(r => r.id.startsWith('acc-')).map(r => r.id);
+  assert.deepEqual(idsSub, ['acc-sub']);
+
+  const matchSub2 = await listTasks(db, { account: 'TikTok' });
+  const idsSub2 = matchSub2.tasks.filter(r => r.id.startsWith('acc-')).map(r => r.id);
+  assert.deepEqual(idsSub2, ['acc-sub2']);
+
+  // Prefix should only match itself:
+  const matchPrefix = await listTasks(db, { account: 'TikTok_Creator_Extra' });
+  const idsPrefix = matchPrefix.tasks.filter(r => r.id.startsWith('acc-')).map(r => r.id);
+  assert.deepEqual(idsPrefix, ['acc-prefix']);
+});

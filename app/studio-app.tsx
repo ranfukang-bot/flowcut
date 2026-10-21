@@ -1258,6 +1258,7 @@ export function StudioApp() {
         {page === "tasks" && (
           <TasksPage
             tasks={data.tasks}
+            tiktokAccounts={data.tiktokAccounts}
             geminiRuntime={data.integrations.geminiRuntime}
             onPreview={openTask}
             onDelete={(task) => deleteRecord("/api/tasks", task.id, ['group','fission'].includes(task.task_role||'')
@@ -2944,6 +2945,7 @@ function WebGemModal({ gem, onClose }: { gem: Gem; onClose: () => void }) {
 
 function TasksPage({
   tasks,
+  tiktokAccounts = [],
   geminiRuntime,
   onPreview,
   onDelete,
@@ -2951,6 +2953,7 @@ function TasksPage({
   onClearAll,
 }: {
   tasks: Task[];
+  tiktokAccounts?: TikTokAccount[];
   geminiRuntime?: Workspace["integrations"]["geminiRuntime"];
   onPreview: (task: Task) => void;
   onDelete: (task: Task) => void;
@@ -2959,9 +2962,29 @@ function TasksPage({
 }) {
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
+  const [account, setAccount] = useState(() => {
+    try {
+      return typeof window !== "undefined" ? localStorage.getItem("flowcut_task_filter_account") || "" : "";
+    } catch {
+      return "";
+    }
+  });
   const [videoError, setVideoError] = useState("");
+  const handleAccountChange = (value: string) => {
+    setAccount(value);
+    try {
+      if (value) {
+        localStorage.setItem("flowcut_task_filter_account", value);
+      } else {
+        localStorage.removeItem("flowcut_task_filter_account");
+      }
+    } catch {
+      // ignore
+    }
+    resetPages();
+  };
   const refreshKey = withChildren(tasks).map(task => `${task.id}:${task.updated_at}:${task.status}:${task.review_status}`).join('|');
-  const { tasks: visibleTasks, hasMore, loading, error: listError, resetPages, loadMore } = useTaskPage(tasks, filter, query, refreshKey);
+  const { tasks: visibleTasks, hasMore, loading, error: listError, resetPages, loadMore } = useTaskPage(tasks, filter, query, refreshKey, account);
   async function openVideo(task: Task) {
     setVideoError("");
     try {
@@ -3012,7 +3035,21 @@ function TasksPage({
             <button key={value} className={filter === value ? "active" : ""} onClick={() => { setFilter(value); resetPages(); }} aria-pressed={filter === value}>{label}</button>
           ))}
         </div>
-        <input aria-label="搜索任务" placeholder="搜索商品、商品 ID 或 TK 账号" value={query} onChange={(event) => { setQuery(event.target.value); resetPages(); }} />
+        <div className="task-toolbar-actions">
+          <select
+            aria-label="按 TK 账号筛选"
+            value={account}
+            onChange={(event) => handleAccountChange(event.target.value)}
+          >
+            <option value="">全部账号</option>
+            {tiktokAccounts.map((item) => (
+              <option key={item.id} value={item.name}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+          <input aria-label="搜索任务" placeholder="搜索商品、商品 ID 或 TK 账号" value={query} onChange={(event) => { setQuery(event.target.value); resetPages(); }} />
+        </div>
       </div>
       <div className="table-panel tasks-table">
         <div className="table-head"><span>商品与账号</span><span>制作进度</span><span>当前状态</span><span>操作</span></div>

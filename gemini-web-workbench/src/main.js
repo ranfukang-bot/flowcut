@@ -1430,7 +1430,8 @@ function bindIpc() {
     }
     if (!result.cancelled) {
       workerWindows.get(result.accountId)?.destroy(); workerWindows.delete(result.accountId); modelSessionChecks.delete(result.accountId);
-      store.log('Firefox 登录导入及检查成功，新登录已保存');
+      const skipped = result.skippedPartitioned ? `（跳过 ${result.skippedPartitioned} 条分区 Cookie）` : '';
+      store.log(`Firefox 登录导入及检查成功，新登录已保存${skipped}`);
     }
     broadcast(); tickBridgeSoon(); return { ...publicState(), geminiLoginResult: result.cancelled ? 'cancelled' : 'saved' };
   };

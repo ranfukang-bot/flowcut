@@ -151,6 +151,23 @@ class Store {
     return account;
   }
 
+  commitGeminiLogin({ accountId, candidate, checkedAt, modelCatalog }) {
+    const priorAccounts = this.state.accounts, priorDefault = this.state.defaultAccountId;
+    const old = accountId ? priorAccounts.find(a => a.id === accountId) : null;
+    if (accountId && !old) throw Object.assign(new Error('账号不存在'), { code: 'ACCOUNT_NOT_FOUND' });
+    const account = { ...(old || { id: candidate.id, name: candidate.name, enabled: true, createdAt: checkedAt }),
+      partition: candidate.partition, authenticated: true, lastCheckedAt: checkedAt, error: '' };
+    if (modelCatalog) account.modelCatalog = modelCatalog;
+    this.state.accounts = old ? priorAccounts.map(a => a.id === accountId ? account : a) : [...priorAccounts, account];
+    if (!this.state.defaultAccountId) this.state.defaultAccountId = account.id;
+    if (!this.save()) {
+      this.state.accounts = priorAccounts; this.state.defaultAccountId = priorDefault;
+      this.save();
+      throw Object.assign(new Error('登录资料配置保存失败，原登录会话已保留'), { code: 'LOGIN_SAVE_FAILED' });
+    }
+    return account;
+  }
+
   updateAccount(id, patch) {
     const account = this.state.accounts.find((item) => item.id === id);
     if (!account) return null;

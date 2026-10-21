@@ -10,12 +10,12 @@ function googleDomain(value) {
     ['google.com', 'youtube.com'].some(root => host === root || host.endsWith('.' + root));
 }
 
-function normalizeGoogleCookies(rows, { source = 'chromium', now = Date.now() / 1000 } = {}) {
+function normalizeGoogleCookies(rows, { source = 'electron', now = Date.now() / 1000 } = {}) {
   if (!Array.isArray(rows)) throw loginError('COOKIE_DATA_INVALID', '浏览器返回的登录资料无效');
   const normalized = new Map();
   for (const row of rows) {
     let domain = source === 'firefox' ? row.host : row.domain;
-    if (!domain && source === 'chromium' && row.url) {
+    if (!domain && source === 'electron' && row.url) {
       try { const url = new URL(row.url); if (['https:', 'http:'].includes(url.protocol)) domain = url.hostname; } catch { /* Invalid rows are ignored. */ }
     }
     if (!googleDomain(domain)) continue;
@@ -84,13 +84,6 @@ function readFirefoxGoogleCookies(profile, options = {}) {
   } finally { db?.close(); }
 }
 
-async function readChromiumGoogleCookies(client, options) {
-  let result;
-  try { result = await client.call('Storage.getCookies'); }
-  catch { throw loginError('COOKIE_READ_FAILED', '浏览器登录资料读取失败，未修改 FlowCut 账号'); }
-  return normalizeGoogleCookies(result?.cookies, options);
-}
-
 async function importIntoEmptyGoogleSession(target, rows) {
   // Experiments and new accounts only. Relogin replacement needs its separate
   // explicit confirmation and staging step; it must not reuse this guard.
@@ -119,4 +112,4 @@ async function importIntoEmptyGoogleSession(target, rows) {
 }
 
 module.exports = { googleDomain, normalizeGoogleCookies, readFirefoxGoogleCookies,
-  readChromiumGoogleCookies, importIntoEmptyGoogleSession, loginError };
+  importIntoEmptyGoogleSession, loginError };

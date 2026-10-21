@@ -96,9 +96,14 @@ test("Gemini diagnostics stay hidden instead of interrupting the user", () => {
   assert.match(handler, /informational \? "info" : "warn"/);
 });
 
-test("Gemini login windows use the FlowCut icon and persist successful login", () => {
-  const main = fs.readFileSync(path.join(sourceRoot, "main.js"), "utf8");
-  assert.match(main, /icon: flowcutWindowIcon\(\)/);
-  assert.match(main, /cookies\.flushStore\(\)/);
-  assert.match(main, /flushStorageData\(\)/);
+test("verified Gemini account session reference survives Store restart", t => {
+  const { Store } = require('../src/store');
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'flowcut-login-persist-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const app = { getPath: () => dir }, store = new Store(app), old = store.addAccount('Account');
+  const candidate = { id: 'staging', name: 'Account', partition: 'persist:verified-staging' };
+  store.commitGeminiLogin({ accountId: old.id, candidate, checkedAt: '2026-10-21T00:00:00Z' });
+  const restored = new Store(app).state.accounts[0];
+  assert.equal(restored.id, old.id); assert.equal(restored.partition, candidate.partition);
+  assert.equal(restored.authenticated, true); assert.equal(restored.lastCheckedAt, '2026-10-21T00:00:00Z');
 });

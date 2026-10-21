@@ -5,17 +5,17 @@ const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { DatabaseSync } = require('node:sqlite');
-const { normalizeGoogleCookies, readChromiumGoogleCookies, readFirefoxGoogleCookies, importIntoEmptyGoogleSession } = require('../src/gemini-login-import');
+const { normalizeGoogleCookies, readFirefoxGoogleCookies, importIntoEmptyGoogleSession } = require('../src/gemini-login-import');
 const { TemporaryBrowserLogin, assertTempProfile } = require('../src/gemini-browser-login');
 const future = Date.now() / 1000 + 86400;
 const raw = (extra = {}) => ({ name: 'SID', value: 'synthetic-test-cookie', domain: '.google.com', path: '/', secure: true, httpOnly: true, sameSite: 'Lax', expires: future, ...extra });
 const directory = t => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'flowcut-login-test-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true })); return dir; };
 
-test('CDP reader preserves host-only, domain, expiry and security attributes and excludes unrelated/expired cookies', async () => {
+test('Cookie conversion preserves host-only, domain, expiry and security attributes and excludes unrelated/expired cookies', async () => {
   const rows = [raw(), raw({ name: '__Host-test', domain: 'accounts.google.com', sameSite: 'Strict' }),
     raw({ name: 'youtube', domain: '.youtube.com', session: true, expires: -1, sameSite: 'None' }),
     raw({ domain: '.google.com.evil.test' }), raw({ domain: '.notgoogle.com' }), raw({ expires: 1 })];
-  const result = await readChromiumGoogleCookies({ async call(method) { assert.equal(method, 'Storage.getCookies'); return { cookies: rows }; } });
+  const result = normalizeGoogleCookies(rows);
   assert.equal(result.length, 3);
   assert.deepEqual(result[0], { url: 'https://google.com/', name: 'SID', value: 'synthetic-test-cookie', domain: '.google.com', path: '/', secure: true, httpOnly: true, sameSite: 'lax', expirationDate: future });
   assert.equal(result[1].domain, undefined); assert.equal(result[1].url, 'https://accounts.google.com/'); assert.equal(result[1].sameSite, 'strict');
@@ -62,11 +62,11 @@ test('successful import keeps every normalized cookie including host-only values
   assert.deepEqual(await importIntoEmptyGoogleSession(target, rows), { importedCount: 2 }); assert.deepEqual(target.values, rows);
 });
 
-for (const outcome of ['success', 'read-failure', 'write-failure', 'cancel']) test(`temporary login cleans its own profile on ${outcome}, connects only after user confirmation`, async t => {
+for (const outcome of ['success', 'read-failure', 'write-failure', 'cancel']) test(`temporary login cleans its own profile on ${outcome}, waits for user confirmation before reading`, async t => {
   const root = directory(t), order = [], target = jar([], outcome === 'write-failure' ? 1 : -1);
-  const browser = { kind: 'chrome', executable: process.execPath };
-  const run = new TemporaryBrowserLogin({ root, browser, launch(executable, args) { assert.equal(executable, process.execPath); assert.ok(args.includes('--remote-debugging-port=0')); order.push('launch'); const child = new EventEmitter(); queueMicrotask(() => child.emit('spawn')); return child; },
-    async connect() { order.push('connect'); return { async call() { if (outcome === 'read-failure') throw Error('raw secret'); return { cookies: [raw()] }; }, close() {} }; },
+  const browser = { kind: 'firefox', executable: process.execPath };
+  const run = new TemporaryBrowserLogin({ root, browser, launch(executable, args) { assert.equal(executable, process.execPath); assert.ok(args.includes('-no-remote')); assert.ok(args.includes('-profile')); assert.equal(args.some(a => a.includes('debugging')), false); order.push('launch'); const child = new EventEmitter(); queueMicrotask(() => child.emit('spawn')); return child; },
+    read() { order.push('read'); if (outcome === 'read-failure') throw Error('raw secret'); return normalizeGoogleCookies([raw()]); },
     async stop() { order.push('stop'); } });
   await run.start(); assert.deepEqual(order, ['launch']); assert.ok(fs.existsSync(run.profile));
   await assert.rejects(run.complete({ userConfirmed: false, target }), { code: 'USER_CONFIRMATION_REQUIRED' }); assert.deepEqual(order, ['launch']);
@@ -87,7 +87,7 @@ test('cleanup rejects parent paths and symlinked temp profiles', t => {
 });
 test('browser launch failure removes its temp directory before returning', async t => {
   const root = directory(t);
-  const run = new TemporaryBrowserLogin({ root, browser: { kind: 'chrome', executable: process.execPath }, launch() {
+  const run = new TemporaryBrowserLogin({ root, browser: { kind: 'firefox', executable: process.execPath }, launch() {
     const child = new EventEmitter(); queueMicrotask(() => child.emit('error', Error('synthetic launch failure'))); return child;
   } });
   await assert.rejects(run.start(), { code: 'BROWSER_LAUNCH_FAILED' });

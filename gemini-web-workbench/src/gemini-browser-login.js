@@ -3,48 +3,26 @@ const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { randomUUID } = require('node:crypto');
-const { loginError, readChromiumGoogleCookies, readFirefoxGoogleCookies, importIntoEmptyGoogleSession } = require('./gemini-login-import');
+const { loginError, readFirefoxGoogleCookies, importIntoEmptyGoogleSession } = require('./gemini-login-import');
 const exec = promisify(execFile);
 const LOGIN_URL = 'https://accounts.google.com/ServiceLogin?continue=https://gemini.google.com/app';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-async function connectCdp(profile) {
-  let lines;
-  try { lines = fs.readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').trim().split(/\r?\n/); }
-  catch { throw loginError('BROWSER_NOT_READY', '浏览器调试端口尚未就绪，请确认登录窗口还开着'); }
-  const port = Number(lines[0]);
-  if (!Number.isInteger(port) || port < 1 || port > 65535 || !/^\/devtools\/browser\/[a-f0-9-]+$/i.test(lines[1])) {
-    throw loginError('BROWSER_NOT_READY', '浏览器调试端口资料无效');
+const FIREFOX_DOWNLOAD_URL = 'https://www.mozilla.org/firefox/new/';
+async function findFirefox() {
+  const candidates = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA]
+    .filter(Boolean).flatMap(base => [path.join(base, 'Mozilla Firefox/firefox.exe'), path.join(base, 'Programs/Mozilla Firefox/firefox.exe')]);
+  for (const file of candidates) if (fs.existsSync(file)) return { kind: 'firefox', executable: file };
+  if (process.platform === 'win32') {
+    for (const hive of ['HKCU', 'HKLM']) {
+      try {
+        const { stdout } = await exec('reg.exe', ['query', `${hive}\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\firefox.exe`, '/ve'], { windowsHide: true, timeout: 5000 });
+        const file = stdout.match(/REG_SZ\s+(.+firefox\.exe)\s*$/im)?.[1]?.trim();
+        if (file && fs.existsSync(file)) return { kind: 'firefox', executable: file };
+      } catch { /* An absent registry entry is normal. */ }
+    }
   }
-  const ws = new WebSocket(`ws://127.0.0.1:${port}${lines[1]}`);
-  let nextId = 0;
-  const pending = new Map();
-  const rejectPending = () => { for (const row of pending.values()) { clearTimeout(row.timer); row.reject(loginError('BROWSER_DISCONNECTED', '登录浏览器已断开')); } pending.clear(); };
-  ws.addEventListener('message', event => {
-    let message; try { message = JSON.parse(event.data); } catch { return; }
-    const row = pending.get(message.id); if (!row) return;
-    pending.delete(message.id); clearTimeout(row.timer);
-    if (message.error) row.reject(loginError('BROWSER_COMMAND_FAILED', '浏览器登录资料读取失败'));
-    else row.resolve(message.result);
-  });
-  ws.addEventListener('close', rejectPending);
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { ws.close(); reject(loginError('BROWSER_CONNECT_TIMEOUT', '连接登录浏览器超时')); }, 10000);
-    ws.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
-    ws.addEventListener('error', () => { clearTimeout(timer); reject(loginError('BROWSER_CONNECT_FAILED', '无法连接登录浏览器')); }, { once: true });
-  });
-  return {
-    call(method, params = {}) {
-      return new Promise((resolve, reject) => {
-        const id = ++nextId;
-        const timer = setTimeout(() => { pending.delete(id); reject(loginError('BROWSER_COMMAND_TIMEOUT', '读取登录浏览器超时')); }, 10000);
-        pending.set(id, { resolve, reject, timer });
-        try { ws.send(JSON.stringify({ id, method, params })); }
-        catch { pending.delete(id); clearTimeout(timer); reject(loginError('BROWSER_DISCONNECTED', '登录浏览器已断开')); }
-      });
-    },
-    close() { ws.close(); rejectPending(); },
-  };
+  return null;
 }
 
 function assertTempProfile(root, profile) {
@@ -61,7 +39,7 @@ function assertTempProfile(root, profile) {
 async function windowsBrowserProcesses(profile, action = 'list') {
   // Never terminate by executable name. Ownership is the random profile path,
   // then descendants of that process. The script outputs IDs only.
-  const script = `$ErrorActionPreference='Stop'; $items=@(Get-CimInstance Win32_Process -Filter "name='chrome.exe' OR name='msedge.exe' OR name='firefox.exe'"); $ids=[Collections.Generic.HashSet[int]]::new(); foreach($item in $items){if($item.CommandLine -and $item.CommandLine.Contains($env:FLOWCUT_LOGIN_TEMP_PROFILE)){[void]$ids.Add([int]$item.ProcessId)}}; do{$added=$false;foreach($item in $items){if($ids.Contains([int]$item.ParentProcessId) -and $ids.Add([int]$item.ProcessId)){$added=$true}}}while($added); if($env:FLOWCUT_LOGIN_PROCESS_ACTION -eq 'close'){foreach($idValue in $ids){$p=Get-Process -Id $idValue -ErrorAction SilentlyContinue;if($p){[void]$p.CloseMainWindow()}}}; @($ids) | ConvertTo-Json -Compress`;
+  const script = `$ErrorActionPreference='Stop'; $items=@(Get-CimInstance Win32_Process -Filter "name='firefox.exe'"); $ids=[Collections.Generic.HashSet[int]]::new(); foreach($item in $items){if($item.CommandLine -and $item.CommandLine.Contains($env:FLOWCUT_LOGIN_TEMP_PROFILE)){[void]$ids.Add([int]$item.ProcessId)}}; do{$added=$false;foreach($item in $items){if($ids.Contains([int]$item.ParentProcessId) -and $ids.Add([int]$item.ProcessId)){$added=$true}}}while($added); if($env:FLOWCUT_LOGIN_PROCESS_ACTION -eq 'close'){foreach($idValue in $ids){$p=Get-Process -Id $idValue -ErrorAction SilentlyContinue;if($p){[void]$p.CloseMainWindow()}}}; @($ids) | ConvertTo-Json -Compress`;
   const { stdout } = await exec(path.join(process.env.SystemRoot || 'C:/Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe'),
     ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
     { windowsHide: true, timeout: 15000, env: { ...process.env, FLOWCUT_LOGIN_TEMP_PROFILE: profile, FLOWCUT_LOGIN_PROCESS_ACTION: action } });
@@ -69,8 +47,7 @@ async function windowsBrowserProcesses(profile, action = 'list') {
   return Array.isArray(value) ? value : [value];
 }
 
-async function closeBrowser(profile, client) {
-  if (client) { try { await client.call('Browser.close'); } catch { /* Closing may disconnect before replying. */ } finally { client.close(); } }
+async function closeBrowser(profile) {
   await windowsBrowserProcesses(profile, 'close');
   for (let attempt = 0; attempt < 25; attempt++) {
     if (!(await windowsBrowserProcesses(profile)).length) return;
@@ -80,23 +57,21 @@ async function closeBrowser(profile, client) {
 }
 
 class TemporaryBrowserLogin {
-  constructor({ root, browser, launch = spawn, connect = connectCdp, stop = closeBrowser,
+  constructor({ root, browser, launch = spawn, stop = closeBrowser, read = readFirefoxGoogleCookies,
     remove = profile => fs.rmSync(profile, { recursive: true, force: true, maxRetries: 4, retryDelay: 250 }) }) {
     this.root = path.resolve(root); this.browser = browser;
-    this.launch = launch; this.connect = connect; this.stop = stop; this.remove = remove;
-    this.phase = 'new'; this.client = null;
+    this.launch = launch; this.stop = stop; this.remove = remove; this.read = read;
+    this.phase = 'new';
   }
   async start() {
     if (this.phase !== 'new') throw loginError('LOGIN_ALREADY_STARTED', '登录实验已开始');
-    if (!['chrome', 'edge', 'firefox'].includes(this.browser.kind) || !fs.existsSync(this.browser.executable)) {
-      throw loginError('BROWSER_NOT_FOUND', '请先安装实验所需的真实浏览器');
+    if (this.browser.kind !== 'firefox' || !fs.existsSync(this.browser.executable)) {
+      throw loginError('FIREFOX_NOT_FOUND', '请先安装 Firefox：' + FIREFOX_DOWNLOAD_URL);
     }
     fs.mkdirSync(this.root, { recursive: true });
     this.profile = assertTempProfile(this.root, path.join(this.root, 'login-' + randomUUID()));
     fs.mkdirSync(this.profile);
-    const args = this.browser.kind === 'firefox'
-      ? ['-profile', this.profile, '-no-remote', '-new-instance', LOGIN_URL]
-      : ['--user-data-dir=' + this.profile, '--remote-debugging-port=0', '--no-first-run', '--no-default-browser-check', LOGIN_URL];
+    const args = ['-profile', this.profile, '-no-remote', '-new-instance', LOGIN_URL];
     try {
       this.child = this.launch(this.browser.executable, args, { stdio: 'ignore', windowsHide: false });
       await new Promise((resolve, reject) => {
@@ -115,8 +90,7 @@ class TemporaryBrowserLogin {
   async cleanup() {
     if (!this.profile) return;
     assertTempProfile(this.root, this.profile);
-    await this.stop(this.profile, this.client);
-    this.client = null;
+    await this.stop(this.profile);
     assertTempProfile(this.root, this.profile);
     await this.remove(this.profile);
   }
@@ -125,14 +99,8 @@ class TemporaryBrowserLogin {
     this.phase = 'importing';
     try {
       if (this.launchFailed) throw loginError('BROWSER_LAUNCH_FAILED', '登录浏览器启动失败');
-      let cookies;
-      if (this.browser.kind === 'firefox') {
-        await this.stop(this.profile, null);
-        cookies = readFirefoxGoogleCookies(this.profile);
-      } else {
-        this.client = await this.connect(this.profile);
-        cookies = await readChromiumGoogleCookies(this.client);
-      }
+      await this.stop(this.profile);
+      const cookies = this.read(this.profile);
       // Clean the source profile before changing even the new destination.
       await this.cleanup();
       const result = await importIntoEmptyGoogleSession(target, cookies);
@@ -147,4 +115,4 @@ class TemporaryBrowserLogin {
   async cancel() { await this.cleanup(); this.phase = 'cancelled'; return { cancelled: true, tempRemoved: !this.profile || !fs.existsSync(this.profile) }; }
 }
 
-module.exports = { TemporaryBrowserLogin, connectCdp, assertTempProfile, windowsBrowserProcesses, LOGIN_URL };
+module.exports = { TemporaryBrowserLogin, assertTempProfile, windowsBrowserProcesses, LOGIN_URL, findFirefox, FIREFOX_DOWNLOAD_URL };

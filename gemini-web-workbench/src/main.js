@@ -28,7 +28,6 @@ const { chromeUserAgent } = require('./chrome-user-agent');
 const uploadMonitors = new Map();
 const {
   DETECT_GEMINI_AUTH_SCRIPT,
-  OPEN_GEMINI_LOGIN_SCRIPT,
   uploadFilesViaChooser,
 } = require("./gemini-file-chooser");
 const {
@@ -41,6 +40,7 @@ const { PublisherRuntime } = require("./publisher-runtime");
 const { VideoReview } = require("./video-review");
 const { startRuntimeLogMaintenance } = require("./runtime-log-maintenance");
 const { version: appVersion } = require("../package.json");
+const { GeminiLoginFlow } = require("./gemini-login-flow");
 const { normalizeModelSettings, modelSettingsKey, needsThinkingCheck, modelRuntimeSource } = require('./gemini-model-selection');
 const { callModelPage, temporaryModelError, modelSucceeded, modelWatchdogError } = require('./model-selection-errors');
 const modelSessionChecks = new Map();
@@ -81,7 +81,7 @@ let workbenchStarted = false;
 let backupManager, stopAutoBackup;
 let shutdownStarted = false;
 let stopRuntimeLogMaintenance = null;
-const loginWindows = new Map();
+let geminiLoginFlow;
 const workerWindows = new Map();
 const pendingJobs = new Map();
 const desktopRuntimeToken = randomBytes(48).toString("base64url");
@@ -228,6 +228,7 @@ function publicState() {
     },
     defaultAccountId: store.state.defaultAccountId,
     accounts: store.state.accounts,
+    geminiLogin: geminiLoginFlow?.state() || null,
     logs: store.state.logs.slice(-120),
     bridge: bridge?.runtimeState() || {
       online: false,
@@ -694,77 +695,6 @@ function createGeminiWindow(account, visible) {
   return window;
 }
 
-async function syncLoginWindowState(account, window) {
-  if (!window || window.isDestroyed()) return "unknown";
-  const state = await window.webContents
-    .executeJavaScript(DETECT_GEMINI_AUTH_SCRIPT, true)
-    .catch(() => "unknown");
-  if (state === "signed-out") {
-    store.updateAccount(account.id, {
-      authenticated: false,
-      lastCheckedAt: new Date().toISOString(),
-      error: "Gemini 登录已失效，请重新登录",
-    });
-    broadcast();
-    return state;
-  }
-  if (state !== "signed-in" || !(await accountAuthenticated(account))) {
-    return state;
-  }
-  store.updateAccount(account.id, {
-    authenticated: true,
-    lastCheckedAt: new Date().toISOString(),
-    error: "",
-  });
-  await accountSession(account).cookies.flushStore();
-  accountSession(account).flushStorageData();
-  store.log(`${account.name} Gemini 登录成功，等待中的任务将自动继续`);
-  broadcast();
-  tickBridgeSoon();
-  setTimeout(() => {
-    if (!window.isDestroyed()) window.hide();
-  }, 1200);
-  return state;
-}
-
-async function openLoginWindow(id) {
-  const account = accountById(id);
-  if (!account) throw new Error("账号不存在");
-  let window = loginWindows.get(id);
-  if (!window || window.isDestroyed()) {
-    window = createGeminiWindow(account, true);
-    loginWindows.set(id, window);
-    window.on("closed", () => loginWindows.delete(id));
-    window.webContents.on("did-finish-load", () => {
-      setTimeout(
-        () => void syncLoginWindowState(account, window),
-        1200
-      );
-    });
-    await loadGeminiPage(account, window);
-  }
-  window.show();
-  window.focus();
-  await window.webContents
-    .executeJavaScript(OPEN_GEMINI_LOGIN_SCRIPT, true)
-    .catch(() => {});
-  return true;
-}
-
-async function hideLoginWindow(id) {
-  const account = accountById(id);
-  if (!account) throw new Error("账号不存在");
-  const authenticated = await refreshAccount(account);
-  if (!authenticated) {
-    throw new Error("还没有检测到 Google 登录，请先在账号窗口完成登录");
-  }
-  const window = loginWindows.get(id);
-  if (window && !window.isDestroyed()) window.hide();
-  store.log(`${account.name} 登录态已保存，账号窗口已隐藏`);
-  broadcast();
-  return true;
-}
-
 function workerWindow(account, fresh = false) {
   let window = workerWindows.get(account.id);
   // A reused Gemini renderer can upload bytes into a disposed composer after
@@ -828,7 +758,6 @@ async function runGeminiJob(account, job) {
   if (!(await refreshAccount(account))) {
     const error = new Error("Gemini 登录已失效，请重新登录该账号");
     error.code = "NEEDS_LOGIN";
-    void openLoginWindow(account.id);
     throw error;
   }
   bridge?.assertTaskActive(job.id);
@@ -1067,7 +996,7 @@ function completeGeminiJob(result, contentsId) {
   error.code = result.code || "";
   if (['MODEL_SELECTION_FAILED', 'MODEL_SELECTION_RETRYABLE'].includes(error.code)) error.modelSettingsKey = modelSettingsKey(pending.modelSettings);
   if (error.code === "NEEDS_LOGIN") {
-    void openLoginWindow(pending.accountId);
+    store.updateAccount(pending.accountId, { authenticated: false, error: "Gemini 登录已失效，请在账号与设置中通过 Firefox 重新登录" });
   }
   pending.reject(error);
 }
@@ -1126,6 +1055,27 @@ ipcMain.on("gemini:job-diagnostic", (event, diagnostic) => {
 
 function bindIpc() {
   const handle = securedIpcHandle(ipcMain, ipcContext);
+  geminiLoginFlow = new GeminiLoginFlow({
+    root: app.getPath('userData'), store, sessionFactory: partition => session.fromPartition(partition),
+    canReplace: id => !bridge?.active.has(id) && (!bridge?.polling || geminiLoginFlow?.heldAccountId === id) && !gemSetupAccounts.has(id),
+    confirmReplace: async name => (await dialog.showMessageBox(mainWindow, { type: 'warning', buttons: ['取消', '覆盖登录'], defaultId: 0, cancelId: 0,
+      message: '确认覆盖“' + name + '”的 Google 登录？', detail: '仅在新登录验证成功后替换；失败或取消保留原登录。账号设置和 Gem 保留。' })).response === 1,
+    clearSession: async partition => { const current = session.fromPartition(partition); await current.clearStorageData(); await current.cookies.flushStore(); },
+    verify: async candidate => {
+      accountSession(candidate);
+      const window = createGeminiWindow(candidate, false);
+      try {
+        await loadGeminiPage(candidate, window);
+        const state = await window.webContents.executeJavaScript(DETECT_GEMINI_AUTH_SCRIPT, true);
+        if (state !== 'signed-in' || !await accountAuthenticated(candidate)) return { authenticated: false };
+        const catalog = await runWithActivatedGeminiWorker({ workerWindow: window, ownerWindow: mainWindow,
+          action: () => modelPageCall(window, 'readCatalog') });
+        return { authenticated: Array.isArray(catalog.models) && catalog.models.length > 0,
+          modelCatalog: { ...catalog, readAt: new Date().toISOString(), error: '' } };
+      } finally { if (!window.isDestroyed()) window.destroy(); }
+    },
+    onChange: () => { broadcast(); tickBridgeSoon(); },
+  });
   const backupDirectory = () => store.state.settings.backupDirectory || path.join(app.getPath('documents'), 'FlowCut备份');
   const siteFetch = async (route, init = {}) => {
     const origin = requireLocalSiteUrl(store.state.settings.flowcutUrl).href.replace(/\/+$/, '');
@@ -1376,6 +1326,7 @@ function bindIpc() {
       if (action === "bind") return savedGems.bind(accountId, gem, cleanGemUrl(url));
       if (action !== "create" && action !== "open") throw new Error("不支持的 Gem 操作");
       if (action === "open") {
+        if (!(await refreshAccount(account))) throw new Error("请先在账号与设置中通过 Firefox 登录此账号");
         const setupWindow = createGeminiWindow(account, true);
         await setupWindow.loadURL("https://gemini.google.com/gems/view");
         return null;
@@ -1460,23 +1411,20 @@ function bindIpc() {
   handle("seedance:open-download-directory", () =>
     seedanceRuntime.openDownloadDirectory(),
   );
-  handle("account:add", async (_event, name) => {
-    const account = store.addAccount(String(name || "").trim());
-    store.log(`已添加账号：${account.name}`);
-    await openLoginWindow(account.id);
-    broadcast();
-    tickBridgeSoon();
-    return publicState();
-  });
-  handle("account:open-login", async (_event, id) => {
-    await openLoginWindow(id);
-    return true;
-  });
-  handle("account:hide-login", async (_event, id) => {
-    await hideLoginWindow(id);
-    tickBridgeSoon();
-    return publicState();
-  });
+  handle("account:add", async (_event, name) => { await geminiLoginFlow.prepare({ name: String(name || '').trim() }); return publicState(); });
+  handle("account:open-login", async (_event, id) => { await geminiLoginFlow.prepare({ accountId: id }); return publicState(); });
+  handle("account:login-open", async () => { await geminiLoginFlow.open(); return publicState(); });
+  const finishFirefoxLogin = async () => {
+    const result = await geminiLoginFlow.finish();
+    if (!result.cancelled) {
+      workerWindows.get(result.accountId)?.destroy(); workerWindows.delete(result.accountId); modelSessionChecks.delete(result.accountId);
+      store.log('Firefox 登录导入及检查成功，新登录已保存');
+    }
+    broadcast(); tickBridgeSoon(); return { ...publicState(), geminiLoginResult: result.cancelled ? 'cancelled' : 'saved' };
+  };
+  handle("account:login-import", finishFirefoxLogin);
+  handle("account:hide-login", finishFirefoxLogin);
+  handle("account:login-cancel", async () => { await geminiLoginFlow.cancel(); return publicState(); });
   handle("account:check", async (_event, id) => {
     const account = accountById(id);
     if (!account) throw new Error("账号不存在");
@@ -1512,9 +1460,8 @@ function bindIpc() {
   handle("account:remove", async (_event, id) => {
     const account = accountById(id);
     if (!account) return publicState();
-    loginWindows.get(id)?.destroy();
+    if (geminiLoginFlow.heldAccountId === id) throw new Error("请先取消该账号的 Firefox 登录");
     workerWindows.get(id)?.destroy();
-    loginWindows.delete(id);
     workerWindows.delete(id);
     await accountSession(account).clearStorageData();
     store.removeAccount(id);
@@ -1589,7 +1536,7 @@ async function activateWorkbench() {
     bridge = new BridgeEngine({
       store,
       getAuthenticatedAccounts: () =>
-        store.state.accounts.filter((account) => account.authenticated && account.enabled !== false && !gemSetupAccounts.has(account.id)),
+        store.state.accounts.filter((account) => account.authenticated && account.enabled !== false && !gemSetupAccounts.has(account.id) && geminiLoginFlow?.heldAccountId !== account.id),
       getMaxConcurrent: () => store.state.settings.maxConcurrent,
       getDesktopToken: () => desktopRuntimeToken,
       version: appVersion,
@@ -1786,7 +1733,7 @@ app.on("before-quit", (event) => {
   if (localSiteProcess?.pid) {
     localSiteProcess.kill();
   }
-  Promise.resolve(store?.flushLogs()).finally(() => app.quit());
+  Promise.resolve(geminiLoginFlow?.shutdown()).catch(() => {}).then(() => store?.flushLogs()).finally(() => app.quit());
 });
 
 app.on("window-all-closed", () => {

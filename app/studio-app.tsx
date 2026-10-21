@@ -23,6 +23,7 @@ import { useImageProductId } from "./use-image-product-id";
 import { DEFAULT_GEM_REQUEST, renderGemRequest, validateGemRequest } from "../lib/gem-request";
 import { ApprovalStats } from './approval-stats';
 import { GeminiModelSettingsPanel, GeminiModelInfo, type GeminiModelSettings, type ModelState } from './gemini-model-settings';
+import { GeminiLoginDialog, type GeminiLoginState } from './gemini-login';
 import { useTaskPage } from './use-task-page';
 import { SeedanceTaskDetail } from './seedance-task-detail';
 import { LocalBackups } from './local-backups';
@@ -517,7 +518,7 @@ type FlowCutDesktopBridge = {
   seedanceSetPreferredModel?: (id: string, model: string) => Promise<SeedanceDesktopState>;
   seedanceDecideFastFallback?: (id: string, choice: string, date: string) => Promise<SeedanceDesktopState>;
   seedanceReconnectLogin?: (id: string) => Promise<SeedanceDesktopState>;
-  getState?: () => Promise<{ update?: UpdateState; accounts?: NonNullable<Workspace["integrations"]["geminiRuntime"]>["accounts"]; defaultAccountId?: string; bridge?: { activeJobs: Array<{ accountId: string }> } }>;
+  getState?: () => Promise<{ geminiLogin?: GeminiLoginState | null; update?: UpdateState; accounts?: NonNullable<Workspace["integrations"]["geminiRuntime"]>["accounts"]; defaultAccountId?: string; bridge?: { activeJobs: Array<{ accountId: string }> } }>;
   updateState?: () => Promise<UpdateState>;
   chooseArchiveDirectory?: () => Promise<string | null>;
   setQueueRunning?: (running: boolean) => Promise<unknown>;
@@ -529,11 +530,14 @@ type FlowCutDesktopBridge = {
   updateCheck?: () => Promise<UpdateState>;
   updateInstall?: () => Promise<unknown>;
   onState?: (
-    callback: (state: { update?: UpdateState; seedance?: SeedanceDesktopState }) => void
+    callback: (state: { geminiLogin?: GeminiLoginState | null; update?: UpdateState; seedance?: SeedanceDesktopState }) => void
   ) => (() => void);
   addAccount: (name: string) => Promise<unknown>;
   openLogin: (id: string) => Promise<unknown>;
   hideLogin: (id: string) => Promise<unknown>;
+  openGeminiLoginBrowser?: () => Promise<unknown>;
+  importGeminiLogin?: () => Promise<{ geminiLoginResult?: string }>;
+  cancelGeminiLogin?: () => Promise<unknown>;
   checkAccount: (id: string) => Promise<unknown>;
   removeAccount: (id: string) => Promise<unknown>;
   renameAccount: (id: string, name: string) => Promise<unknown>;
@@ -3171,6 +3175,7 @@ function SettingsPage({
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [accountName, setAccountName] = useState("");
+  const [geminiLogin, setGeminiLogin] = useState<GeminiLoginState | null>(null);
   const [seedanceAccountName, setSeedanceAccountName] = useState("");
 
   async function updateManagedAccount(kind: "gemini" | "seedance", id: string, change: { name: string } | { enabled: boolean }) {
@@ -3196,6 +3201,7 @@ function SettingsPage({
     useState<SeedanceDesktopState | null>(null);
   useEffect(() => desktopBridge()?.onState?.(state => {
     if (state.seedance) setSeedanceDesktop(state.seedance);
+    if (state.geminiLogin !== undefined) setGeminiLogin(state.geminiLogin);
   }), []);
   const [localSeedanceConfigured, setLocalSeedanceConfigured] = useState(false);
   const [localSeedanceVerified, setLocalSeedanceVerified] = useState(false);
@@ -3210,6 +3216,7 @@ function SettingsPage({
     >;
     const desktop = desktopBridge();
     const local = await desktop?.getState?.();
+    setGeminiLogin(local?.geminiLogin || null);
     if (local?.accounts && result.gemini.runtime) {
       result.gemini.runtime = { ...result.gemini.runtime,
         accounts: local.accounts.map(account => ({ ...account, busy: local.bridge?.activeJobs.some(job => job.accountId === account.id) })),
@@ -3419,7 +3426,7 @@ function SettingsPage({
   }
 
   async function desktopAccountAction(
-    action: "add" | "open" | "save-login" | "check" | "default" | "remove",
+    action: "add" | "open" | "login-open" | "login-import" | "login-cancel" | "check" | "default" | "remove",
     accountId = ""
   ) {
     const desktop = desktopBridge();
@@ -3433,13 +3440,22 @@ function SettingsPage({
       if (action === "add") {
         await desktop.addAccount(accountName.trim() || "Gemini 账号");
         setAccountName("");
-        setMessage("已打开 Google 登录窗口；登录并确认 Pro 模型后，回到这里点“保存登录并隐藏”");
+        setMessage("请在对话框中打开 Firefox 并完成登录");
       } else if (action === "open") {
         await desktop.openLogin(accountId);
-        setMessage("账号登录窗口已打开");
-      } else if (action === "save-login") {
-        await desktop.hideLogin(accountId);
-        setMessage("Gemini 登录态已保存，登录窗口已隐藏");
+        setMessage("请在对话框中通过 Firefox 重新登录");
+      } else if (action === "login-open") {
+        if (!desktop.openGeminiLoginBrowser) throw new Error("请更新 FlowCut 桌面程序");
+        await desktop.openGeminiLoginBrowser();
+        setMessage("请在 Firefox 中完成登录后回来点“我已登录”");
+      } else if (action === "login-import") {
+        if (!desktop.importGeminiLogin) throw new Error("请更新 FlowCut 桌面程序");
+        const result = await desktop.importGeminiLogin();
+        setMessage(result.geminiLoginResult === "cancelled" ? "已取消，原登录保持不变" : "Firefox 登录导入及检查成功，账号可正常使用");
+      } else if (action === "login-cancel") {
+        if (!desktop.cancelGeminiLogin) throw new Error("请更新 FlowCut 桌面程序");
+        await desktop.cancelGeminiLogin();
+        setMessage("已取消，临时登录资料已清理，原账号保持不变");
       } else if (action === "check") {
         await desktop.checkAccount(accountId);
         setMessage("已重新检查该账号的 Google 登录状态");
@@ -3561,7 +3577,7 @@ function SettingsPage({
                     : "正在连接本机执行器。"}
                   <br />
                   商品、Gem、账号和任务都在当前 FlowCut EXE 内管理；Google
-                  登录窗口只在添加或重新登录时临时打开。
+                  登录使用 Firefox 临时窗口，已有登录账号可继续使用。
                   {!settings.gemini.runtime?.queueRunning && settings.gemini.runtime?.authenticated && (
                     <><br />账号可用；创建任务时会自动启动队列，测试连接不会启动任务。</>
                   )}
@@ -3608,18 +3624,8 @@ function SettingsPage({
                           type="button"
                           onClick={() => desktopAccountAction("open", account.id)}
                         >
-                          打开登录
+                          重新登录
                         </button>
-                        {!account.authenticated && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              desktopAccountAction("save-login", account.id)
-                            }
-                          >
-                            保存登录并隐藏
-                          </button>
-                        )}
                         <button
                           type="button"
                           onClick={() => desktopAccountAction("check", account.id)}
@@ -3963,6 +3969,7 @@ function SettingsPage({
           </div>
         </form>
       </div>
+      <GeminiLoginDialog flow={geminiLogin} busy={busy.startsWith("account-")} onAction={action => void desktopAccountAction(action)} />
       <div className="settings-security">
         <b>本机模式</b>
         <span>

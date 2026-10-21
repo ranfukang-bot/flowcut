@@ -108,10 +108,10 @@ class TemporaryBrowserLogin {
     try {
       if (this.launchFailed) throw loginError('BROWSER_LAUNCH_FAILED', '登录浏览器启动失败');
       await this.stop(this.profile);
-      const cookies = this.read(this.profile);
+      const { cookies, skippedPartitioned } = this.read(this.profile);
       // Clean the source profile before changing even the new destination.
       await this.cleanup();
-      const result = await importIntoEmptyGoogleSession(target, cookies);
+      const result = await importIntoEmptyGoogleSession(target, cookies, { skippedPartitioned });
       this.phase = 'imported';
       return { ...result, browser: this.browser.kind, tempRemoved: !fs.existsSync(this.profile) };
     } catch (error) {

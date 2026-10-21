@@ -66,6 +66,61 @@ test('server search finds product 150 outside the latest page and treats wildcar
   assert.equal(accountRows.tasks.length, 50); assert.ok(accountRows.tasks.every(row => row.tiktok_account_name === '归档账号1'));
   assert.deepEqual((await listTasks(db, { q: '%' })).tasks, []);
 });
+
+for (const [status, start, end, q] of [['all', 0, 200, '商品1'], ['active', 75, 200, '商品1'], ['review', 0, 30, '商品1'], ['attention', 30, 50, '商品3'], ['completed', 50, 75, '商品6']]) {
+  test(`account filter combines with ${status}, product search and cursor pagination`, async t => {
+    const { db } = fixture(t);
+    const expected = Array.from({ length: end - start }, (_, n) => n + start).filter(i => {
+      const number = i === 50 ? 150 : i === 150 ? 50 : i;
+      return i % 3 === 1 && ('商品' + number).includes(q);
+    }).reverse().map(i => 'task-' + String(i).padStart(3, '0'));
+    const rows = []; let cursor;
+    do {
+      const result = await listTasks(db, { account: '归档账号1', status, q, limit: 2, cursor });
+      assert.ok(result.tasks.length <= 2);
+      rows.push(...result.tasks); cursor = result.nextCursor;
+    } while (cursor);
+    assert.deepEqual(rows.map(row => row.id), expected);
+    assert.ok(rows.length > 2, 'each status spans multiple filtered pages');
+    assert.ok(rows.every(row => row.tiktok_account_name === '归档账号1'));
+    assert.equal(new Set(rows.map(row => row.id)).size, rows.length);
+    assert.deepEqual(await countTasks(db), { total: 200, active: 125, review: 30, completed: 25, attention: 20 });
+  });
+}
+
+test('account equality ignores case, excludes substrings and treats SQL characters literally', async t => {
+  const { db, sqlite } = fixture(t);
+  const update = sqlite.prepare('UPDATE tasks SET tiktok_account_name=? WHERE id=?');
+  for (const [suffix, name] of [['001', 'Shop'], ['002', 'sHoP'], ['003', 'ShopPlus'], ['004', 'MyShop'], ['005', 'Shop%_A'], ['006', null], ['007', '']]) {
+    update.run(name, 'task-' + suffix);
+  }
+  assert.deepEqual((await listTasks(db, { account: 'SHOP' })).tasks.map(row => row.id), ['task-002', 'task-001']);
+  assert.deepEqual((await listTasks(db, { account: 'shop%_a' })).tasks.map(row => row.id), ['task-005']);
+  for (const account of ['sho', 'Shop%', "Shop' OR 1=1 --", 'missing']) assert.deepEqual((await listTasks(db, { account })).tasks, []);
+  assert.deepEqual(await listTasks(db, { account: '' }), await listTasks(db));
+});
+
+for (const role of ['group', 'fission']) test(`${role} matches a child's account, keeps the complete group and paginates groups without changing counts`, async t => {
+  const { db, sqlite } = fixture(t);
+  const add = sqlite.prepare(`INSERT INTO tasks(id,title,status,review_status,tiktok_account_name,task_role,batch_parent_id,batch_index,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?, '2026-10-21T00:00:00.000Z','2026-10-21T00:00:00.000Z')`);
+  for (const suffix of ['a', 'b', 'excluded']) {
+    const id = role + '-' + suffix;
+    add.run(id, '匹配商品 ' + suffix, role === 'group' ? 'split_done' : 'fission_ready', 'pending', 'OtherShop', role, null, null);
+    add.run(id + '-1', '匹配视频', 'video_ready', 'pending', suffix === 'excluded' ? 'TargetShopPlus' : 'tArGeTsHoP', role === 'group' ? 'clip' : 'fission_child', id, 1);
+    add.run(id + '-2', '其他账号视频', 'failed', 'pending', 'OtherShop', role === 'group' ? 'clip' : 'fission_child', id, 2);
+  }
+  const before = await countTasks(db);
+  const first = await listTasks(db, { account: 'TargetShop', status: 'review', q: '匹配商品', limit: 1 });
+  assert.deepEqual(first.tasks.map(row => row.id), [role + '-b']); assert.ok(first.nextCursor);
+  const second = await listTasks(db, { account: 'TargetShop', status: 'review', q: '匹配商品', limit: 1, cursor: first.nextCursor });
+  assert.deepEqual(second.tasks.map(row => row.id), [role + '-a']); assert.equal(second.nextCursor, null);
+  for (const row of [...first.tasks, ...second.tasks]) {
+    assert.deepEqual(row.children.map(child => child.id), [row.id + '-1', row.id + '-2']);
+  }
+  assert.deepEqual((await listTasks(db, { account: 'TargetShop', status: 'completed' })).tasks, []);
+  assert.deepEqual(await countTasks(db), before);
+});
 test('workspace list projection omits long fields while id detail retains exact saved inputs', async t => {
   const { db } = fixture(t);
   const workspace = { tasks: (await listTasks(db, { limit: 60 })).tasks };

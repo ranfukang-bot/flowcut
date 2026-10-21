@@ -1258,6 +1258,7 @@ export function StudioApp() {
         {page === "tasks" && (
           <TasksPage
             tasks={data.tasks}
+            tiktokAccounts={data.tiktokAccounts}
             geminiRuntime={data.integrations.geminiRuntime}
             onPreview={openTask}
             onDelete={(task) => deleteRecord("/api/tasks", task.id, ['group','fission'].includes(task.task_role||'')
@@ -2944,6 +2945,7 @@ function WebGemModal({ gem, onClose }: { gem: Gem; onClose: () => void }) {
 
 function TasksPage({
   tasks,
+  tiktokAccounts,
   geminiRuntime,
   onPreview,
   onDelete,
@@ -2951,6 +2953,7 @@ function TasksPage({
   onClearAll,
 }: {
   tasks: Task[];
+  tiktokAccounts: TikTokAccount[];
   geminiRuntime?: Workspace["integrations"]["geminiRuntime"];
   onPreview: (task: Task) => void;
   onDelete: (task: Task) => void;
@@ -2959,9 +2962,18 @@ function TasksPage({
 }) {
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
+  const [account, setAccount] = useState("");
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try { setAccount(window.localStorage.getItem('flowcut-task-account-v1') || ''); }
+      catch { /* Account selection still works without browser storage. */ }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+  const selectedAccount = tiktokAccounts.find(item => item.name.toLowerCase() === account.toLowerCase())?.name || '';
   const [videoError, setVideoError] = useState("");
   const refreshKey = withChildren(tasks).map(task => `${task.id}:${task.updated_at}:${task.status}:${task.review_status}`).join('|');
-  const { tasks: visibleTasks, hasMore, loading, error: listError, resetPages, loadMore } = useTaskPage(tasks, filter, query, refreshKey);
+  const { tasks: visibleTasks, hasMore, loading, error: listError, resetPages, loadMore } = useTaskPage(tasks, filter, query, refreshKey, selectedAccount);
   async function openVideo(task: Task) {
     setVideoError("");
     try {
@@ -3012,7 +3024,18 @@ function TasksPage({
             <button key={value} className={filter === value ? "active" : ""} onClick={() => { setFilter(value); resetPages(); }} aria-pressed={filter === value}>{label}</button>
           ))}
         </div>
-        <input aria-label="搜索任务" placeholder="搜索商品、商品 ID 或 TK 账号" value={query} onChange={(event) => { setQuery(event.target.value); resetPages(); }} />
+        <div className="task-search-filters">
+          <input aria-label="搜索任务" placeholder="搜索商品、商品 ID 或 TK 账号" value={query} onChange={(event) => { setQuery(event.target.value); resetPages(); }} />
+          <select aria-label="按 TK 账号筛选任务" value={selectedAccount} onChange={event => {
+            const value = event.target.value;
+            setAccount(value); resetPages();
+            try { window.localStorage.setItem('flowcut-task-account-v1', value); }
+            catch { /* Keep the selection for this visit if storage is unavailable. */ }
+          }}>
+            <option value="">全部账号</option>
+            {tiktokAccounts.map(item => <option key={item.id} value={item.name}>{item.name}</option>)}
+          </select>
+        </div>
       </div>
       <div className="table-panel tasks-table">
         <div className="table-head"><span>商品与账号</span><span>制作进度</span><span>当前状态</span><span>操作</span></div>
@@ -3046,7 +3069,7 @@ function TasksPage({
             </div>}
           </div>
         ))}
-        {!loading && !visibleTasks.length && (filter !== 'all' || query ? <EmptyState icon="↗" title="没有匹配的任务" text="换一个筛选条件或搜索词。" /> : <EmptyState icon="↗" title="任务队列为空" text="从创作中心选择商品和 Gem 后启动第一条任务。" />)}
+        {!loading && !visibleTasks.length && (filter !== 'all' || query || selectedAccount ? <EmptyState icon="↗" title="没有匹配的任务" text="换一个筛选条件或搜索词。" /> : <EmptyState icon="↗" title="任务队列为空" text="从创作中心选择商品和 Gem 后启动第一条任务。" />)}
       </div>
       <p aria-live="polite">已加载 {visibleTasks.length} 条任务{loading ? '，正在加载…' : ''}</p>
       {hasMore && <button className="secondary" disabled={loading} onClick={loadMore}>{loading ? '加载中…' : '加载更多'}</button>}

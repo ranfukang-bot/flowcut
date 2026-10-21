@@ -23,7 +23,7 @@ export async function GET(request: Request) {
       const task = await taskDetail(getDb(), id);
       return task ? Response.json(task, { headers: { 'cache-control': 'no-store' } }) : Response.json({ error: '任务不存在' }, { status: 404 });
     }
-    const result = await listTasks(getDb(), { status: params.get('status') || 'all', q: params.get('q') || '', cursor: params.get('cursor') || '', limit: params.has('limit') ? Number(params.get('limit')) : undefined });
+    const result = await listTasks(getDb(), { status: params.get('status') || 'all', q: params.get('q') || '', account: params.get('account') || '', cursor: params.get('cursor') || '', limit: params.has('limit') ? Number(params.get('limit')) : undefined });
     return Response.json(result, { headers: { 'cache-control': 'no-store' } });
   } catch (error) { return jsonError(error, error instanceof Error && /筛选状态|分页/.test(error.message) ? 400 : 500); }
 }

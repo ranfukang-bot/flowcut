@@ -1,8 +1,8 @@
 "use client";
 import { useEffect, useState } from 'react';
 
-export function useTaskPage<T extends { id: string }>(initial: T[], status: string, q: string, refreshKey: string) {
-  const key = JSON.stringify({ status, q });
+export function useTaskPage<T extends { id: string }>(initial: T[], status: string, q: string, refreshKey: string, account = '') {
+  const key = JSON.stringify({ status, q, account });
   const [pages, setPages] = useState(1);
   const [tick, setTick] = useState(0);
   const [view, setView] = useState<{ key: string; tasks: T[]; nextCursor: string | null }>({ key, tasks: initial, nextCursor: null });
@@ -18,7 +18,7 @@ export function useTaskPage<T extends { id: string }>(initial: T[], status: stri
     void Promise.resolve().then(async () => {
       if (!alive) return;
       setLoading(true); setError('');
-      const filters = JSON.parse(key) as { status: string; q: string };
+      const filters = JSON.parse(key) as { status: string; q: string; account: string };
       const tasks: T[] = [];
       let nextCursor: string | null = null;
       for (let index = 0; index < pages; index++) {

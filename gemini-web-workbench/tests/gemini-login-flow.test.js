@@ -19,7 +19,7 @@ function fixture(t, options = {}) {
     confirmReplace: async () => { calls.push(['confirm']); return options.confirm !== false; },
     browserFinder: async () => options.missing ? null : { kind: 'firefox', executable: 'test-firefox' },
     browserFactory: () => ({ start: async () => { calls.push(['open']); }, cancel: async () => { calls.push(['cleanup']); },
-      complete: async ({ userConfirmed }) => { assert.equal(userConfirmed, true); calls.push(['import', 'cleanup']); if (options.importFails) throw Object.assign(Error('secret fixture cookie'), { code: options.importCode }); } }),
+      complete: async ({ userConfirmed }) => { assert.equal(userConfirmed, true); calls.push(['import', 'cleanup']); if (options.importFails) throw Object.assign(Error('secret fixture cookie'), { code: options.importCode }); return { importedCount: 2, skippedPartitioned: options.skippedPartitioned || 0 }; } }),
   });
   return { store, original, calls, jars, flow };
 }
@@ -40,6 +40,13 @@ test('relogin validates a fresh partition and switches only that account while p
   assert.deepEqual(now.gemBindings, { one: 'unchanged' }); assert.deepEqual(store.state.settings, settings);
   assert.equal(calls.filter(c => c[0] === 'confirm').length, 1);
   assert.ok(calls.filter(c => ['session', 'clear'].includes(c[0])).every(c => c[1] !== priorPartition));
+});
+
+test('successful login returns the skipped partitioned count without Cookie data', async t => {
+  const { flow } = fixture(t, { skippedPartitioned: 3 });
+  await flow.prepare({ name: 'New' }); await flow.open();
+  const result = await flow.finish();
+  assert.deepEqual(result, { accountId: result.accountId, cancelled: false, skippedPartitioned: 3 });
 });
 for (const options of [{ valid: false }, { importFails: true }]) test('failed relogin keeps existing account and partition unchanged and cleans only staging', async t => {
   const { store, original, flow, calls } = fixture(t, options), before = structuredClone(original);

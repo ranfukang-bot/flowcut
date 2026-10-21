@@ -52,7 +52,7 @@ class GeminiLoginFlow {
       const id = randomUUID(), partition = 'persist:flowcut-gemini-' + id;
       candidate = { id, name: flow.name, partition };
       const target = this.sessionFactory(partition);
-      await this.run.complete({ userConfirmed: true, target });
+      const imported = await this.run.complete({ userConfirmed: true, target });
       const checked = await this.verify(candidate);
       if (!checked?.authenticated) throw loginError('LOGIN_CHECK_FAILED', '导入后的 Gemini 登录检查未通过，原登录保持不变');
       await target.cookies?.flushStore?.(); target.flushStorageData?.();
@@ -61,7 +61,7 @@ class GeminiLoginFlow {
       const account = this.store.commitGeminiLogin({ accountId: flow.accountId, candidate,
         checkedAt: new Date().toISOString(), modelCatalog: checked.modelCatalog });
       candidate = null; this.run = null; this.flow = null;
-      return { accountId: account.id, cancelled: false };
+      return { accountId: account.id, cancelled: false, skippedPartitioned: imported.skippedPartitioned };
     } catch (error) {
       let clean = true;
       try { await this.run?.cancel(); } catch { clean = false; }
@@ -78,7 +78,6 @@ class GeminiLoginFlow {
         LOGIN_COOKIES_MISSING: 'Firefox 尚未保存登录资料',
         COOKIE_READ_FAILED: 'Firefox 登录资料读取失败',
         COOKIE_IMPORT_FAILED: '登录资料写入新会话失败',
-        PARTITIONED_COOKIE_UNSUPPORTED: '登录资料含暂不支持的分区 Cookie',
         LOGIN_CHECK_FAILED: '导入后的 Gemini 登录或模型检查未通过',
         LOGIN_SAVE_FAILED: '新登录配置保存失败',
       }[code] || '登录导入或检查失败';

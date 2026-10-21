@@ -13,6 +13,7 @@ function googleDomain(value) {
 function normalizeGoogleCookies(rows, { source = 'electron', now = Date.now() / 1000 } = {}) {
   if (!Array.isArray(rows)) throw loginError('COOKIE_DATA_INVALID', '浏览器返回的登录资料无效');
   const normalized = new Map();
+  let skippedPartitioned = 0;
   for (const row of rows) {
     let domain = source === 'firefox' ? row.host : row.domain;
     if (!domain && source === 'electron' && row.url) {
@@ -20,10 +21,11 @@ function normalizeGoogleCookies(rows, { source = 'electron', now = Date.now() / 
     }
     if (!googleDomain(domain)) continue;
     // A partitioned/container cookie cannot be faithfully imported into an
-    // ordinary Electron cookie jar. Do not silently turn it into a global one.
+    // ordinary Electron cookie jar. Skip it without broadening its scope.
     if (row.partitionKey || row.partitionKeyOpaque || row.isPartitionedAttributeSet ||
         (source === 'firefox' && row.originAttributes)) {
-      throw loginError('PARTITIONED_COOKIE_UNSUPPORTED', '登录资料包含暂不支持的分区 Cookie，未导入');
+      skippedPartitioned++;
+      continue;
     }
     const secure = source === 'firefox' ? Boolean(row.isSecure) : Boolean(row.secure);
     const httpOnly = source === 'firefox' ? Boolean(row.isHttpOnly) : Boolean(row.httpOnly);
@@ -57,7 +59,7 @@ function normalizeGoogleCookies(rows, { source = 'electron', now = Date.now() / 
     }
     normalized.set([hostOnly, host, cookie.path, cookie.name].join('\0'), cookie);
   }
-  return [...normalized.values()];
+  return { cookies: [...normalized.values()], skippedPartitioned };
 }
 
 function readFirefoxGoogleCookies(profile, options = {}) {
@@ -84,14 +86,14 @@ function readFirefoxGoogleCookies(profile, options = {}) {
   } finally { db?.close(); }
 }
 
-async function importIntoEmptyGoogleSession(target, rows) {
+async function importIntoEmptyGoogleSession(target, rows, { skippedPartitioned: previouslySkipped = 0 } = {}) {
   // Experiments and new accounts only. Relogin replacement needs its separate
   // explicit confirmation and staging step; it must not reuse this guard.
   const existing = await target.cookies.get({});
   if (existing.some(cookie => googleDomain(cookie.domain))) {
     throw loginError('EXISTING_LOGIN_PROTECTED', '目标账号已有登录资料，已保护原登录，未覆盖');
   }
-  const cookies = normalizeGoogleCookies(rows);
+  const { cookies, skippedPartitioned } = normalizeGoogleCookies(rows);
   if (!cookies.some(cookie => ['SID', '__Secure-1PSID', '__Secure-3PSID'].includes(cookie.name))) {
     throw loginError('LOGIN_NOT_FINISHED', '尚未取得 Google 登录，请先在浏览器中完成登录');
   }
@@ -99,7 +101,7 @@ async function importIntoEmptyGoogleSession(target, rows) {
   try {
     for (const cookie of cookies) { await target.cookies.set(cookie); written.push(cookie); }
     await target.cookies.flushStore();
-    return { importedCount: written.length };
+    return { importedCount: written.length, skippedPartitioned: previouslySkipped + skippedPartitioned };
   } catch {
     let rolledBack = true;
     for (const cookie of written.reverse()) {

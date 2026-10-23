@@ -5,7 +5,7 @@ import { api, desktopBridge } from './studio-client';
 import { confirmAction } from './confirm-action';
 import { parseSegmentHeader } from '../lib/remix-segments';
 import { StageBar, taskStatusLabel, taskStatusClass } from './task-status';
-import { REMIX_GEMINI_STATUSES, VIDEO_DONE_STATUSES } from '../lib/task-statuses';
+import { REMIX_GEMINI_STATUSES, VIDEO_DONE_STATUSES, PROMPT_ONLY_STATUSES } from '../lib/task-statuses';
 
 export function remixSelected(task:Task) {
   const explicit=JSON.parse(task.remix_selected_json || '{}') as Record<string,string>;
@@ -46,6 +46,7 @@ export function RemixGroupPanel({task,onUpdated}:{task:Task;onUpdated:(message:s
         </div>
         {selected && <><StageBar task={selected} />{selected.error&&<p className="warning-box">{selected.error}</p>}
           <div className="row-actions">
+            {PROMPT_ONLY_STATUSES.includes(selected.status)&&<button className="secondary" disabled={Boolean(busy)||active||done||finishing} onClick={()=>void run('queue',()=>api('/api/tasks',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({id:selected.id,action:'queue'})}),'已提交此分段到 Seedance')}>提交此分段到 Seedance</button>}
             <button className="secondary" disabled={!selected.download_path||Boolean(busy)} onClick={()=>void run('preview',async()=>{const d=desktopBridge();if(!d?.openReviewVideo)throw Error('请在新版桌面程序中预览视频');await d.openReviewVideo(selected.id);},'')}>预览视频</button>
             <button className={selected.segment_checked_at?'secondary':'review-action'} disabled={!selected.download_path||Boolean(busy)||active||done||finishing} onClick={()=>void run('check',()=>patch('check',{clipId:selected.id}),'此版本已标记「这段可以」')}>{selected.segment_checked_at?'✓ 这段可以':'这段可以'}</button>
             <button className="secondary" disabled={!selected.download_path||Boolean(busy)||active||done||finishing} onClick={()=>void run('regenerate',async()=>{regenerateRequests.current[selected.id] ||= crypto.randomUUID();await api('/api/tasks/recreate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:selected.id,requestId:regenerateRequests.current[selected.id]})});delete regenerateRequests.current[selected.id];},'已用同一提示词生成新版本，原版本保留')}>重新生成视频</button>

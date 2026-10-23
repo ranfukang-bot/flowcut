@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { bridgeSource, uiSource } from "./helpers/sources.mjs";
+import { bridgeSource } from "./helpers/sources.mjs";
 
 const root = new URL("../", import.meta.url);
 const source = async (path) => (await readFile(new URL(path, root), "utf8")).replace(/\r\n/g, "\n");

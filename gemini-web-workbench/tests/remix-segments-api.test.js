@@ -6,11 +6,11 @@ const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {VideoReview,reviewDirectory}=require('../src/video-review');
 const {restorableTables}=require('../src/backup-manager');
 const block=(i,a,b)=>`${segmentHeader(i,a,b)}\n${'运镜动作音效与口播细节。'.repeat(45)}`;
-async function setup(t,seconds=24) {
+async function setup(t,seconds=24,autoQueue=true) {
   const f=await siteFixture(t);
   f.sqlite.prepare("INSERT INTO tiktok_accounts(id,name,archive_directory,created_at) VALUES('tk','印尼1','C:/isolated/TK',?)").run(new Date().toISOString());
   const form=new FormData();form.set('video',new File(['video'],'ref.mp4',{type:'video/mp4'}));form.append('images',new File(['img'],'product.png',{type:'image/png'}));
-  form.set('videoSeconds',String(seconds));form.set('region','印尼');form.set('tiktokAccountName','印尼1');form.set('externalId','1735360337668113923');form.set('productName','测试商品');
+  form.set('autoQueue',String(autoQueue));form.set('videoSeconds',String(seconds));form.set('region','印尼');form.set('tiktokAccountName','印尼1');form.set('externalId','1735360337668113923');form.set('productName','测试商品');
   const route=await f.route('reference-remix');const res=await route.POST(new Request('http://fixture/api/reference-remix',{method:'POST',body:form}));
   const result=await res.json();assert.equal(res.status,201,JSON.stringify(result));
   return Object.assign(f,{id:result.id,form});
@@ -96,6 +96,7 @@ test('one-segment group uses the same approval move without concatenation; direc
 test('segment regenerate keeps exact prompt/range and old checked version; no Gemini round',async t=>{
   const {f,check}=await reviewFixture(t);const original=f.row("SELECT * FROM tasks WHERE task_role='clip' ORDER BY batch_index");await check(original.id);
   const r=await f.call('tasks/recreate','POST',{body:{id:original.id,requestId:crypto.randomUUID()}});assert.equal(r.status,201,JSON.stringify(r));
+  const repeated=await f.call('tasks/recreate','POST',{body:{id:original.id,requestId:r.body.id}});assert.equal(repeated.body.preserveSource,true);
   const next=f.row('SELECT * FROM tasks WHERE id=?',r.body.id);assert.equal(next.prompt,original.prompt);assert.equal(next.duration,original.duration);assert.equal(next.remix_segment_start,original.remix_segment_start);assert.equal(next.status,'video_queued');assert.equal(next.segment_checked_at,null);assert.equal(f.row('SELECT review_status FROM tasks WHERE id=?',original.id).review_status,'pending');
 });
 test('failed local concat returns checked clips and parent to segmented state',async t=>{
@@ -142,4 +143,10 @@ test('late failure and release reports from a prior round cannot reopen a newer 
 test('backup restore pauses unfinished remix work while retaining scripts, ranges, task ids and completed groups',()=>{
   const restored=restorableTables({tasks:[{id:'g',task_role:'remix',status:'remix_adapting',remix_script:'durable',error:null},{id:'c',task_role:'clip',status:'video_generating',provider_job_id:'remote',remix_segment_start:15,error:null},{id:'done',task_role:'remix',status:'remix_done'}]});
   assert.equal(restored.tasks[0].status,'failed');assert.equal(restored.tasks[0].remix_script,'durable');assert.equal(restored.tasks[1].provider_job_id,'remote');assert.equal(restored.tasks[1].status,'failed');assert.equal(restored.tasks[2].status,'remix_done');
+});
+
+test('prompt-only remix clips remain manual and can enter the existing Seedance queue explicitly',async t=>{
+  const f=await setup(t,24,false);await claim(f);const blocks=[block(1,0,15),block(2,15,24)];await report(f,'stage',{analysisBlocks:blocks});await report(f,'result',{codeBlocks:blocks});
+  const clips=f.rows("SELECT * FROM tasks WHERE task_role='clip'");assert.ok(clips.every(c=>c.status==='prompt_ready'));
+  const result=await f.call('tasks','PATCH',{body:{id:clips[0].id,action:'queue'}});assert.equal(result.status,200,JSON.stringify(result));assert.equal(f.row('SELECT status FROM tasks WHERE id=?',clips[0].id).status,'video_queued');
 });

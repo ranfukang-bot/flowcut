@@ -13,11 +13,11 @@ export async function POST(request: Request) {
       return Response.json({ error: "缺少原任务 ID 或重做请求标识" }, { status: 400 });
     }
     const db = getDb();
-    const prior = await db.prepare("SELECT id, status, regenerated_from_task_id FROM tasks WHERE id = ?")
-      .bind(requestId).first<{ id: string; status: string; regenerated_from_task_id: string | null }>();
+    const prior = await db.prepare("SELECT id, status, regenerated_from_task_id,remix_segment_start FROM tasks WHERE id = ?")
+      .bind(requestId).first<{ id: string; status: string; regenerated_from_task_id: string | null;remix_segment_start:number|null }>();
     if (prior) {
       if (prior.regenerated_from_task_id !== id) return Response.json({ error: "重做请求标识冲突，请重新打开任务" }, { status: 409 });
-      return Response.json({ id: prior.id, status: prior.status, created: false });
+      return Response.json({ id: prior.id, status: prior.status, created: false,...(prior.remix_segment_start!=null?{preserveSource:true}:{}) });
     }
     const source = await db.prepare(`SELECT t.*, COALESCE(t.gem_content_snapshot, g.content) AS saved_content,
       COALESCE(t.product_external_id_snapshot, p.external_id) AS saved_product_id

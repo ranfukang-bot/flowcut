@@ -42,7 +42,7 @@ const { createLocalSite } = require("./local-site");
 const { version: appVersion } = require("../package.json");
 const { GeminiLoginFlow } = require("./gemini-login-flow");
 const { GeminiAccountWindows } = require('./gemini-account-windows');
-const { normalizeModelSettings, modelSettingsKey, needsThinkingCheck, modelRuntimeSource } = require('./gemini-model-selection');
+const { normalizeModelSettings, modelSettingsKey, needsThinkingCheck, checkJobModel, modelRuntimeSource } = require('./gemini-model-selection');
 const { callModelPage, temporaryModelError, modelSucceeded, modelWatchdogError } = require('./model-selection-errors');
 const modelSessionChecks = new Map();
 
@@ -684,12 +684,15 @@ async function selectJobModel(event) {
   const startedAt = performance.now();
   let selected;
   pending.modelSelectionActive = true;
+  let activatedForButton = false;
   try {
-    const inspected = await modelPageCall(window, 'inspect', [settings, account.modelCatalog, checkThinking]);
-    selected = inspected.needsMenu
-      ? await runWithActivatedGeminiWorker({ workerWindow: window, ownerWindow: mainWindow, debugVisible: showGeminiWorkerForDebug,
-            action: () => modelPageCall(window, 'ensure', [settings, { checkThinking, previousThinking: prior?.thinking || null, catalog: account.modelCatalog }]) })
-        : { model: inspected.model, thinking: inspected.thinking ?? (prior?.settingsKey === settingsKey ? prior.thinking : null), thinkingChecked: inspected.thinkingChecked === true, changed: false };
+    const outcome = await checkJobModel({ settings, catalog: account.modelCatalog, checkThinking, previousThinking: prior?.thinking || null,
+      call: (method, args) => modelPageCall(window, method, args),
+      activate: action => runWithActivatedGeminiWorker({ workerWindow: window, ownerWindow: mainWindow, debugVisible: showGeminiWorkerForDebug, action }) });
+    activatedForButton = outcome.activatedForButton;
+    const inspected = outcome.inspected;
+    selected = outcome.ensured
+      || { model: inspected.model, thinking: inspected.thinking ?? (prior?.settingsKey === settingsKey ? prior.thinking : null), thinkingChecked: inspected.thinkingChecked === true, changed: false };
   } catch (error) {
     throw error.code === 'MODEL_SELECTION_FAILED' ? error : temporaryModelError(error);
   } finally { pending.modelSelectionActive = false; }
@@ -700,7 +703,7 @@ async function selectJobModel(event) {
   const info = { model: selected.model || '网页当前选择（无法读取名称）', thinking: selected.thinking, checkedAt: new Date().toISOString(), elapsedMs };
   // Persist the actual selection before any prompt or image is sent, for all job kinds.
   await bridge.report(pending.taskId, 'model', { kind: pending.kind, modelInfo: info });
-  store.log(`任务 ${pending.taskId} · ${account.name} · Gemini ${info.model} · 思考等级 ${info.thinking || '未读取（沿用网页）'} · 模型检查 ${elapsedMs}ms`);
+  store.log(`任务 ${pending.taskId} · ${account.name} · Gemini ${info.model} · 思考等级 ${info.thinking || '未读取（沿用网页）'} · 模型检查 ${elapsedMs}ms${activatedForButton ? '（后台窗口未显示模型按钮，已临时提到前台检查）' : ''}`);
   return info;
 }
 

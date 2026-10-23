@@ -1,6 +1,6 @@
 # FlowCut 全自动 AI 视频工作台
 
-当前桌面版本：`1.4.59`（个人本机版）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，开发交接入口为 [AGENTS.md](AGENTS.md)。
+当前桌面版本：`1.4.60`（个人本机版）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，开发交接入口为 [AGENTS.md](AGENTS.md)。
 
 Gemini 账号旁的“打开 Gemini”直接查看已有登录和当前任务页面，关闭只隐藏窗口；新增账号和“重新登录”仍通过 Firefox 完成，详见 [登录说明](docs/gemini-login-import.md)。
 

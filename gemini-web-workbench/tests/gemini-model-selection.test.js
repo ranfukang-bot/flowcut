@@ -260,10 +260,23 @@ for (const method of ['inspect', 'readCatalog']) {
     }, method);
     assert.equal(result.clock, 10000); assert.equal(result.code, 'MODEL_SELECTION_RETRYABLE');
     assert.equal(result.sent, 0); assert.equal(result.uploads, 0);
-    for (const expected of ['等待 10 秒', 'data-test-id="future-picker"', 'aria-label="选择模型"', 'aria-haspopup="listbox"', 'class="first second third"', '文字="123456789012345678901234567890"']) assert.ok(result.error.includes(expected), expected);
+    for (const expected of ['等待 10 秒', 'visibilityState=visible', 'data-test-id="future-picker"', 'aria-label="选择模型"', 'aria-haspopup="listbox"', 'class="first second third"', '文字="123456789012345678901234567890"']) assert.ok(result.error.includes(expected), expected);
     for (const privateValue of ['HIDDEN_CANARY', 'HISTORY_PROMPT_CANARY', 'MESSAGE_PROMPT_CANARY', 'URL_TOKEN_CANARY', 'COOKIE_CANARY', 'PROMPT_INPUT_CANARY', 'EXTRA_TEXT', 'fourth']) assert.equal(result.error.includes(privateValue), false, privateValue);
   });
 }
+
+test('buttonReady answers instantly from the current page without waiting or clicking', async t => {
+  const { page } = await fixture(t, { current: '3.8 Flash' });
+  const result = await page.evaluate(async () => {
+    const button = document.querySelector('button'), started = performance.now();
+    const shown = await __flowcutModelPicker.buttonReady();
+    button.hidden = true; const hidden = await __flowcutModelPicker.buttonReady();
+    button.remove(); const missing = await __flowcutModelPicker.buttonReady();
+    return { shown, hidden, missing, elapsedMs: performance.now() - started, clicks, sent, uploads };
+  });
+  assert.deepEqual([result.shown, result.hidden, result.missing], [true, false, false]);
+  assert.ok(result.elapsedMs < 500); assert.deepEqual(result.clicks, []); assert.equal(result.sent, 0); assert.equal(result.uploads, 0);
+});
 
 test('default preserve mode does not wait, open menus, upload or send when no model button exists', async t => {
   const { page } = await fixture(t);

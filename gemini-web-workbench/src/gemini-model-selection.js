@@ -39,8 +39,11 @@ function createModelPicker(doc = document) {
       const text = value => privateLabel ? '[会话区域文字已省略]' : diagnosticText(value);
       return `${index + 1}. data-test-id=${JSON.stringify(diagnosticText(el.getAttribute('data-test-id')))} aria-label=${JSON.stringify(text(el.getAttribute('aria-label')))} aria-haspopup=${JSON.stringify(diagnosticText(el.getAttribute('aria-haspopup')))} class=${JSON.stringify([...el.classList].slice(0, 3).map(value => diagnosticText(value, 64)).join(' '))} 文字=${JSON.stringify(Array.from(text(el.innerText || el.textContent)).slice(0, 30).join(''))}`;
     });
-    return `可见按钮诊断（${rows.length} 个）：\n${entries.join('\n') || '（无可见按钮）'}`;
+    return `页面状态：visibilityState=${doc.visibilityState || '未知'}，hasFocus=${typeof doc.hasFocus === 'function' ? doc.hasFocus() : '未知'}\n可见按钮诊断（${rows.length} 个）：\n${entries.join('\n') || '（无可见按钮）'}`;
   };
+  // Instant probe, no waiting: a hidden worker window can leave Gemini's mode
+  // switcher unrendered, so the caller brings the window forward first.
+  const buttonReady = () => buttonRows().length > 0;
   const waitForButton = async () => {
     const deadline = Date.now() + 10_000;
     while (true) {
@@ -264,7 +267,34 @@ function createModelPicker(doc = document) {
       return { model: wanted, thinking, thinkingChecked, changed, models: names, thinkingOptions };
     });
   }
-  return { inspect, readCatalog, ensure };
+  return { buttonReady, inspect, readCatalog, ensure };
+}
+
+// Settings that never look at the model button keep the zero-touch path.
+function needsModelButton(settings) {
+  const value = normalizeModelSettings(settings);
+  return value.mode !== 'preserve' || Boolean(value.thinking);
+}
+
+// Job-time model check. `call(method, args)` runs a picker method in the
+// worker page; `activate(action)` runs `action` with the worker window brought
+// forward (off-screen, transparent), the same way reading the catalog does.
+// Gemini renders some page parts, including the mode switcher, only while the
+// window is shown; a hidden worker then never gets the button. Never wait ten
+// seconds in a hidden window: if the button is not there yet, bring the window
+// forward once and do the whole check, including any menu work, there.
+async function checkJobModel({ settings, catalog = {}, checkThinking = false, previousThinking = null, call, activate }) {
+  const ensureArgs = [settings, { checkThinking, previousThinking, catalog }];
+  const inspectArgs = [settings, catalog, checkThinking];
+  if (needsModelButton(settings) && !await call('buttonReady')) {
+    return activate(async () => {
+      const inspected = await call('inspect', inspectArgs);
+      return inspected.needsMenu ? { ensured: await call('ensure', ensureArgs), activatedForButton: true } : { inspected, activatedForButton: true };
+    });
+  }
+  const inspected = await call('inspect', inspectArgs);
+  if (!inspected.needsMenu) return { inspected, activatedForButton: false };
+  return { ensured: await activate(() => call('ensure', ensureArgs)), activatedForButton: false };
 }
 
 // Bytecode has no recoverable function source. Production embeds this string
@@ -272,4 +302,4 @@ function createModelPicker(doc = document) {
 const modelRuntimeSource = typeof __FLOWCUT_MODEL_RUNTIME__ !== 'undefined'
   ? __FLOWCUT_MODEL_RUNTIME__
   : `globalThis.__flowcutModelPicker ||= (${createModelPicker.toString()})();`;
-module.exports = { normalizeModelSettings, modelSettingsKey, needsThinkingCheck, createModelPicker, modelRuntimeSource };
+module.exports = { normalizeModelSettings, modelSettingsKey, needsThinkingCheck, needsModelButton, checkJobModel, createModelPicker, modelRuntimeSource };

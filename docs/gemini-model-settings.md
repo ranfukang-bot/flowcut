@@ -27,6 +27,8 @@
 
 缺失目标、目录重名、勾选或最终按钮不一致时，在上传发送前停止，不降级、不换其他模型、不改 Gem。确定性 MODEL_SELECTION_FAILED 退回任务，该账号停止领取相同设置；临时 MODEL_SELECTION_RETRYABLE 走原退避，连续三次才暂停，成功清零。
 
+2026-10-23 起（1.4.60）：隐藏的任务窗口里 Gemini 可能不渲染模型按钮（同一 Gem 页在前台时按钮正常，诊断显示后台窗口只缺模型按钮和侧栏懒加载部分）。任务检查先用 buttonReady 即时探测，不等待；按钮在则照旧后台零点击核对，菜单步骤再提到前台；按钮不在则把整次检查（inspect + 必要的菜单操作）放进同一次 runWithActivatedGeminiWorker，与读取模型列表一致。「不指定 / 不改动」不探测、不激活。
+
 inspect / readCatalog 最多先等按钮十秒；菜单另有八秒预算。等待超时显示按钮 data-test-id、aria-label、aria-haspopup、前三个 class、最多三十字文字；屏蔽会话区域、Cookie、网址参数。
 
 ## 验证

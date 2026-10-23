@@ -32,6 +32,7 @@ function geminiJobFailure(error) {
   return {
     code: error?.code || "",
     error: error instanceof Error ? error.message : String(error),
+    rawReplies: Array.isArray(error?.rawReplies)?error.rawReplies:[],
     rawReply: typeof error?.rawReply === "string" ? error.rawReply.slice(0, 60000) : "",
   };
 }
@@ -870,7 +871,7 @@ function classifyUnusableResponse(text) {
 }
 
 // Only a fresh answer whose generation has stopped may advance to Seedance.
-async function waitForResponse(initialResponses, minLength = 200, allowShortReply = false) {
+async function waitForResponse(initialResponses, minLength = 200, allowShortReply = false, timeScale = 1) {
   const startedAt = Date.now();
   const baseline = JSON.stringify(initialResponses);
   let lastText = "";
@@ -915,7 +916,7 @@ async function waitForResponse(initialResponses, minLength = 200, allowShortRepl
     if (started && Date.now() - changedAt >= 180_000) {
       throw codedError("Gemini 连续 3 分钟没有新输出，任务将自动恢复", "RESPONSE_STALLED");
     }
-    if (Date.now() - startedAt >= 8 * 60_000) {
+    if (Date.now() - startedAt >= 8 * 60_000 * timeScale) {
       throw codedError("Gemini 本轮回复超过 8 分钟，任务将自动恢复", "RESPONSE_TIMEOUT");
     }
     await sleep(500);
@@ -986,6 +987,60 @@ async function runJob(job) {
   const baseline = responseSnapshot();
   await submitPrompt();
   return readPromptReply(job,baseline);
+}
+
+// Both rounds are checked by the main process using the shared parser. An
+// invalid answer gets exactly one correction in this same conversation.
+async function runSegmentedRemixJob(job) {
+  const rawReplies=[];
+  try {
+    if(loginOrChallengeVisible()) throw codedError('Gemini 登录已失效或需要人工验证','NEEDS_LOGIN');
+    await waitUntil(()=>document.readyState==='complete',15_000,'Gemini 页面加载完成');
+    await waitFor(SELECTORS.promptInput,45_000,'Gemini 输入框');
+    if(!job.gemUrl) throw codedError('缺少复刻 Gem 链接','GEM_SETUP_REQUIRED');
+    await ensureFreshConversation(job.gemUrl);
+    await ensureJobModel();
+    const scale=Math.max(1,Math.ceil((job.remix.plan?.length || job.remix.analysisBlocks?.length || 1)/2));
+    async function round(prompt,phase) {
+      await typePrompt(prompt);
+      let baseline=responseSnapshot();
+      await submitPrompt();
+      let correctionConversation='';
+      for(let attempt=0;attempt<2;attempt++) {
+        const rawReply=await waitForResponse(baseline,phase==='analysis'?60:150,true,scale);
+        rawReplies.push(rawReply);
+        if(correctionConversation && location.href!==correctionConversation) throw codedError('格式纠正跳到了新对话','CONVERSATION_RESET_FAILED');
+        correctionConversation=location.href;
+        const {blocks,markup}=responseCodeBlocks();
+        const checked=await ipcRenderer.invoke('gemini:validate-remix',{requestId:job.requestId,phase,codeBlocks:markup?blocks:[],rawReply,rawReplies:[...rawReplies]});
+        if(checked.valid) return {checked,blocks};
+        if(attempt===1) throw codedError(checked.error,'REMIX_SEGMENTS_INVALID');
+        geminiProgress='分段格式不完整，正在原对话纠正一次';
+        await typePrompt(checked.correctionPrompt);
+        baseline=responseSnapshot();
+        await submitPrompt();
+      }
+    }
+    let adaptationPrompt=job.adaptationPrompt;
+    if(!job.remix.analysisBlocks?.length) {
+      await clearExistingAttachments();
+      geminiProgress='正在上传对标视频';
+      await uploadFiles(job.referenceFiles || [],job.referenceFilePaths || []);
+      const first=await round(job.analysisPrompt,'analysis');
+      adaptationPrompt=first.checked.adaptationPrompt;
+    }
+    const conversationUrl=location.href;
+    const before=responseSnapshot();
+    await clearExistingAttachments();
+    geminiProgress='正在上传换品图片';
+    await uploadFiles(job.files || [],job.filePaths || []);
+    if(location.href!==conversationUrl || responseSnapshot().length<before.length) throw codedError('换品前对话已丢失','CONVERSATION_RESET_FAILED');
+    const second=await round(adaptationPrompt,'adaptation');
+    if((!job.remix.analysisBlocks?.length && location.href!==conversationUrl) || responseSnapshot().length<before.length) throw codedError('换品回复不在原对话','CONVERSATION_RESET_FAILED');
+    return {prompt:second.blocks.join('\n\n'),codeBlocks:second.blocks,remixRound:job.remix.round,rawReplies};
+  } catch(error) {
+    error.rawReplies=rawReplies;error.rawReply=rawReplies.join('\n\n【同一任务的下一次回复】\n');throw error;
+  }
 }
 
 async function runReferenceRemixJob(job) {
@@ -1400,7 +1455,7 @@ async function executeGeminiJob(job) {
   heartbeat();
   const timer = setInterval(heartbeat, 10_000);
   try {
-    return job.kind === "reference-remix"
+    return ["remix-segments","remix-rewrite"].includes(job.kind) ? await runSegmentedRemixJob(job) : job.kind === "reference-remix"
       ? await runReferenceRemixJob(job)
       : job.kind === "script-pipeline"
         ? await runScriptPipelineJob(job)
@@ -1417,6 +1472,8 @@ ipcRenderer.on("gemini:run-job", async (_event, job) => {
       requestId: job.requestId,
       ok: true,
       prompt: result.prompt,
+      remixRound: result.remixRound,
+      rawReplies: result.rawReplies || [],
       analysis: result.analysis,
       rewrittenScript: result.rewrittenScript || "",
       extractionJson: result.extractionJson || "",

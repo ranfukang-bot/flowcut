@@ -208,10 +208,12 @@ class Store {
       taskId: String(taskId || ""),
       prompt: String(prompt || ""),
       workerId: String(workerId || ""),
-      kind: ["reference-remix", "script-pipeline", "variant"].includes(detail.kind)
+      kind: ["reference-remix", "script-pipeline", "variant","remix-segments","remix-rewrite"].includes(detail.kind)
         ? detail.kind
         : "standard",
       analysis: String(detail.analysis || ""),
+      remixRound: detail.remixRound,
+      rawReplies: Array.isArray(detail.rawReplies)?detail.rawReplies:[],
       rewrittenScript: String(detail.rewrittenScript || ""),
       extractionJson: String(detail.extractionJson || ""),
       storyboardJson: String(detail.storyboardJson || ""),

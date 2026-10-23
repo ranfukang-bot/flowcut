@@ -1,3 +1,4 @@
+const { validateRemixJob } = require('./remix-job-validation');
 const {
   app,
   BrowserWindow,
@@ -493,7 +494,7 @@ async function runGeminiJob(account, job) {
   const window = workerWindow(account, true);
   let gemUrl = "";
   // Product prompts and their second "variant" round both run in a saved Gem.
-  if (!job.kind || job.kind === "standard" || job.kind === "variant") {
+  if (!job.kind || job.kind === "standard" || job.kind === "variant" || ["remix-segments","remix-rewrite"].includes(job.kind)) {
     const active = bridge?.active.get(account.id);
     if (active) { active.stage = "准备已保存的 Gem（首次自动创建）"; broadcast(); }
     if (gemSetupAccounts.has(account.id)) throw Object.assign(new Error("该账号正在设置网页 Gem，请稍后重试"), { code: "GEM_SETUP_REQUIRED" });
@@ -521,7 +522,7 @@ async function runGeminiJob(account, job) {
   const resultPromise = new Promise((resolve, reject) => {
     const watchdog = watchGeminiJob({
       contents: window.webContents,
-      timeoutMs: (job.kind === "script-pipeline" ? 60 : job.kind === "reference-remix" ? 26 : job.kind === "variant" ? 20 : 13) * 60_000,
+      timeoutMs: (job.kind === "script-pipeline" ? 60 : ["reference-remix","remix-segments","remix-rewrite"].includes(job.kind) ? 52 : job.kind === "variant" ? 20 : 13) * 60_000,
       onFailure(error) {
         error = modelWatchdogError(error, pendingJobs.get(requestId));
         pendingJobs.delete(requestId);
@@ -538,6 +539,7 @@ async function runGeminiJob(account, job) {
       accountId: account.id,
       taskId: job.id,
       kind: job.kind || "standard",
+      remix: job.remix ? structuredClone(job.remix) : null,
       modelSettings: normalizeModelSettings(store.state.settings.geminiModel),
     });
   });
@@ -548,6 +550,7 @@ async function runGeminiJob(account, job) {
     kind: job.kind || "standard",
     analysisPrompt: job.analysisPrompt,
     adaptationPrompt: job.adaptationPrompt,
+    remix: job.remix,
     projectContext: job.projectContext || "",
     rewrittenScript: job.rewrittenScript || "",
     extractionJson: job.extractionJson || "",
@@ -715,6 +718,8 @@ function completeGeminiJob(result, contentsId) {
   if (result.ok) {
     pending.resolve({
       prompt: result.prompt,
+      remixRound: result.remixRound,
+      rawReplies: Array.isArray(result.rawReplies)?result.rawReplies:[],
       analysis: result.analysis || "",
       rewrittenScript: result.rewrittenScript || "",
       extractionJson: result.extractionJson || "",
@@ -729,6 +734,7 @@ function completeGeminiJob(result, contentsId) {
   }
   const error = new Error(result.error || "Gemini 网页执行失败");
   error.code = result.code || "";
+  error.rawReplies = Array.isArray(result.rawReplies)?result.rawReplies:[];
   error.rawReply = typeof result.rawReply === "string" ? result.rawReply.slice(0, 60000) : "";
   if (['MODEL_SELECTION_FAILED', 'MODEL_SELECTION_RETRYABLE'].includes(error.code)) error.modelSettingsKey = modelSettingsKey(pending.modelSettings);
   if (error.code === "NEEDS_LOGIN") {
@@ -885,6 +891,13 @@ function bindIpc() {
     // stop() already flushed Seedance; never overwrite restored files on quit.
     seedanceRuntime = null;
     app.relaunch(); app.quit(); return result;
+  });
+  handle('gemini:validate-remix', async (event, payload) => {
+    const pending=pendingJobs.get(payload?.requestId);
+    if(!pending || !isJobResultSourceAllowed(event.sender.id,pending.contentsId)) throw new Error('分段复刻校验来源或任务已失效');
+    bridge?.assertTaskActive(pending.taskId);
+    pending.touch();
+    return validateRemixJob(pending,payload,data=>bridge.report(pending.taskId,'stage',{kind:pending.kind,...data}));
   });
   handle('gemini:select-model', async event => {
     try { return { ok: true, ...await selectJobModel(event) }; }

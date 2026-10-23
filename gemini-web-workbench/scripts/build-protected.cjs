@@ -91,6 +91,7 @@ const geminiPageRuntime = `(() => {
   if (!native) throw new Error("FlowCut Gemini native bridge is unavailable");
   const ipcRenderer = {
     invoke(channel, ...args) {
+      if (channel === "gemini:validate-remix") return native.validateRemix(...args);
       if (channel === "gemini:select-model") return native.selectModel();
       if (channel === "gemini:upload-status") return native.uploadStatus(...args);
       if (channel === "gemini:upload-files-via-chooser") return native.uploadFiles(...args);
@@ -112,6 +113,8 @@ const geminiPageRuntime = `(() => {
         requestId: job.requestId,
         ok: true,
         prompt: result.prompt,
+        remixRound: result.remixRound,
+        rawReplies: result.rawReplies || [],
         analysis: result.analysis,
         rewrittenScript: result.rewrittenScript || "",
         extractionJson: result.extractionJson || "",

@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("flowcutGeminiNative", {
+  validateRemix: payload => ipcRenderer.invoke('gemini:validate-remix',payload),
   selectModel: () => ipcRenderer.invoke('gemini:select-model'),
   uploadStatus: (action) => ipcRenderer.invoke('gemini:upload-status', action),
   uploadFiles: (filePaths) =>

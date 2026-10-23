@@ -27,6 +27,7 @@ const RETRYABLE_JOB_CODES = new Set([
   // The reply's code blocks could not be used (none read, too short, repeated,
   // too many). Nothing was submitted; a fresh conversation may answer properly.
   "PROMPT_BLOCKS_INVALID",
+  "REMIX_SEGMENTS_INVALID",
 ]);
 const ACCOUNT_COOLDOWN_MS = 12_000;
 const ACCOUNT_FAILURE_BACKOFF_MS = [2 * 60_000, 5 * 60_000, 15 * 60_000];
@@ -319,6 +320,8 @@ class BridgeEngine {
             "result",
             {
               prompt: pending.prompt,
+              remixRound: pending.remixRound,
+              rawReplies: pending.rawReplies || [],
               analysis: pending.analysis || "",
               kind: pending.kind || "standard",
               rewrittenScript: pending.rewrittenScript || "",
@@ -426,7 +429,7 @@ class BridgeEngine {
       this.onChange();
       this.assertTaskActive(job.id);
       const files = await this.downloadFiles(job.imageUrls || []);
-      const referenceFiles = job.kind === "reference-remix"
+      const referenceFiles = job.referenceVideoUrl && ["reference-remix","remix-segments"].includes(job.kind)
         ? await this.downloadFiles([job.referenceVideoUrl], "reference")
         : [];
       // One attempt per claim. A failed job persists its retry time and yields
@@ -454,6 +457,8 @@ class BridgeEngine {
       this.onChange();
       this.store.upsertPendingResult(job.id, result.prompt, this.workerId, {
         kind: job.kind,
+        remixRound: result.remixRound,
+        rawReplies: result.rawReplies || [],
         analysis: result.analysis,
         rewrittenScript: result.rewrittenScript,
         extractionJson: result.extractionJson,
@@ -503,7 +508,7 @@ class BridgeEngine {
         });
         await this.report(job.id, "release", { kind: job.kind, error: message }).catch(() => {});
         this.store.log(`任务 ${job.id} 等待账号重新登录：${message}`, "warn");
-      } else if (code === "GEM_SETUP_REQUIRED" && error.bindingUnavailable && job.gem && (!job.kind || job.kind === "standard" || job.kind === "variant")) {
+      } else if (code === "GEM_SETUP_REQUIRED" && error.bindingUnavailable && job.gem && (!job.kind || job.kind === "standard" || job.kind === "variant" || ["remix-segments","remix-rewrite"].includes(job.kind))) {
         // No product prompt was submitted. Hold only this account/template
         // version and release the original job for another account. Persist
         // the hold so restarting cannot repeat the failure for every job.
@@ -519,6 +524,7 @@ class BridgeEngine {
           error: message,
           accountLimited,
           rawReply: error?.rawReply || "",
+          rawReplies: error?.rawReplies || [],
         }).catch(() => null);
         if (!recovery) {
           await this.report(job.id, "error", { kind: job.kind, error: message, rawReply: error?.rawReply || "" }).catch(() => {});

@@ -4,6 +4,7 @@
 
 ## 项目结构
 
+- 爆款复刻分段：`lib/remix-segments.ts` 共用规则，`lib/remix-tasks.ts` 和 `lib/remix-review.ts` 管组及放行预留，`lib/gemini-bridge/remix-segments.ts` 管桥接写回，`app/remix-group-panel.tsx` 管分段版本检查；详见 `docs/reference-remix-segments.md`。
 - `app/`、`lib/`、`worker/`：本机网页服务，使用 vinext 和本地 D1/R2；当前表结构以 `lib/storage.ts` 为准。
 - 界面按页面分文件：`app/studio-app.tsx` 只管整体框架、导航、数据加载和弹窗开关；页面各在 `dashboard-page.tsx`（创作中心）、`tasks-page.tsx`（任务队列）、`products-page.tsx`（商品库及商品弹窗）、`gems-page.tsx`、`settings-page.tsx`、`reference-remix-page.tsx`、`script-pipeline-page.tsx`、`fission-page.tsx`、`calendar-page.tsx`、`publisher-page.tsx`；任务详情抽屉在 `prompt-drawer.tsx`。共用类型在 `studio-types.ts`，任务状态的中文名和常用分组（成片已出、需处理、Gemini 处理中、任务组等）统一在 `lib/task-statuses.ts`，新增状态先改这里；界面上的状态文字与进度阶段在 `task-status.tsx`，接口与桌面桥在 `studio-client.ts`，通用小组件在 `studio-ui.tsx`，侧栏和按钮图标在 `icons.tsx`。改哪个页面就只改对应文件。
 - 界面是暗色主题：颜色、圆角、字体只在 `app/globals.css` 顶部的变量里定义，组件里不写颜色值、不写行内颜色样式。琥珀色（`--accent`）只用于主按钮、当前选中和「待检查」；蓝 = 进行中，绿 = 完成，红 = 需处理。字号不小于 12px。
@@ -69,5 +70,5 @@ GitHub Actions 另有 `desktop-smoke`：构建后用隔离资料目录真实启�
 8. 保留已有用户修改。普通代码、构建输出和临时测试资料分离，禁止提交凭据、Cookie、真实数据库、成片或日志。
 9. 新增桌面 IPC 必须通过 `bindIpc` 中的 `handle` 注册。Gemini 结果必须匹配当前 pending job 的 webContents；导航、令牌和窗口来源边界见 `docs/desktop-security.md`。
 10. 本机备份仅通过业务表导出事务和明确的本机文件清单收集数据，不复制运行中的 SQLite 或 Partitions。恢复先校验并备份当前数据，保留较新提交记录、暂停历史未完成任务；见 `docs/local-backups.md`。
-11. 代码块只用于创作中心「一次回复多条提示词」的拆分：一个代码块一条视频，整轮校验失败时不拆分、不提交，读取失败的代码框不退回为整段提示词。只产出一条提示词的轮次（多品裂变母版、裂变每个商品、变体第一轮）直接用 Gem 回复全文，不要求、不统计代码块。发给 Gem 的文字不附加任何代码块要求，用户写什么就发什么（只补口播语言和「不要提问」那一句）。拼接只在本机进行，参与拼接的视频先预留再合成。见 `docs/code-block-batches.md`。
+11. 代码块只用于创作中心「一次回复多条提示词」的拆分：一个代码块一条视频，整轮校验失败时不拆分、不提交，读取失败的代码框不退回为整段提示词。只产出一条提示词的轮次（多品裂变母版、裂变每个商品、变体第一轮）直接用 Gem 回复全文，不要求、不统计代码块。发给 Gem 的文字不附加任何代码块要求，用户写什么就发什么（只补口播语言和「不要提问」那一句）。拼接只在本机进行，参与拼接的视频先预留再合成。见 `docs/code-block-batches.md`。爆款复刻分段按 `docs/reference-remix-segments.md`：每段一个代码块、第一行固定格式，不受本条单条/多条规则约束。
 12. 多品裂变是独立模块。每条 `fission_child` 必须保存自己商品的 ID 和图片快照，禁止从母版商品继承；母版就绪与放出等待子任务须原子写入。子任务正好一条提示词，不拆 clip、不允许拼接。见 `docs/multi-product-fission.md`。

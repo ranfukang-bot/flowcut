@@ -1,8 +1,10 @@
 # FlowCut 全自动 AI 视频工作台
 
-当前桌面版本：`1.4.60`（个人本机版）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，开发交接入口为 [AGENTS.md](AGENTS.md)。
+当前桌面版本：`1.4.61`（个人本机版）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，开发交接入口为 [AGENTS.md](AGENTS.md)。
 
 Gemini 账号旁的“打开 Gemini”直接查看已有登录和当前任务页面，关闭只隐藏窗口；新增账号和“重新登录”仍通过 Firefox 完成，详见 [登录说明](docs/gemini-login-import.md)。
+
+“爆款复刻”现在按参考视频实际时长分段换品，每段可预览、重写或生成新版本；全部标记「这段可以」后拼接并放入 TK 目录。失败后复用已保存的原脚本，旧版记录保留只读。详见 [分段复刻说明](docs/reference-remix-segments.md)。
 
 “多品裂变”可让 2–10 个商品共用一份母版，每个商品各生成一条提示词和视频，独立保存商品 ID、图片与归档账号。使用和恢复规则见 [多品裂变](docs/multi-product-fission.md)。
 

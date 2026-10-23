@@ -55,7 +55,8 @@ export async function remixAction(db: ReturnType<typeof getDb>, body: {id:string
     return Response.json({error:'任务正在处理或已放行，请等当前操作结束'},{status:409});
   if(body.action==='resume-segments') {
     if(task.status!=='failed' || !task.remix_analysis_blocks || !await db.prepare("SELECT id FROM tasks WHERE batch_parent_id=? AND task_role='clip'").bind(task.id).first())return Response.json({error:'没有可恢复的原分段'},{status:409});
-    await db.prepare("UPDATE tasks SET status='remix_segmented',progress=70,error=NULL,bridge_worker_id=NULL,bridge_claimed_at=NULL,updated_at=? WHERE id=? AND status='failed'").bind(now,task.id).run();
+    // Returning to the segment check abandons a failed one-segment rewrite.
+    await db.prepare("UPDATE tasks SET status='remix_segmented',progress=70,error=NULL,remix_rewrite_index=NULL,remix_rewrite_note=NULL,bridge_worker_id=NULL,bridge_claimed_at=NULL,updated_at=? WHERE id=? AND status='failed'").bind(now,task.id).run();
     return Response.json({ok:true});
   }
   if(body.action==='product-id') {
@@ -70,11 +71,16 @@ export async function remixAction(db: ReturnType<typeof getDb>, body: {id:string
   if (['retry','reanalyze','readapt','rewrite'].includes(body.action || '')) {
     if(body.action==='rewrite' && (!Number.isInteger(body.index)||Number(body.index)<1||Number(body.index)>Number(task.batch_size))) return Response.json({error:'分段序号无效'},{status:400});
     if(['rewrite','readapt'].includes(body.action || '') && !task.remix_analysis_blocks) return Response.json({error:'没有已校验的原脚本，请先拆解'},{status:409});
-    const rewrite=body.action==='rewrite';
+    // Retrying a failed one-segment rewrite retries only that segment; it must
+    // never turn into a whole re-adaptation that regenerates every video.
+    const failedRewrite=body.action==='retry' && task.status==='failed' && Boolean(task.remix_rewrite_index) && Boolean(task.remix_analysis_blocks);
+    const rewrite=body.action==='rewrite' || failedRewrite;
+    const rewriteIndex=body.action==='rewrite'?body.index:failedRewrite?task.remix_rewrite_index:null;
+    const rewriteNote=body.action==='rewrite'?String(body.note || '').trim().slice(0,4000):failedRewrite?String(task.remix_rewrite_note || ''):null;
     await db.prepare(`UPDATE tasks SET status=?,provider='gemini-web',progress=5,batch_round=batch_round+1,
       remix_script=CASE WHEN ? THEN NULL ELSE remix_script END,remix_analysis_blocks=CASE WHEN ? THEN NULL ELSE remix_analysis_blocks END,
       remix_rewrite_index=?,remix_rewrite_note=?,bridge_worker_id=NULL,bridge_claimed_at=NULL,gemini_failures=0,gemini_retry_at=NULL,error=NULL,updated_at=?
-      WHERE id=? AND status=? AND batch_round=?`).bind(rewrite?'remix_rewrite_queued':'remix_queued',body.action==='reanalyze',body.action==='reanalyze',rewrite?body.index:null,rewrite?String(body.note || '').trim().slice(0,4000):null,now,task.id,task.status,task.batch_round).run();
+      WHERE id=? AND status=? AND batch_round=?`).bind(rewrite?'remix_rewrite_queued':'remix_queued',body.action==='reanalyze',body.action==='reanalyze',rewriteIndex,rewriteNote,now,task.id,task.status,task.batch_round).run();
     return Response.json({ok:true});
   }
   if(body.action==='select' || body.action==='check') {

@@ -150,3 +150,27 @@ test('prompt-only remix clips remain manual and can enter the existing Seedance 
   const clips=f.rows("SELECT * FROM tasks WHERE task_role='clip'");assert.ok(clips.every(c=>c.status==='prompt_ready'));
   const result=await f.call('tasks','PATCH',{body:{id:clips[0].id,action:'queue'}});assert.equal(result.status,200,JSON.stringify(result));assert.equal(f.row('SELECT status FROM tasks WHERE id=?',clips[0].id).status,'video_queued');
 });
+test('remix groups take their turn by queue time instead of waiting behind every product task',async t=>{
+  const f=await setup(t);
+  f.sqlite.prepare("INSERT INTO gems(id,name,content,created_at,updated_at) VALUES('gem-std','主 Gem','主 Gem 设定','2000-01-01T00:00:00.000Z','2000-01-01T00:00:00.000Z')").run();
+  f.sqlite.prepare("INSERT INTO products(id,external_id,name,created_at) VALUES('product-std','1735360337668000001','普通商品','2000-01-01T00:00:00.000Z')").run();
+  const insert=f.sqlite.prepare("INSERT INTO tasks(id,product_id,gem_id,title,status,provider,created_at,updated_at) VALUES(?,'product-std','gem-std','普通任务','prompt_queued','gemini-web',?,?)");
+  insert.run('std-old','2000-01-01T00:00:00.000Z','2000-01-01T00:00:00.000Z');
+  insert.run('std-new','2999-01-01T00:00:00.000Z','2999-01-01T00:00:00.000Z');
+  assert.equal((await claim(f,'a')).id,'std-old','an older product task is still served first');
+  const remix=await claim(f,'b');assert.equal(remix.id,f.id,'the remix group is served before newer product tasks');assert.equal(remix.kind,'remix-segments');
+  assert.equal((await claim(f,'c')).id,'std-new');
+});
+test('retrying a failed one-segment rewrite rewrites only that segment; resuming the check abandons it',async t=>{
+  const f=await setup(t);await claim(f);const blocks=[block(1,0,15),block(2,15,24)];await report(f,'stage',{analysisBlocks:blocks});await report(f,'result',{codeBlocks:blocks});
+  assert.equal((await f.call('reference-remix','PATCH',{body:{id:f.id,action:'rewrite',index:2,note:'手部动作改慢'}})).status,200);
+  await claim(f);assert.equal((await report(f,'error',{kind:'remix-rewrite',remixRound:2,error:'Gemini 回复无法使用'})).status,200);
+  assert.equal(f.row('SELECT status FROM tasks WHERE id=?',f.id).status,'failed');
+  assert.equal((await f.call('reference-remix','PATCH',{body:{id:f.id,action:'retry'}})).status,200);
+  const job=await claim(f);assert.equal(job.kind,'remix-rewrite');assert.match(job.adaptationPrompt,/只输出第2段/);assert.match(job.adaptationPrompt,/手部动作改慢/);
+  assert.equal((await report(f,'error',{kind:'remix-rewrite',remixRound:3,error:'again'})).status,200);
+  assert.equal((await f.call('reference-remix','PATCH',{body:{id:f.id,action:'resume-segments'}})).status,200);
+  const parent=f.row('SELECT status,remix_rewrite_index,remix_rewrite_note FROM tasks WHERE id=?',f.id);
+  assert.deepEqual([parent.status,parent.remix_rewrite_index,parent.remix_rewrite_note],['remix_segmented',null,null]);
+  assert.equal(f.rows("SELECT * FROM tasks WHERE task_role='clip'").length,2,'no segment was regenerated');
+});

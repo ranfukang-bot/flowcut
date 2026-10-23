@@ -47,3 +47,9 @@ test('exact round messages omit unknown duration, optional name and follow-refer
   assert.ok(request.endsWith('只输出第2段（原视频 15-24 秒，本段时长 9 秒）。修改说明：运镜更慢'));
   assert.ok(remixCorrectionRequest(original).includes(original.map(s=>s.header).join('\n')));
 });
+test('a one-segment rewrite correction asks for that one block, never for all blocks', () => {
+  const [, second] = planRemixSegments(24).segments;
+  const single = remixCorrectionRequest([second], true);
+  assert.ok(single.includes(second.header)); assert.ok(single.includes('只输出这一段')); assert.equal(single.includes('全部代码块'), false);
+  assert.ok(remixCorrectionRequest(planRemixSegments(24).segments).includes('全部代码块'));
+});

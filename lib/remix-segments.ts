@@ -85,7 +85,11 @@ export function remixAdaptationRequest(script: string, input: { productName?: st
     '不要提问，直接输出。', input.segment ? `只输出第${input.segment.index}段（原视频 ${input.segment.start}-${input.segment.end} 秒，本段时长 ${input.segment.duration} 秒）。${input.note?.trim() ? `修改说明：${input.note.trim()}` : ''}` : ''].filter((line, index) => line || index === 2).join('\n');
 }
 
-export function remixCorrectionRequest(expected: RemixRange[]) {
+export function remixCorrectionRequest(expected: RemixRange[], single = false) {
+  // A one-segment rewrite must never be asked for "all" code blocks: that
+  // answer would carry every segment and fail the one-block check again.
+  if (single && expected.length === 1) return [`只输出这一段的一个代码块，第一行必须是：\n${expected[0].header}`,
+    '代码块之外不写文字。代码块至少 300 字。'].join('\n');
   return [expected.length ? '应有的每段第一行：\n' + expected.map(segment => segment.header).join('\n') : '每段第一行格式：第N段｜原视频 A-B 秒｜本段时长 D 秒；从 0 秒起首尾相接，按视频实际时长完整分段。',
     '严格按以上分段重新输出全部代码块，代码块之外不写文字。每块至少 300 字。'].join('\n');
 }

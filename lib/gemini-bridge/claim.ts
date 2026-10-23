@@ -1,4 +1,4 @@
-import { claimRemixSegments } from './remix-segments';
+import { claimRemixTask, pendingRemixSegments } from './remix-segments';
 import { buildSavedGemPrompt } from "../gemini";
 import { buildGemRequest } from '../gem-request';
 import { requestSpokenLanguage } from '../spoken-language';
@@ -159,6 +159,8 @@ export async function claimGeminiJobs(request: Request) {
         queue_at: string;
       }>();
 
+    const remixSegmentPending = await pendingRemixSegments(db, staleBefore, retryReadyAt);
+
     const jobs: Array<{
       gem?: { id: string; name: string; content: string };
       id: string;
@@ -183,11 +185,19 @@ export async function claimGeminiJobs(request: Request) {
       ...variantPending.results.map((task) => ({ kind: "variant" as const, task })),
       ...remixPending.results.map((task) => ({ kind: "reference-remix" as const, task })),
       ...scriptPending.results.map((task) => ({ kind: "script-pipeline" as const, task })),
+      ...remixSegmentPending.map((task) => ({ kind: "remix-segments" as const, task })),
     ].sort((left, right) => left.task.queue_at.localeCompare(right.task.queue_at));
-    for (const candidate of candidates) {
-      const task = candidate.task;
-      if(blockedTaskIds.has(task.id))continue;
+    for (const queued of candidates) {
+      if(blockedTaskIds.has(queued.task.id))continue;
       if (jobs.length >= capacity) break;
+      if (queued.kind === "remix-segments") {
+        // Segmented remix groups take their turn by queue time like every other kind.
+        const job = await claimRemixTask(db, queued.task, { requestUrl: request.url, workerId, staleBefore, now: retryReadyAt, accounts: availableAccounts, blocked: blockedGemVersions });
+        if (job) jobs.push(job);
+        continue;
+      }
+      const candidate = queued;
+      const task = candidate.task;
       const eligibleAccounts = candidate.kind === "standard" || candidate.kind === "variant"
         ? await availableGemAccounts(availableAccounts, blockedGemVersions, candidate.task.gem_id, candidate.task.content)
         : availableAccounts;
@@ -328,7 +338,6 @@ export async function claimGeminiJobs(request: Request) {
       // One claimed job per idle account in this batch, even with legacy pins.
       availableAccounts.delete(accountId);
     }
-    jobs.push(...await claimRemixSegments(db,{requestUrl:request.url,workerId,staleBefore,now:retryReadyAt,capacity:capacity-jobs.length,accounts:availableAccounts,blocked:blockedGemVersions,blockedTasks:blockedTaskIds}));
     return Response.json({ jobs });
   } catch (error) {
     return jsonError(error);

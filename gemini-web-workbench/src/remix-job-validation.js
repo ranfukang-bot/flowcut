@@ -12,7 +12,7 @@ async function validateRemixJob(pending,payload,persist) {
   try {
     segments=first?validateRemixAnalysis(payload.codeBlocks,meta.seconds,meta.plan):validateRemixAdaptation(payload.codeBlocks,expected,meta.rewriteIndex || undefined);
   } catch(error) {
-    return {valid:false,error:error.message,correctionPrompt:remixCorrectionRequest(meta.rewriteIndex?expected.filter(s=>s.index===meta.rewriteIndex):expected)};
+    return {valid:false,error:error.message,correctionPrompt:remixCorrectionRequest(meta.rewriteIndex?expected.filter(s=>s.index===meta.rewriteIndex):expected,Boolean(meta.rewriteIndex))};
   }
   if(first) {
     await persist({analysisBlocks:segments.map(s=>s.text),rawReply:payload.rawReply,rawReplies:payload.rawReplies,remixRound:meta.round});

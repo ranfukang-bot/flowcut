@@ -30,6 +30,13 @@ export const TASK_STATUS_LABELS: Record<string, string> = {
   concat_running: "正在拼接",
   fission_wait: "等待母版",
   fission_ready: "母版就绪",
+  remix_queued: "等待分段拆解",
+  remix_analyzing: "正在分段拆解",
+  remix_adapting: "正在分段换品",
+  remix_segmented: "分段等待检查",
+  remix_done: "复刻成片已放行",
+  remix_rewrite_queued: "等待重写分段",
+  remix_rewriting: "正在重写分段",
 };
 
 // status：成片已经生成。是否待检查、已通过，再看 review_status。
@@ -45,9 +52,10 @@ export const PROMPT_ROUND_STATUSES: readonly string[] = ["prompt_queued", "promp
 // status：变体 Gem 第二轮。
 export const VARIANT_ROUND_STATUSES: readonly string[] = ["variant_queued", "variant_generating"];
 // status：还在等 Gemini 的全部状态。
-export const GEMINI_STATUSES: readonly string[] = [...PROMPT_ROUND_STATUSES, ...VARIANT_ROUND_STATUSES];
+export const REMIX_GEMINI_STATUSES: readonly string[] = ['remix_queued', 'remix_analyzing', 'remix_adapting', 'remix_rewrite_queued', 'remix_rewriting'];
+export const GEMINI_STATUSES: readonly string[] = [...PROMPT_ROUND_STATUSES, ...VARIANT_ROUND_STATUSES, ...REMIX_GEMINI_STATUSES];
 // status：任务组本身已完成分发，之后看组里的每条视频。
-export const GROUP_DONE_STATUSES: readonly string[] = ["split_done", "fission_ready"];
+export const GROUP_DONE_STATUSES: readonly string[] = ["split_done", "fission_ready", "remix_segmented", "remix_done"];
 
 // review_status：已放行（通过，或已被重做的新视频替换）。
 export const APPROVED_REVIEW_STATUSES: readonly string[] = ["approved", "replaced"];
@@ -55,7 +63,7 @@ export const APPROVED_REVIEW_STATUSES: readonly string[] = ["approved", "replace
 export const CONCAT_REVIEW_STATUSES: readonly string[] = ["merging", "merged"];
 
 // task_role：任务组（代码块分条、多品裂变批次）。
-export const GROUP_ROLES: readonly string[] = ["group", "fission"];
+export const GROUP_ROLES: readonly string[] = ["group", "fission", "remix"];
 // task_role：组里的单条视频。
 export const CHILD_ROLES: readonly string[] = ["clip", "fission_child"];
 

@@ -14,6 +14,9 @@ export type BridgeBody = {
   codeBlockHint?: boolean;
   rawReply?: string;
   analysis?: string;
+  analysisBlocks?: string[];
+  remixRound?: number;
+  rawReplies?: string[];
   rewrittenScript?: string;
   extractionJson?: string;
   storyboardJson?: string;

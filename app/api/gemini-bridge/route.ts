@@ -1,3 +1,5 @@
+import { recordSegmentAnalysis, applySegmentResult } from '../../../lib/gemini-bridge/remix-segments';
+import { isRemixKind } from '../../../lib/remix-tasks';
 import { ensureWorkspace, getDb, jsonError } from "../../../lib/storage";
 import { claimGeminiJobs } from "../../../lib/gemini-bridge/claim";
 import { authorize } from "../../../lib/gemini-bridge/shared";
@@ -29,11 +31,13 @@ export async function POST(request: Request) {
     }
     const job = body as TaskBody;
 
+    if(job.action==='stage' && isRemixKind(job.kind)) return await recordSegmentAnalysis(db,job,now);
     if (job.action === 'model') return recordModel(db, job, now);
     if (job.action === "stage" && job.kind === "reference-remix") return recordRemixAnalysis(db, job, now);
     if (job.action === "stage" && job.kind === "script-pipeline") return recordScriptStage(db, job, now);
 
     if (job.action === "result") {
+      if(isRemixKind(job.kind)) return await applySegmentResult(db,job,now);
       const prompt = String(job.prompt || "").trim();
       if (prompt.length < 300) {
         return Response.json(
@@ -54,6 +58,6 @@ export async function POST(request: Request) {
     if (job.action === "error") return failJob(db, job, now);
     return Response.json({ error: "不支持的 Gemini Bridge 操作" }, { status: 400 });
   } catch (error) {
-    return jsonError(error);
+    return jsonError(error,(error as {code?:string})?.code==='REMIX_SEGMENTS_INVALID'?400:500);
   }
 }

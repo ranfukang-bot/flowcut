@@ -27,6 +27,7 @@ const listColumns = `t.id,t.product_id,t.gem_id,t.title,t.status,t.progress,t.pr
   t.provider_job_id,t.provider_status_url,t.output_url,t.error,t.gemini_account_id,t.tiktok_account_name,t.archive_directory,
   t.download_path,t.review_status,t.approved_path,t.segment_progress,t.download_error,t.created_at,t.updated_at,
   t.task_role,t.batch_parent_id,t.batch_index,t.batch_round,t.batch_size,t.merged_into_task_id,t.prompt_note,
+  t.segment_checked_at,t.remix_segment_start,t.remix_segment_end,t.remix_video_seconds,t.remix_selected_json,
   t.variant_gem_snapshot IS NOT NULL AS variant_mode,
   length(trim(COALESCE(t.prompt,''))) > 0 AS has_prompt,${displayColumns}`;
 
@@ -67,7 +68,7 @@ export async function listTasks(db: TaskDatabase, query: TaskQuery = {}) {
   if (!Number.isInteger(requestedLimit) || requestedLimit < 1) throw new Error('分页条数必须是正整数');
   const limit = Math.min(200, requestedLimit);
   const where = ['t.batch_parent_id IS NULL', filter === 'all' ? '1 = 1'
-    : `((${condition(filter, 't')}) OR (t.task_role IN ('group','fission') AND EXISTS (SELECT 1 FROM tasks c WHERE c.batch_parent_id = t.id AND ${condition(filter, 'c')})))`];
+    : `((${condition(filter, 't')}) OR (t.task_role IN ('group','fission','remix') AND EXISTS (SELECT 1 FROM tasks c WHERE c.batch_parent_id = t.id AND ${condition(filter, 'c')})))`];
   const args: (string | number)[] = [];
   if (query.q?.trim()) {
     where.push("(instr(lower(COALESCE(NULLIF(p.name,''),t.title,'') || ' ' || COALESCE(t.product_external_id_snapshot,p.external_id,'') || ' ' || COALESCE(t.tiktok_account_name,'')),lower(?)) > 0 OR (t.task_role='fission' AND EXISTS (SELECT 1 FROM tasks c LEFT JOIN products cp ON cp.id=c.product_id WHERE c.batch_parent_id=t.id AND instr(lower(COALESCE(cp.name,'') || ' ' || COALESCE(c.product_external_id_snapshot,'')),lower(?))>0)))");

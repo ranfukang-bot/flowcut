@@ -1,3 +1,4 @@
+import { claimRemixSegments } from './remix-segments';
 import { buildSavedGemPrompt } from "../gemini";
 import { buildGemRequest } from '../gem-request';
 import { requestSpokenLanguage } from '../spoken-language';
@@ -175,6 +176,7 @@ export async function claimGeminiJobs(request: Request) {
       extractionJson?: string;
       storyboardJson?: string;
       rawGroupsJson?: string;
+      remix?: unknown;
     }> = [];
     const candidates = [
       ...pending.results.map((task) => ({ kind: "standard" as const, task })),
@@ -326,6 +328,7 @@ export async function claimGeminiJobs(request: Request) {
       // One claimed job per idle account in this batch, even with legacy pins.
       availableAccounts.delete(accountId);
     }
+    jobs.push(...await claimRemixSegments(db,{requestUrl:request.url,workerId,staleBefore,now:retryReadyAt,capacity:capacity-jobs.length,accounts:availableAccounts,blocked:blockedGemVersions,blockedTasks:blockedTaskIds}));
     return Response.json({ jobs });
   } catch (error) {
     return jsonError(error);

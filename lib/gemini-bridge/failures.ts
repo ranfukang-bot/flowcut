@@ -19,8 +19,9 @@ export async function releaseJob(db: Db, body: TaskBody, now: string) {
 
 export async function deferJob(db: Db, body: TaskBody, now: string) {
   const state = kindState(body.kind,body.workerId);
-  const rawReplySql = state.rawReply ? ", gemini_raw_reply = COALESCE(?, gemini_raw_reply)" : "";
-  const rawReplyArgs = state.rawReply ? [rawReplyValue(body.rawReply)] : [];
+  const isRemix=body.kind==='remix-segments'||body.kind==='remix-rewrite';
+  const rawReplySql = state.rawReply ? ", gemini_raw_reply = COALESCE(?, gemini_raw_reply)"+(isRemix?",remix_raw_replies=json_insert(COALESCE(remix_raw_replies,'[]'),'$[#]',json(?))":"") : "";
+  const rawReplyArgs = state.rawReply ? [rawReplyValue(body.rawReply),...(isRemix?[JSON.stringify(body.rawReplies || [])]:[])] : [];
   const task = await db
     .prepare(
       `SELECT gemini_failures FROM ${state.table} WHERE id = ? AND provider = 'gemini-web'${state.guard}`
@@ -101,14 +102,15 @@ export async function markRetrying(db: Db, body: TaskBody, now: string) {
 
 export async function failJob(db: Db, body: TaskBody, now: string) {
   const state = kindState(body.kind,body.workerId);
-  const rawReplySql = state.rawReply ? ", gemini_raw_reply = COALESCE(?, gemini_raw_reply)" : "";
+  const isRemix=body.kind==='remix-segments'||body.kind==='remix-rewrite';
+  const rawReplySql = state.rawReply ? ", gemini_raw_reply = COALESCE(?, gemini_raw_reply)"+(isRemix?",remix_raw_replies=json_insert(COALESCE(remix_raw_replies,'[]'),'$[#]',json(?))":"") : "";
   await db
     .prepare(
       `UPDATE ${state.table} SET status = 'failed', progress = 0,
        bridge_claimed_at = NULL, bridge_worker_id = NULL,
        error = ?${rawReplySql}, updated_at = ? WHERE id = ?${state.guard}`
     )
-    .bind(body.error || "Gemini 网页生成失败", ...(state.rawReply ? [rawReplyValue(body.rawReply)] : []), now, body.taskId,...state.guardArgs)
+    .bind(body.error || "Gemini 网页生成失败", ...(state.rawReply ? [rawReplyValue(body.rawReply),...(isRemix?[JSON.stringify(body.rawReplies || [])]:[])] : []), now, body.taskId,...state.guardArgs)
     .run();
   return Response.json({ ok: true });
 }

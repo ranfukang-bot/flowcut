@@ -213,6 +213,8 @@ async function initializeWorkspace() {
     ["remix_rewrite_note", "TEXT"],
     ["remix_spoken_language", "TEXT"],
     ["segment_checked_at", "TEXT"],
+    ["remix_selected_json", "TEXT"],
+    ["remix_product_name", "TEXT"],
   ]) {
     await ensureColumn("tasks", column, type);
   }

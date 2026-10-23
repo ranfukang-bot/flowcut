@@ -38,7 +38,7 @@ export async function recordHeartbeat(db: Db, body: BridgeBody, now: string) {
       .prepare(
         `UPDATE tasks SET bridge_claimed_at = ?, updated_at = ?
          WHERE id = ? AND bridge_worker_id = ?
-           AND status IN ('prompt_generating', 'variant_generating')`
+           AND status IN ('prompt_generating', 'variant_generating','remix_analyzing','remix_adapting','remix_rewriting')`
       )
       .bind(now, now, taskId, body.workerId || "gemini-web-desktop")
       .run();

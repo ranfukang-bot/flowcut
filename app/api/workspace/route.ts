@@ -1,3 +1,4 @@
+import { REMIX_GEM } from '../../../lib/remix-gem';
 import {
   ensureWorkspace,
   getDb,
@@ -67,7 +68,7 @@ export async function GET() {
     }));
     return Response.json(
       {
-        gems: gems.results,
+        gems: [...gems.results, {...REMIX_GEM,description:"按参考视频实际时长分段复刻，指令锁定",duration:15,locale:"",is_default:0}],
         products: productRows,
         tasks: tasks.tasks,
         taskCounts,

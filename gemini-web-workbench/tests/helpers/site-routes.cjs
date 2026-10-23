@@ -26,6 +26,8 @@ async function bundle(route) {
           const name=args.path.split('/').pop();
           return path.resolve(args.resolveDir,args.path)===path.join(ROOT,'lib',name)?{path:name,namespace:'fixture'}:undefined;
         });
+        build.onResolve({filter:/\.txt\?raw$/},args=>({path:path.resolve(args.resolveDir,args.path.slice(0,-4)),namespace:'raw-text'}));
+        build.onLoad({filter:/.*/,namespace:'raw-text'},args=>({contents:require('node:fs').readFileSync(args.path,'utf8'),loader:'text'}));
         build.onLoad({filter:/.*/,namespace:'fixture'},args=>({contents:STUBS[args.path],loader:'js'}));
       }}],
     }).then(result=>result.outputFiles[0].text));

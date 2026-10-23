@@ -1,3 +1,4 @@
+import { REMIX_GEM_ID } from '../../../lib/remix-gem';
 import { ensureWorkspace, getDb, jsonError } from "../../../lib/storage";
 
 export async function POST(request: Request) {
@@ -47,6 +48,7 @@ export async function PUT(request: Request) {
     if (!body.id || !body.name?.trim() || !body.content?.trim()) {
       return Response.json({ error: "缺少 Gem 必填信息" }, { status: 400 });
     }
+    if(body.id===REMIX_GEM_ID) return Response.json({error:'内置分段复刻 Gem 指令已锁定'},{status:409});
     await getDb()
       .prepare(
         `UPDATE gems SET name = ?, description = ?, content = ?,
@@ -71,6 +73,7 @@ export async function DELETE(request: Request) {
     await ensureWorkspace();
     const { id } = (await request.json()) as { id?: string };
     if (!id) return Response.json({ error: "缺少 Gem ID" }, { status: 400 });
+    if(id===REMIX_GEM_ID) return Response.json({error:'内置分段复刻 Gem 不能删除'},{status:409});
     await getDb().prepare("DELETE FROM gems WHERE id = ?").bind(id).run();
     return Response.json({ ok: true });
   } catch (error) {

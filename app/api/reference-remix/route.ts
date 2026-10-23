@@ -1,9 +1,12 @@
+import { REMIX_GEM } from '../../../lib/remix-gem';
+import { remixAction } from '../../../lib/remix-tasks';
+import { planRemixSegments, FOLLOW_REFERENCE_LANGUAGE } from '../../../lib/remix-segments';
+import { SPOKEN_LANGUAGE_OPTIONS } from '../../../lib/spoken-language';
+import { taskDetail } from '../../../lib/task-list';
 import { saveLibraryProduct } from "../../../lib/product-library";
 import { getProviderConfig } from "../../../lib/provider-config";
 import {
-  normalizeReferenceRemixDuration,
   normalizeReferenceRemixRegion,
-  referenceRemixGemPreview,
 } from "../../../lib/reference-remix";
 import { ensureWorkspace, getDb, jsonError, runtimeEnv } from "../../../lib/storage";
 import { validateTikTokAccountName } from "../../../lib/tiktok-accounts";
@@ -29,7 +32,9 @@ async function requireTikTokAccount(nameValue: unknown) {
 export async function GET() {
   try {
     await ensureWorkspace();
-    return Response.json({ gem: referenceRemixGemPreview() });
+    const db=getDb();
+    const rows=await db.prepare("SELECT id FROM tasks WHERE task_role='remix' ORDER BY created_at DESC LIMIT 200").all<{id:string}>();
+    return Response.json({gem:REMIX_GEM,groups:await Promise.all(rows.results.map(r=>taskDetail(db,r.id)))});
   } catch (error) {
     return jsonError(error);
   }
@@ -77,7 +82,9 @@ export async function POST(request: Request) {
       }
     }
 
-    const duration = normalizeReferenceRemixDuration(form.get("duration"));
+    const plan=planRemixSegments(form.get('videoSeconds'));
+    const language=String(form.get('spokenLanguage') || 'auto');
+    if(language!==FOLLOW_REFERENCE_LANGUAGE && language!=='auto' && !SPOKEN_LANGUAGE_OPTIONS.includes(language)) throw new Error('口播语言无效');
     const region = normalizeReferenceRemixRegion(form.get("region"));
     const productName = String(form.get("productName") || "").trim();
     const externalId = String(form.get("externalId") || "").trim();
@@ -85,7 +92,6 @@ export async function POST(request: Request) {
     const tiktokAccountName = await requireTikTokAccount(form.get("tiktokAccountName"));
     const archiveAccount = await getDb().prepare("SELECT archive_directory FROM tiktok_accounts WHERE lower(name) = lower(?)").bind(tiktokAccountName).first<{ archive_directory: string }>();
     const autoQueue = String(form.get("autoQueue") || "true") !== "false";
-    const saveToLibrary = String(form.get("saveToLibrary") || "false") === "true";
     const bucket = runtimeEnv().MEDIA;
     if (!bucket) throw new Error("素材存储尚未连接");
 
@@ -103,88 +109,25 @@ export async function POST(request: Request) {
       });
       uploadedKeys.push(videoKey);
 
-      const imageRows: Array<{
-        id: string;
-        key: string;
-        file: File;
-        data: ArrayBuffer;
-        order: number;
-      }> = [];
-      for (const [index, file] of images.entries()) {
-        const id = crypto.randomUUID();
-        const key = `reference-remix/${taskId}/product-${String(index + 1).padStart(2, "0")}-${id}-${safeName(file.name)}`;
-        const data = await file.arrayBuffer();
-        await bucket.put(key, data, {
-          httpMetadata: { contentType: file.type },
-        });
-        uploadedKeys.push(key);
-        imageRows.push({ id, key, file, data, order: index });
-      }
-
-      if (saveToLibrary) {
-        const saved = await saveLibraryProduct(db,bucket,{externalId,name:productName,files:images});
-        productId = saved.id;
-      }
-
-      await db
-        .prepare(
-          `INSERT INTO reference_remix_tasks
-           (id, title, status, progress, duration, region, product_name,
-            product_external_id, save_to_library, product_id, gemini_account_id,
-            tiktok_account_name, archive_directory, auto_queue, provider, created_at, updated_at)
-           VALUES (?, ?, 'reference_queued', 5, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'gemini-web', ?, ?)`
-        )
-        .bind(
-          taskId,
-          `${productName || "图片识别商品"} · 爆款复刻`,
-          duration,
-          region,
-          productName,
-          externalId,
-          saveToLibrary ? 1 : 0,
-          productId,
-          geminiAccountId || null,
-          tiktokAccountName,
-          archiveAccount?.archive_directory || "",
-          autoQueue ? 1 : 0,
-          now,
-          now
-        )
-        .run();
-      await db.batch([
-        db
-          .prepare(
-            `INSERT INTO reference_remix_assets
-             (id, task_id, kind, object_key, file_name, content_type, file_size, sort_order, created_at)
-             VALUES (?, ?, 'reference_video', ?, ?, ?, ?, 0, ?)`
-          )
-          .bind(videoId, taskId, videoKey, video.name, video.type, video.size, now),
-        ...imageRows.map((item) =>
-          db
-            .prepare(
-              `INSERT INTO reference_remix_assets
-               (id, task_id, kind, object_key, file_name, content_type, file_size, sort_order, created_at)
-               VALUES (?, ?, 'product_image', ?, ?, ?, ?, ?, ?)`
-            )
-            .bind(
-              item.id,
-              taskId,
-              item.key,
-              item.file.name,
-              item.file.type,
-              item.file.size,
-              item.order,
-              now
-            )
-        ),
-      ]);
+      const saved=await saveLibraryProduct(db,bucket,{externalId,name:productName,files:images,country:region});
+      productId=saved.id;
+      await db.prepare(`INSERT INTO tasks
+        (id,product_id,gem_id,title,status,progress,duration,region,shooting_style,task_role,batch_round,batch_size,
+         gemini_account_id,tiktok_account_name,archive_directory,auto_queue,provider,gem_content_snapshot,
+         product_external_id_snapshot,image_keys_snapshot,remix_video_key,remix_video_name,remix_video_type,remix_video_size,
+         remix_video_seconds,remix_plan_json,remix_spoken_language,remix_product_name,created_at,updated_at)
+        VALUES (?,?,?,?,'remix_queued',5,?,?,'','remix',1,?,?,?,?,?,'gemini-web',?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(taskId,productId,REMIX_GEM.id,`${productName || '图片识别商品'} · 爆款复刻`,plan.seconds || 0,region,plan.segments.length,
+          geminiAccountId || null,tiktokAccountName,archiveAccount?.archive_directory || '',autoQueue?1:0,REMIX_GEM.content,
+          externalId,JSON.stringify(saved.imageKeys),videoKey,video.name,video.type,video.size,
+          plan.seconds,JSON.stringify(plan.segments),language,productName,now,now).run();
     } catch (error) {
       await Promise.all(uploadedKeys.map((key) => bucket.delete(key)));
       // A saved library product may be reused by other tasks; a remix failure
       // must not remove that product or its independent library images.
       throw error;
     }
-    return Response.json({ id: taskId, status: "reference_queued" }, { status: 201 });
+    return Response.json({ id: taskId, status: "remix_queued" }, { status: 201 });
   } catch (error) {
     return jsonError(error);
   }
@@ -193,19 +136,11 @@ export async function POST(request: Request) {
 export async function PUT(request: Request) {
   try {
     await ensureWorkspace();
-    const body = (await request.json()) as { duration?: number; region?: string };
-    const duration = normalizeReferenceRemixDuration(body.duration);
-    const region = normalizeReferenceRemixRegion(body.region);
-    await getDb()
-      .prepare(
-        `INSERT INTO reference_remix_settings (id, duration, region, updated_at)
-         VALUES ('default', ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET duration = excluded.duration,
-           region = excluded.region, updated_at = excluded.updated_at`
-      )
-      .bind(duration, region, new Date().toISOString())
-      .run();
-    return Response.json({ ok: true, duration, region });
+    const body=await request.json() as {region?:string};
+    const region=normalizeReferenceRemixRegion(body.region);
+    await getDb().prepare(`INSERT INTO reference_remix_settings(id,duration,region,updated_at) VALUES('default',15,?,?)
+      ON CONFLICT(id) DO UPDATE SET region=excluded.region,updated_at=excluded.updated_at`).bind(region,new Date().toISOString()).run();
+    return Response.json({ok:true,region});
   } catch (error) {
     return jsonError(error, 400);
   }
@@ -214,46 +149,9 @@ export async function PUT(request: Request) {
 export async function PATCH(request: Request) {
   try {
     await ensureWorkspace();
-    const body = (await request.json()) as { id?: string; action?: string };
-    if (!body.id) return Response.json({ error: "缺少复刻任务 ID" }, { status: 400 });
-    const db = getDb();
-    const now = new Date().toISOString();
-    const task = await db
-      .prepare("SELECT id, prompt FROM reference_remix_tasks WHERE id = ?")
-      .bind(body.id)
-      .first<{ id: string; prompt: string }>();
-    if (!task) return Response.json({ error: "复刻任务不存在" }, { status: 404 });
-    if (body.action === "retry") {
-      await db
-        .prepare(
-          `UPDATE reference_remix_tasks SET status = 'reference_queued', progress = 5,
-           reference_analysis = '', prompt = '', provider = 'gemini-web',
-           provider_job_id = NULL, provider_status_url = NULL,
-           bridge_claimed_at = NULL, bridge_worker_id = NULL,
-           gemini_failures = 0, gemini_retry_at = NULL, output_url = NULL,
-           download_path = NULL, download_error = NULL, error = NULL, updated_at = ?
-           WHERE id = ?`
-        )
-        .bind(now, body.id)
-        .run();
-      return Response.json({ ok: true });
-    }
-    if (body.action === "queue") {
-      if (String(task.prompt || "").trim().length < 300) {
-        return Response.json({ error: "最终提示词尚未生成完整" }, { status: 409 });
-      }
-      await db
-        .prepare(
-          `UPDATE reference_remix_tasks SET provider = 'seedance-bridge',
-           status = 'video_queued', progress = 68, error = NULL,
-           bridge_claimed_at = NULL, bridge_worker_id = NULL, updated_at = ?
-           WHERE id = ?`
-        )
-        .bind(now, body.id)
-        .run();
-      return Response.json({ ok: true });
-    }
-    return Response.json({ error: "不支持的操作" }, { status: 400 });
+    const body=await request.json() as {id:string;action?:string;clipId?:string;index?:number;note?:string};
+    if(!body.id) return Response.json({error:'缺少复刻任务 ID'},{status:400});
+    return remixAction(getDb(),body);
   } catch (error) {
     return jsonError(error);
   }

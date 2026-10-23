@@ -962,6 +962,7 @@ function bindIpc() {
   videoReview = new VideoReview({ userData: app.getPath('userData'), shell,
     beforeDelete: async id => {
       if (!seedanceRuntime?.store) throw Error('视频执行器尚未就绪，请稍后重试');
+      bridge?.cancelTasks([id]);
       seedanceRuntime.clearTasks([id]);
       if (seedanceRuntime.store.persistError) throw Error('无法保存任务删除记录，请稍后重试');
     },
@@ -976,6 +977,9 @@ function bindIpc() {
   handle('video-review:open', (_event, id) => videoReview.open(String(id || '')));
   handle('video-review:folder', (_event, id) => videoReview.openFolder(String(id || '')));
   handle('video-review:delete-pending', (_event, input) => videoReview.deletePending(String(input?.id || ''), input?.confirmed === true));
+  handle('video-review:remix-delete', (_event,input)=>videoReview.deleteRemix(String(input?.id || ''),input?.confirmed===true));
+  handle('video-review:remix-delete-clip', (_event,input)=>videoReview.deleteRemixClip(String(input?.id || ''),input?.confirmed===true));
+  handle('video-review:remix-finish', (_event,input)=>videoReview.finishRemix(String(input?.id || ''),input?.confirmed===true));
   handle('video-review:approve', (_event, input) => videoReview.approve(String(input?.id || ''), input?.confirmed === true));
   handle('video-review:concat', (_event, input) => videoReview.concat(
     String(input?.groupId || ''), Array.isArray(input?.ids) ? input.ids.map(String) : [], input?.confirmed === true));

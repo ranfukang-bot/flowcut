@@ -214,6 +214,7 @@ async function initializeWorkspace() {
     ["remix_spoken_language", "TEXT"],
     ["segment_checked_at", "TEXT"],
     ["remix_selected_json", "TEXT"],
+    ["remix_release_task_id", "TEXT"],
     ["remix_product_name", "TEXT"],
   ]) {
     await ensureColumn("tasks", column, type);

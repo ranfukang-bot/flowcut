@@ -2,12 +2,15 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const {siteFixture}=require('./helpers/site-routes.cjs');
 const {segmentHeader,planRemixSegments}=require('../../lib/remix-segments.ts');
+const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {VideoReview,reviewDirectory}=require('../src/video-review');
+const {restorableTables}=require('../src/backup-manager');
 const block=(i,a,b)=>`${segmentHeader(i,a,b)}\n${'运镜动作音效与口播细节。'.repeat(45)}`;
 async function setup(t,seconds=24) {
   const f=await siteFixture(t);
   f.sqlite.prepare("INSERT INTO tiktok_accounts(id,name,archive_directory,created_at) VALUES('tk','印尼1','C:/isolated/TK',?)").run(new Date().toISOString());
   const form=new FormData();form.set('video',new File(['video'],'ref.mp4',{type:'video/mp4'}));form.append('images',new File(['img'],'product.png',{type:'image/png'}));
-  form.set('videoSeconds',String(seconds));form.set('region','印尼');form.set('tiktokAccountName','印尼1');form.set('externalId','123456789');form.set('productName','测试商品');
+  form.set('videoSeconds',String(seconds));form.set('region','印尼');form.set('tiktokAccountName','印尼1');form.set('externalId','1735360337668113923');form.set('productName','测试商品');
   const route=await f.route('reference-remix');const res=await route.POST(new Request('http://fixture/api/reference-remix',{method:'POST',body:form}));
   const result=await res.json();assert.equal(res.status,201,JSON.stringify(result));
   return Object.assign(f,{id:result.id,form});
@@ -47,4 +50,60 @@ test('rewrite creates one newer version and keeps prior versions',async t=>{
   assert.equal((await f.call('reference-remix','PATCH',{body:{id:f.id,action:'rewrite',index:2,note:'加快运镜'}})).status,200);
   const job=await claim(f);assert.equal(job.kind,'remix-rewrite');assert.equal(job.referenceVideoUrl,undefined);assert.match(job.adaptationPrompt,/只输出第2段/);
   const result=await report(f,'result',{kind:'remix-rewrite',remixRound:2,codeBlocks:[block(2,15,24)]});assert.equal(result.status,200,JSON.stringify(result));assert.equal(f.rows("SELECT * FROM tasks WHERE task_role='clip'").length,3);
+});
+
+async function reviewFixture(t,seconds=24) {
+  const f=await setup(t,seconds);await claim(f);
+  const blocks=planRemixSegments(seconds).segments.map(s=>block(s.index,s.start,s.end));
+  await report(f,'stage',{analysisBlocks:blocks});await report(f,'result',{codeBlocks:blocks});
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'flowcut-remix-review-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const publish=path.join(root,'TK');f.sqlite.prepare('UPDATE tasks SET archive_directory=?').run(publish);
+  const prepareFiles=()=>{for(const c of f.rows("SELECT * FROM tasks WHERE task_role='clip'")) {
+    const file=path.join(reviewDirectory(root,c.id),'clip.mp4');fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,c.id);
+    f.sqlite.prepare("UPDATE tasks SET status='video_ready',review_status='pending',download_path=? WHERE id=?").run(file,c.id);
+  }};prepareFiles();
+  const request=async(route,init={})=>{const url=new URL(route,'http://fixture');const r=await f.call(url.pathname.replace('/api/',''),init.method || 'GET',{query:url.search,body:init.body?JSON.parse(init.body):undefined});if(r.status>=400) throw Error(r.body.error);return r.body;};
+  const order=[];
+  const review=new VideoReview({userData:root,request,defaultDirectory:()=>publish,shell:{openPath:async()=>''},concatClips:async(files,out)=>{order.push(...files.map(file=>fs.readFileSync(file,'utf8')));fs.writeFileSync(out,files.map(file=>fs.readFileSync(file)).join(''));}});
+  const check=async id=>{const r=await f.call('reference-remix','PATCH',{body:{id:f.id,action:'check',clipId:id}});assert.equal(r.status,200,JSON.stringify(r));};
+  return {f,root,publish,review,check,order,prepareFiles,blocks};
+}
+test('remix concat refuses missing/unchecked/duplicate indices and direct segment approval',async t=>{
+  const {f,review,check}=await reviewFixture(t);const clips=f.rows("SELECT id FROM tasks WHERE task_role='clip' ORDER BY batch_index").map(r=>r.id);
+  await assert.rejects(review.finishRemix(f.id,true),/全部标记/);
+  await check(clips[0]);await assert.rejects(review.finishRemix(f.id,true),/全部标记/);
+  await assert.rejects(review.approve(clips[0],true),/不能单独放行/);
+  assert.equal((await f.call('tasks/review','POST',{body:{id:clips[0],action:'reserve',confirmed:true}})).status,409);
+  await check(clips[1]);assert.equal((await f.call('tasks/review','POST',{body:{id:f.id,action:'concat-reserve',concatId:'bad',sourceIds:[clips[0],clips[0]],confirmed:true}})).status,400);
+});
+test('mixed-round segment selections concatenate by segment index, automatically move to TK and delete every unused version',async t=>{
+  const {f,review,check,prepareFiles,order,publish,blocks}=await reviewFixture(t);
+  const first=f.rows("SELECT id FROM tasks WHERE task_role='clip' ORDER BY batch_index").map(r=>r.id);
+  await f.call('reference-remix','PATCH',{body:{id:f.id,action:'rewrite',index:1}});await claim(f);await report(f,'result',{kind:'remix-rewrite',remixRound:2,codeBlocks:[blocks[0]]});prepareFiles();
+  const newer=f.row('SELECT id FROM tasks WHERE batch_parent_id=? AND batch_round=2',f.id).id;
+  await check(newer);await check(first[1]);
+  const result=await review.finishRemix(f.id,true);
+  assert.deepEqual(order,[newer,first[1]],'segment order takes priority over batch round');
+  assert.equal(path.basename(result.file),'1735360337668113923.mp4');assert.equal(path.dirname(result.file),publish);assert.ok(fs.existsSync(result.file));
+  assert.equal(f.row('SELECT status FROM tasks WHERE id=?',f.id).status,'remix_done');assert.equal(f.rows("SELECT * FROM tasks WHERE task_role='clip'").length,0);
+  assert.equal(fs.readdirSync(publish).length,1);await review.finishRemix(f.id,true);assert.equal(fs.readdirSync(publish).length,1,'retry never releases a second copy');
+});
+test('one-segment group uses the same approval move without concatenation; direct approval remains blocked',async t=>{
+  const {f,review,check,order,publish}=await reviewFixture(t,4);const id=f.row("SELECT id FROM tasks WHERE task_role='clip'").id;
+  await check(id);await assert.rejects(review.approve(id,true),/不能单独放行/);
+  const result=await review.finishRemix(f.id,true);assert.equal(order.length,0);assert.equal(path.dirname(result.file),publish);assert.equal(f.row('SELECT status FROM tasks WHERE id=?',f.id).status,'remix_done');assert.equal(f.row('SELECT review_status FROM tasks WHERE id=?',id).review_status,'approved');
+});
+test('segment regenerate keeps exact prompt/range and old checked version; no Gemini round',async t=>{
+  const {f,check}=await reviewFixture(t);const original=f.row("SELECT * FROM tasks WHERE task_role='clip' ORDER BY batch_index");await check(original.id);
+  const r=await f.call('tasks/recreate','POST',{body:{id:original.id,requestId:crypto.randomUUID()}});assert.equal(r.status,201,JSON.stringify(r));
+  const next=f.row('SELECT * FROM tasks WHERE id=?',r.body.id);assert.equal(next.prompt,original.prompt);assert.equal(next.duration,original.duration);assert.equal(next.remix_segment_start,original.remix_segment_start);assert.equal(next.status,'video_queued');assert.equal(next.segment_checked_at,null);assert.equal(f.row('SELECT review_status FROM tasks WHERE id=?',original.id).review_status,'pending');
+});
+test('failed local concat returns checked clips and parent to segmented state',async t=>{
+  const {f,review,check}=await reviewFixture(t);for(const row of f.rows("SELECT id FROM tasks WHERE task_role='clip'")) await check(row.id);
+  review.concatClips=async()=>{throw Error('fake ffmpeg failure');};await assert.rejects(review.finishRemix(f.id,true),/拼接未完成/);
+  assert.equal(f.row('SELECT status FROM tasks WHERE id=?',f.id).status,'remix_segmented');assert.ok(f.rows("SELECT review_status FROM tasks WHERE task_role='clip'").every(r=>r.review_status==='pending'));
+});
+test('backup restore pauses unfinished remix work while retaining scripts, ranges, task ids and completed groups',()=>{
+  const restored=restorableTables({tasks:[{id:'g',task_role:'remix',status:'remix_adapting',remix_script:'durable',error:null},{id:'c',task_role:'clip',status:'video_generating',provider_job_id:'remote',remix_segment_start:15,error:null},{id:'done',task_role:'remix',status:'remix_done'}]});
+  assert.equal(restored.tasks[0].status,'failed');assert.equal(restored.tasks[0].remix_script,'durable');assert.equal(restored.tasks[1].provider_job_id,'remote');assert.equal(restored.tasks[1].status,'failed');assert.equal(restored.tasks[2].status,'remix_done');
 });

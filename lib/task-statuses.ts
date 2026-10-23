@@ -35,6 +35,8 @@ export const TASK_STATUS_LABELS: Record<string, string> = {
   remix_adapting: "正在分段换品",
   remix_segmented: "分段等待检查",
   remix_done: "复刻成片已放行",
+  remix_finishing: "正在拼接放行",
+  remix_deleting: "正在删除复刻组",
   remix_rewrite_queued: "等待重写分段",
   remix_rewriting: "正在重写分段",
 };

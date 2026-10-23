@@ -114,6 +114,7 @@ class VideoReview {
         throw Error(`拼接未完成，所选视频保持原状：${error.message}`);
       }
       await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id: concatId, action: 'concat-finish', path: output, confirmed: true }) });
+      if(reserved.remix) { const approved=await this.approve(concatId,true); await this.cleanupRemix(groupId);return {id:concatId,...approved}; }
       return { id: concatId, file: output };
     } finally { this.locks.delete(lock); }
   }
@@ -153,6 +154,9 @@ class VideoReview {
     for (const row of await this.request('/api/tasks/review?concat=consume') || []) {
       try { await this.consumeMerged(row.id); result.consumed++; }
       catch (error) { result.errors.push(`${row.id}: ${error.message}`); }
+    }
+    for(const row of await this.request('/api/tasks/review?remix=recover') || []) {
+      try {await this.finishRemix(row.id,true);} catch(error){result.errors.push(`${row.id}: ${error.message}`);}
     }
     return result;
   }
@@ -286,12 +290,62 @@ class VideoReview {
     await this.request('/api/tasks/review', { method:'POST', body:JSON.stringify({id,replacementId,action:'discard',confirmed:true}) });
     return true;
   }
-  async approve(id, confirmed) {
+  async deleteRemixClip(id,confirmed) {
+    if(confirmed!==true) throw Error('请确认删除分段及视频');
+    const row=await this.request('/api/tasks/review',{method:'POST',body:JSON.stringify({id,action:'remix-reserve-delete-clip',confirmed:true})});
+    await this.removeRemixFile(row);
+    await this.request('/api/tasks/review',{method:'POST',body:JSON.stringify({id,action:'remix-delete-clip',confirmed:true})});
+  }
+  async removeRemixFile(row) {
+    await this.beforeDelete(row.id);
+    if(row.review_status!=='approved' && row.download_path && fs.existsSync(row.download_path)) fs.unlinkSync(this.clipFile(row));
+    cleanupSegments(this.userData,row.id);
+  }
+  async deleteRemix(groupId,confirmed) {
+    if(confirmed!==true) throw Error('请确认删除整组和临时视频');
+    const group=await this.request('/api/tasks/review',{method:'POST',body:JSON.stringify({id:groupId,action:'remix-delete-reserve',confirmed:true})});
+    await this.beforeDelete(groupId);
+    for(const row of group.children || []) await this.removeRemixFile(row);
+    await this.request('/api/tasks',{method:'DELETE',body:JSON.stringify({id:groupId,remixCleaned:true})});
+  }
+  async finishRemix(groupId,confirmed) {
+    if(confirmed!==true) throw Error('请确认全部分段已检查');
+    const prepared=await this.request('/api/tasks/review',{method:'POST',body:JSON.stringify({id:groupId,action:'remix-prepare',confirmed:true})});
+    if(prepared.releaseId) {
+      const task=await this.task(prepared.releaseId);
+      if(task.status==='concat_running') throw Error('正在拼接，请等待完成或重启后恢复');
+      const approved=await this.approve(task.id,true,task.task_role==='clip'?groupId:undefined);
+      await this.cleanupRemix(groupId);return approved;
+    }
+    if(prepared.sourceIds.length===1) {
+      const reserved=await this.request('/api/tasks/review',{method:'POST',body:JSON.stringify({id:groupId,action:'remix-single-reserve',confirmed:true})});
+      const approved=await this.approve(reserved.releaseId,true,groupId);
+      await this.cleanupRemix(groupId);return approved;
+    }
+    return this.concat(groupId,prepared.sourceIds,true);
+  }
+  async cleanupRemix(groupId) {
+    const rows=await this.request('/api/tasks/review?remix=cleanup&group='+encodeURIComponent(groupId));
+    for(const row of rows || []) {
+      await this.beforeDelete(row.id);
+      if(row.download_path && fs.existsSync(row.download_path)) fs.unlinkSync(this.clipFile(row));
+      cleanupSegments(this.userData,row.id);
+      await this.request('/api/tasks/review',{method:'POST',body:JSON.stringify({id:row.id,groupId,action:'remix-delete-unused',confirmed:true})});
+      const folder=reviewDirectory(this.userData,row.id);
+      try {fs.rmdirSync(folder);}catch(error){if(!['ENOENT','ENOTEMPTY','EEXIST'].includes(error.code))throw error;}
+    }
+    await this.request('/api/tasks/review',{method:'POST',body:JSON.stringify({id:groupId,action:'remix-complete',confirmed:true})});
+  }
+  async approve(id, confirmed, remixGroupId) {
     if (confirmed !== true) throw Error('请二次确认审核通过');
     if (this.locks.has(id)) throw Error('正在处理，请勿重复点击');
     this.locks.add(id);
     try {
       const task = await this.task(id);
+      if(task.task_role==='clip' && task.batch_parent_id) {
+        const parent=await this.task(task.batch_parent_id);
+        if(parent.task_role==='remix' && (remixGroupId!==parent.id || Number(parent.batch_size)!==1 || parent.remix_release_task_id!==id)) throw Error('复刻分段不能单独放行，请检查整组');
+      }
       if (task.review_status === 'approved') {
         return { file: task.approved_path, alreadyApproved: true, ...(task.task_role === 'concat' ? await this.consumeAfterApproval(id) : {}) };
       }
@@ -299,7 +353,7 @@ class VideoReview {
       const folder = task.archive_directory ? path.resolve(task.archive_directory)
         : accountVideoDirectory(this.defaultDirectory(), task.tiktok_account_name);
       const recordFile = path.join(reviewDirectory(this.userData, id), 'approval.json');
-      await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id, action: 'reserve', confirmed: true }) });
+      await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id, action: 'reserve', confirmed: true, remixGroupId }) });
       let record = fs.existsSync(recordFile) ? JSON.parse(fs.readFileSync(recordFile, 'utf8')) : null;
       if (!record) {
         const source = this.checkedSource(task);
@@ -343,7 +397,7 @@ class VideoReview {
         record.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
         saveRecord(recordFile,record);
       }
-      await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id, path: record.file, confirmed: true, approvedAt:record.approvedAt, timeZone:record.timeZone }) });
+      await this.request('/api/tasks/review', { method: 'POST', body: JSON.stringify({ id, path: record.file, confirmed: true, remixGroupId, approvedAt:record.approvedAt, timeZone:record.timeZone }) });
       cleanupSegments(this.userData,id);
       return { file: record.file, legacy: record.legacy || false, ...(task.task_role === 'concat' ? await this.consumeAfterApproval(id) : {}) };
     } catch (error) {

@@ -1,3 +1,4 @@
+import { remixAction } from '../../../lib/remix-tasks';
 import { generatePrompt } from "../../../lib/gemini";
 import { DEFAULT_GEM_REQUEST, buildGemRequest, validateGemRequest } from "../../../lib/gem-request";
 import { getProviderConfig } from "../../../lib/provider-config";
@@ -335,6 +336,12 @@ export async function PATCH(request: Request) {
     if (!body.id) return Response.json({ error: "缺少任务 ID" }, { status: 400 });
     const db = getDb();
 
+    const remix=await db.prepare("SELECT t.task_role,t.batch_parent_id,p.task_role AS parent_role FROM tasks t LEFT JOIN tasks p ON p.id=t.batch_parent_id WHERE t.id=? AND (t.task_role='remix' OR p.task_role='remix')").bind(body.id).first<{task_role:string;parent_role?:string}>();
+    if(remix?.task_role==='remix') {
+      if(body.action==='retry') return remixAction(db,{id:body.id,action:'retry'});
+      return Response.json({error:'请在爆款复刻整组中操作'},{status:409});
+    }
+    if(remix && ['process','regenerate','retry'].includes(body.action || '')) return Response.json({error:'分段视频请用同提示词重新生成或原 Seedance 任务恢复，不能重置 Gemini'},{status:409});
     const fission=await db.prepare("SELECT task_role,batch_parent_id,status,prompt,provider_job_id FROM tasks WHERE id=? AND task_role IN ('fission','fission_child')").bind(body.id).first<{task_role:string;batch_parent_id:string|null;status:string;prompt:string;provider_job_id:string|null}>();
     if(fission && ['regenerate','process'].includes(body.action||'')) return Response.json({error:'多品裂变请使用恢复任务或用母版重写，不能按普通商品任务重置'},{status:409});
     if(fission && body.action==='retry'){
@@ -467,7 +474,7 @@ export async function PATCH(request: Request) {
           provider_job_id: string | null;
         }>();
       if (!task) return Response.json({ error: "任务不存在" }, { status: 404 });
-      if (task.task_role === "group" || task.task_role === "concat" || task.task_role === 'fission') {
+      if (task.task_role === 'remix' || task.task_role === "group" || task.task_role === "concat" || task.task_role === 'fission') {
         return Response.json({ error: "分组或拼接任务不能直接提交 Seedance，请在其中的单条视频上操作" }, { status: 409 });
       }
       if(task.task_role==='fission_child' && (!PROMPT_ONLY_STATUSES.includes(task.status)||task.provider_job_id)) return Response.json({error:'这条视频已在执行或尚未完成提示词，请使用原任务继续处理'},{status:409});
@@ -499,7 +506,7 @@ export async function PATCH(request: Request) {
              status = 'video_queued', progress = 48, error = NULL,
              provider_job_id = NULL, provider_status_url = NULL,
              bridge_claimed_at = NULL, bridge_worker_id = NULL,
-             updated_at = ? WHERE id = ? AND (COALESCE(task_role,'') <> 'fission_child'
+             updated_at = ? WHERE id = ? AND ((COALESCE(task_role,'') <> 'fission_child' AND remix_segment_start IS NULL)
                OR (status IN ('prompt_ready','seedance_blocked') AND provider_job_id IS NULL))`
           )
           .bind(new Date().toISOString(), body.id)
@@ -588,7 +595,7 @@ export async function DELETE(request: Request) {
       const completedStatuses = VIDEO_DONE_STATUSES;
       // A concatenated video keeps its row until the desktop has removed the
       // clips merged into it; otherwise those clips would be stranded.
-      const completedWhere = `status IN (?, ?) AND review_status IN ('approved','replaced')
+      const completedWhere = `NOT EXISTS(SELECT 1 FROM tasks parent WHERE parent.id=tasks.batch_parent_id AND parent.task_role='remix') AND status IN (?, ?) AND review_status IN ('approved','replaced')
         AND NOT EXISTS (SELECT 1 FROM tasks merged WHERE merged.merged_into_task_id = tasks.id AND merged.review_status = 'merged')`;
       const completed = await getDb()
         .prepare(`SELECT COUNT(*) AS count FROM tasks WHERE ${completedWhere}`)
@@ -605,11 +612,14 @@ export async function DELETE(request: Request) {
       ]);
       return Response.json({ ok: true, deleted: Number(completed?.count || 0) });
     }
-    const { id } = (await request.json()) as { id?: string };
+    const { id, remixCleaned } = (await request.json()) as { id?: string;remixCleaned?:boolean };
     if (!id) return Response.json({ error: "缺少任务 ID" }, { status: 400 });
     // Deleting a group removes its clips and concatenated videos as well.
     // Clips merged into a deleted concatenated video return to review.
     const db = getDb();
+    const remixParent=await db.prepare("SELECT remix_video_key,status FROM tasks WHERE id=? AND task_role='remix'").bind(id).first<{remix_video_key:string;status:string}>();
+    if(remixParent && (remixParent.status!=='remix_deleting' || remixCleaned!==true)) return Response.json({error:'请在爆款复刻中删除整组及临时视频'},{status:409});
+    if(remixParent?.remix_video_key) await runtimeEnv().MEDIA?.delete(remixParent.remix_video_key);
     const concatRunning = await db.prepare(`SELECT 1 AS busy FROM tasks WHERE (id = ? OR batch_parent_id = ?)
       AND (status = 'concat_running' OR review_status = 'merging') LIMIT 1`).bind(id, id).first();
     if (concatRunning) return Response.json({ error: "正在拼接这组视频，请等拼接完成后再删除" }, { status: 409 });

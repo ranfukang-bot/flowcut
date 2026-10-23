@@ -1,3 +1,5 @@
+import { remixReviewQuery, remixReviewAction, reserveRemixConcat, allowRemixClipApproval } from '../../../../lib/remix-review';
+import { getRemix } from '../../../../lib/remix-tasks';
 import { ensureWorkspace, getDb, jsonError } from "../../../../lib/storage";
 import { approvalDay, APPROVAL_COUNT_INSERT } from "../../../../lib/approval-stats";
 import { ORPHAN_GROUP_DELETE } from "../../../../lib/task-batches";
@@ -9,6 +11,8 @@ export async function GET(request: Request) {
   try {
     await ensureWorkspace();
     const params = new URL(request.url).searchParams;
+    const remixQuery=await remixReviewQuery(getDb(),params);
+    if(remixQuery) return remixQuery;
     // Desktop recovery: concatenations interrupted mid-way, and approved
     // concatenations whose merged clips still have to be removed.
     if (params.get('concat') === 'running') {
@@ -41,9 +45,11 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     await ensureWorkspace();
-    const body = await request.json() as { id: string; path: string; oldPath?: string; confirmed: boolean; action?: string; replacementId?: string; approvedAt?: string; timeZone?: string; concatId?: string; sourceIds?: string[] };
+    const body = await request.json() as { id: string; path: string; oldPath?: string; confirmed: boolean; action?: string; replacementId?: string; approvedAt?: string; timeZone?: string; concatId?: string; sourceIds?: string[]; groupId?:string; remixGroupId?:string };
     if (body.confirmed !== true || !body.id) return Response.json({ error: "请确认审核通过" }, { status: 400 });
-    if (body.action === 'concat-reserve') return reserveConcat(body);
+    const remixResult=await remixReviewAction(getDb(),body);
+    if(remixResult) return remixResult;
+    if (body.action === 'concat-reserve') return await reserveConcat(body);
     if (body.action === 'concat-finish') {
       if (!body.path) return Response.json({ error: '缺少拼接成片路径' }, { status: 400 });
       const db = getDb();
@@ -60,6 +66,7 @@ export async function POST(request: Request) {
       await db.batch([
         db.prepare(`UPDATE tasks SET review_status='pending', merged_into_task_id=NULL WHERE merged_into_task_id=? AND review_status='merging'
           AND EXISTS (SELECT 1 FROM tasks WHERE id=? AND task_role='concat' AND status='concat_running')`).bind(body.id, body.id),
+        db.prepare(`UPDATE tasks SET status='remix_segmented',remix_release_task_id=NULL WHERE task_role='remix' AND remix_release_task_id=? AND EXISTS(SELECT 1 FROM tasks WHERE id=? AND status='concat_running')`).bind(body.id,body.id),
         db.prepare(`DELETE FROM tasks WHERE id=? AND task_role='concat' AND status='concat_running'`).bind(body.id),
       ]);
       return Response.json({ ok: true });
@@ -111,6 +118,7 @@ export async function POST(request: Request) {
       ]);
       return Response.json({ok:true});
     }
+    if((!body.action || body.action==='reserve') && !await allowRemixClipApproval(getDb(),body.id,body.remixGroupId)) return Response.json({error:'复刻分段不能单独放行，请在整组中使用「拼接并放入 TK 目录」'},{status:409});
     if (body.action === 'reserve' || body.action === 'cancel') {
       const reserve = body.action === 'reserve';
       const result = await getDb().prepare(`UPDATE tasks SET review_status=? WHERE id=?
@@ -149,6 +157,8 @@ async function reserveConcat(body: { id: string; concatId?: string; sourceIds?: 
     return Response.json({ error: `请选择 2–${MAX_CONCAT_CLIPS} 条不同的视频进行拼接` }, { status: 400 });
   }
   const db = getDb();
+  const remixParent=await getRemix(db,groupId);
+  if(remixParent) return reserveRemixConcat(db,remixParent,concatId,ids);
   const sourcesOf = async () => (await db.prepare(`SELECT id, download_path, batch_index, batch_round FROM tasks
     WHERE merged_into_task_id=? AND review_status='merging' ORDER BY batch_round ASC, batch_index ASC, created_at ASC`).bind(concatId).all<ConcatSource>()).results;
   const existing = await db.prepare('SELECT status, batch_parent_id FROM tasks WHERE id=?').bind(concatId).first<{ status: string; batch_parent_id: string }>();

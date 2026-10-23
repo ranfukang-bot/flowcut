@@ -50,7 +50,7 @@ export async function finishRemixRound(db: ReturnType<typeof getDb>, task: Remix
 export async function remixAction(db: ReturnType<typeof getDb>, body: {id:string;action?:string;clipId?:string;index?:number;note?:string}, now=new Date().toISOString()) {
   const task=await getRemix(db,body.id);
   if (!task) return Response.json({error:'分段复刻任务不存在；旧版记录只支持查看和删除'},{status:404});
-  if (task.status==='remix_done' || REMIX_ACTIVE.includes(task.status) || await db.prepare("SELECT id FROM tasks WHERE batch_parent_id=? AND (status='concat_running' OR review_status IN ('merging','approving'))").bind(task.id).first())
+  if (['remix_done','remix_finishing','remix_deleting'].includes(task.status) || REMIX_ACTIVE.includes(task.status) || await db.prepare("SELECT id FROM tasks WHERE batch_parent_id=? AND (status='concat_running' OR review_status IN ('merging','approving'))").bind(task.id).first())
     return Response.json({error:'任务正在处理或已放行，请等当前操作结束'},{status:409});
   if (['retry','reanalyze','readapt','rewrite'].includes(body.action || '')) {
     if(body.action==='rewrite' && (!Number.isInteger(body.index)||Number(body.index)<1||Number(body.index)>Number(task.batch_size))) return Response.json({error:'分段序号无效'},{status:400});
@@ -72,4 +72,29 @@ export async function remixAction(db: ReturnType<typeof getDb>, body: {id:string
     return Response.json({ok:true});
   }
   return Response.json({error:'不支持的分段复刻操作'},{status:400});
+}
+
+export async function regenerateRemixClip(db: ReturnType<typeof getDb>,id:string,requestId:string) {
+  const source=await db.prepare("SELECT * FROM tasks WHERE id=? AND task_role='clip'").bind(id).first<Record<string,unknown>>();
+  const parent=source?.batch_parent_id?await getRemix(db,String(source.batch_parent_id)):null;
+  if(!source || !parent) return null;
+  if(parent.status!=='remix_segmented' || !['video_ready','scheduled'].includes(String(source.status)) || source.review_status!=='pending') return Response.json({error:'请在分段就绪且视频检查中时重新生成'},{status:409});
+  const seedance=await getProviderConfig('seedance');
+  const start=clipStart(Boolean(source.auto_queue),{mode:seedance.config.mode,secretConfigured:seedance.secretConfigured});
+  const now=new Date().toISOString(),round=Number(parent.batch_round)+1;
+  const result=await db.batch([
+    db.prepare(`INSERT OR IGNORE INTO tasks(id,product_id,gem_id,title,status,prompt,provider,progress,duration,region,shooting_style,
+      callback_token,auto_queue,gemini_account_id,tiktok_account_name,archive_directory,gem_content_snapshot,product_external_id_snapshot,
+      gemini_request_text,image_keys_snapshot,task_role,batch_parent_id,batch_index,batch_round,batch_size,
+      remix_segment_script,remix_segment_start,remix_segment_end,regenerated_from_task_id,created_at,updated_at)
+      SELECT ?,c.product_id,c.gem_id,c.title,?,c.prompt,?,?,c.duration,c.region,c.shooting_style,?,c.auto_queue,c.gemini_account_id,
+      c.tiktok_account_name,c.archive_directory,c.gem_content_snapshot,c.product_external_id_snapshot,c.gemini_request_text,c.image_keys_snapshot,
+      c.task_role,c.batch_parent_id,c.batch_index,?,c.batch_size,c.remix_segment_script,c.remix_segment_start,c.remix_segment_end,c.id,?,?
+      FROM tasks c JOIN tasks p ON p.id=c.batch_parent_id WHERE c.id=? AND c.review_status='pending' AND p.status='remix_segmented' AND p.batch_round=?
+      AND NOT EXISTS(SELECT 1 FROM tasks active WHERE active.regenerated_from_task_id=c.id AND active.status NOT IN ('video_ready','scheduled','failed'))`)
+      .bind(requestId,start.status,start.provider,start.progress,crypto.randomUUID(),round,now,now,id,parent.batch_round),
+    db.prepare('UPDATE tasks SET batch_round=?,updated_at=? WHERE id=? AND batch_round=? AND EXISTS(SELECT 1 FROM tasks WHERE id=?)').bind(round,now,parent.id,parent.batch_round,requestId),
+  ]);
+  const created=await db.prepare('SELECT id,status FROM tasks WHERE id=? AND regenerated_from_task_id=?').bind(requestId,id).first();
+  return created?Response.json({...created,created:Boolean(result[0].meta.changes),preserveSource:true},{status:201}):Response.json({error:'已有重新生成中的版本，请等待完成'},{status:409});
 }

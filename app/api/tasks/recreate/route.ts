@@ -1,3 +1,4 @@
+import { regenerateRemixClip } from '../../../../lib/remix-tasks';
 import { getProviderConfig } from "../../../../lib/provider-config";
 import { ensureWorkspace, getDb, jsonError, runtimeEnv } from "../../../../lib/storage";
 import { clipStart } from "../../../../lib/task-batches";
@@ -33,6 +34,8 @@ export async function POST(request: Request) {
         variant_gem_id: string | null; variant_gem_snapshot: string | null; variant_request_text: string | null;
       }>();
     if (!source) return Response.json({ error: "原任务不存在" }, { status: 404 });
+    const remixCopy=await regenerateRemixClip(db,id,requestId);
+    if(remixCopy) return remixCopy;
     if(rewriteMother && source.task_role!=='fission_child') return Response.json({error:'只有多品裂变子任务可以用母版重写'},{status:409});
     if(source.task_role==='fission_child'){
       if(gemId) return Response.json({error:'裂变子任务沿用创建时的变体 Gem 快照'},{status:409});

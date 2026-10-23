@@ -3,18 +3,18 @@
 import { DragEvent, FormEvent, useEffect, useMemo, useState } from 'react';
 import { confirmAction } from './confirm-action';
 import { useImageProductId } from './use-image-product-id';
-import { GeminiModelInfo } from './gemini-model-settings';
-import { SeedanceTaskDetail } from './seedance-task-detail';
-import { api } from './studio-client';
-import type { TikTokAccount, ReferenceRemixTask, Workspace } from './studio-types';
+import { api, desktopBridge } from './studio-client';
+import type { TikTokAccount, ReferenceRemixTask, Workspace, Task } from './studio-types';
 import { PageIntro, EmptyState } from './studio-ui';
-import { PROMPT_ONLY_STATUSES, TASK_STATUS_LABELS, VIDEO_FAILED_STATUSES, VIDEO_RUNNING_STATUSES } from '../lib/task-statuses';
+import { TASK_STATUS_LABELS } from '../lib/task-statuses';
+import { planRemixSegments } from '../lib/remix-segments';
+import { SpokenLanguageSelect } from './spoken-language-select';
+import { RemixGroupPanel } from './remix-group-panel';
 
 export function ReferenceRemixPage({
   tasks,
   settings,
   geminiAccounts,
-  defaultGeminiAccountId,
   tiktokAccounts,
   integrations,
   onReload,
@@ -33,18 +33,26 @@ export function ReferenceRemixPage({
   const [videoDuration, setVideoDuration] = useState(0);
   const [images, setImages] = useState<File[]>([]);
   const [region, setRegion] = useState(settings.region || "马来西亚");
-  const [duration, setDuration] = useState(Number(settings.duration || 15));
+  const [spokenLanguage,setSpokenLanguage]=useState("auto");
+  const [groups,setGroups]=useState<Task[]>([]);
+  const [gemContent,setGemContent]=useState("");
+  const [loadError,setLoadError]=useState("");
   const [productName, setProductName] = useState("");
   const [externalId, setExternalId] = useImageProductId(images);
-  const [saveToLibrary, setSaveToLibrary] = useState(false);
   const [autoQueue, setAutoQueue] = useState(true);
   const [geminiAccountId, setGeminiAccountId] = useState(
-    defaultGeminiAccountId || geminiAccounts.find((account) => account.authenticated)?.id || ""
+    ""
   );
   const [tiktokAccountName, setTikTokAccountName] = useState(tiktokAccounts[0]?.name || "");
   const [busy, setBusy] = useState(false);
   const [dragTarget, setDragTarget] = useState<"video" | "images" | "">("");
-  const [expanded, setExpanded] = useState<string>("");
+  async function loadGroups() {
+    const result=await api('/api/reference-remix') as {groups:Task[];gem:{content:string}};
+    setGroups(result.groups);setGemContent(result.gem.content);setLoadError('');
+  }
+  useEffect(()=>{let alive=true;void api('/api/reference-remix').then(value=>{if(!alive)return;const result=value as {groups:Task[];gem:{content:string}};setGroups(result.groups);setGemContent(result.gem.content);setLoadError('');}).catch(e=>{if(alive)setLoadError(e.message);});return()=>{alive=false;};},[tasks,integrations]);
+  let planText='时长读取后会显示分段计划；读不到时按视频实际内容拆解。';
+  try {const plan=planRemixSegments(videoDuration);if(plan.seconds)planText=`${plan.seconds} 秒 → ${plan.segments.length} 段：${plan.segments.map(s=>s.duration+' 秒').join(' + ')}，生成 ${plan.segments.length} 条视频`;} catch {planText='对标视频超过 60 秒，请先裁剪';}
 
   const videoPreview = useMemo(() => (video ? URL.createObjectURL(video) : ""), [video]);
   const imagePreviews = useMemo(
@@ -96,9 +104,9 @@ export function ReferenceRemixPage({
       await api("/api/reference-remix", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ duration, region }),
+        body: JSON.stringify({ region }),
       });
-      onNotice(`默认参数已保存：${region} · ${duration}秒`);
+      onNotice(`默认地区已保存：${region}`);
       await onReload();
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "保存默认参数失败");
@@ -110,7 +118,6 @@ export function ReferenceRemixPage({
     if (!video) return onNotice("请上传一条对标视频");
     if (!images.length) return onNotice("请上传产品图片");
     if (videoDuration > 60) return onNotice("对标视频超过 60 秒，请先裁剪后再上传");
-    if (!geminiAccountId) return onNotice("请选择一个已登录的 Gemini 网页账号");
     if (!tiktokAccountName) return onNotice("请先在创作中心添加 TK 归档账号");
     if (!integrations.gemini || integrations.geminiMode !== "web") {
       return onNotice("爆款复刻需要在线的 Gemini 网页执行器");
@@ -120,11 +127,11 @@ export function ReferenceRemixPage({
       const form = new FormData();
       form.set("video", video, video.name);
       images.forEach((file) => form.append("images", file, file.name));
-      form.set("duration", String(duration));
+      form.set("videoSeconds", String(videoDuration || ""));
+      form.set("spokenLanguage",spokenLanguage);
       form.set("region", region.trim());
       form.set("productName", productName.trim());
       form.set("externalId", externalId.trim());
-      form.set("saveToLibrary", String(saveToLibrary));
       form.set("autoQueue", String(autoQueue));
       form.set("geminiAccountId", geminiAccountId);
       form.set("tiktokAccountName", tiktokAccountName);
@@ -135,7 +142,9 @@ export function ReferenceRemixPage({
       setProductName("");
       setExternalId("");
       onNotice("爆款复刻任务已加入队列；两轮 Gemini 会在同一个对话中完成");
-      await onReload();
+      await desktopBridge()?.setQueueRunning?.(true);
+      if(autoQueue)await desktopBridge()?.seedanceSetRunning?.(true);
+      await onReload();await loadGroups();
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "创建爆款复刻任务失败");
     } finally {
@@ -143,52 +152,28 @@ export function ReferenceRemixPage({
     }
   }
 
-  async function action(id: string, requestedAction: "retry" | "queue" | "delete") {
-    try {
-      if (requestedAction === "delete") {
-        if (!await confirmAction("确认删除这条复刻任务及其临时素材？已保存到商品库的副本不会删除。")) return;
-        await api("/api/reference-remix", {
-          method: "DELETE",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ id }),
-        });
-      } else {
-        await api("/api/reference-remix", {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ id, action: requestedAction }),
-        });
-      }
-      onNotice(
-        requestedAction === "retry"
-          ? "任务已从第一轮重新开始"
-          : requestedAction === "queue"
-            ? "已提交 Seedance 队列"
-            : "复刻任务已删除"
-      );
-      await onReload();
-    } catch (error) {
-      onNotice(error instanceof Error ? error.message : "操作失败");
-    }
+  async function deleteLegacy(id:string) {
+    try {if(!await confirmAction('删除这条旧版记录及临时素材？'))return;await api('/api/reference-remix',{method:'DELETE',headers:{'content-type':'application/json'},body:JSON.stringify({id})});await onReload();}catch(e){onNotice(e instanceof Error?e.message:'删除失败');}
   }
 
   return (
     <div className="page-body remix-page">
       <PageIntro
         title="爆款视频复刻"
-        text="先让 Gemini 拆解对标视频，再在同一对话上传产品图完成改编，最终自动送入 Seedance。该模块与普通 Gem 创作完全隔离。"
+        text="按参考视频实际时长分段，换品生成后逐段检查，再拼接并放入 TK 目录。"
       />
       <form className="remix-builder" onSubmit={submit}>
         <div className="remix-builder-head">
           <div>
             <span className="step-kicker">REFERENCE REMIX</span>
             <h3>一条对标视频 + 一组产品图</h3>
-            <p>建议对标视频控制在 20 秒内；最长接受 60 秒、100MB。</p>
+            <p>参考视频最长 60 秒、100MB；每段生成 4–15 秒。</p>
           </div>
           <div className="locked-gem-card">
             <span>内置 Gem · 已锁定</span>
-            <b>爆款视频结构复刻智能体</b>
-            <small>仅本模块使用，不会出现在普通 Gem 列表</small>
+            <b>爆款视频复刻智能体</b>
+            <small>每个 Gemini 账号首次使用时自动创建</small>
+            <details><summary>查看指令全文</summary><pre>{gemContent || "正在读取…"}</pre></details>
           </div>
         </div>
 
@@ -215,13 +200,13 @@ export function ReferenceRemixPage({
                 onLoadedMetadata={(event) => setVideoDuration(event.currentTarget.duration || 0)}
               />
             ) : (
-              <div className="remix-drop-empty"><b>01</b><strong>拖入对标爆款视频</strong><span>MP4 / MOV / WebM · 建议 ≤20秒</span></div>
+              <div className="remix-drop-empty"><b>01</b><strong>拖入对标爆款视频</strong><span>MP4 / MOV / WebM · ≤60秒</span></div>
             )}
             {video && (
               <div className="remix-file-caption">
                 <b>{video.name}</b>
                 <span>{(video.size / 1024 / 1024).toFixed(1)}MB{videoDuration ? ` · ${videoDuration.toFixed(1)}秒` : ""}</span>
-                {videoDuration > 20 && <em>可用，但建议先压缩到 20 秒内</em>}
+                <em>{planText}</em>
               </div>
             )}
           </label>
@@ -267,60 +252,29 @@ export function ReferenceRemixPage({
 
         <div className="remix-config-grid">
           <label><span>投放地区</span><input value={region} onChange={(event) => setRegion(event.target.value)} placeholder="例如：马来西亚" /></label>
-          <label><span>视频秒数</span><select value={duration} onChange={(event) => setDuration(Number(event.target.value))}><option value={5}>5 秒</option><option value={10}>10 秒</option><option value={15}>15 秒</option></select></label>
-          <button className="secondary remix-save-default" type="button" onClick={saveDefaults}>保存地区与秒数为默认</button>
+          <SpokenLanguageSelect region={region} value={spokenLanguage} onChange={setSpokenLanguage} allowFollowReference />
+          <button className="secondary remix-save-default" type="button" onClick={saveDefaults}>保存地区为默认</button>
           <label><span>商品名称 <small>选填</small></span><input value={productName} onChange={(event) => setProductName(event.target.value)} placeholder="留空则由 Gemini 识别" /></label>
           <label><span>商品 ID <small>选填</small></span><input value={externalId} onChange={(event) => setExternalId(event.target.value)} placeholder="自动识别首张图片文件名中的 ID，可修改" /></label>
-          <label><span>Gemini 网页账号</span><select value={geminiAccountId} onChange={(event) => setGeminiAccountId(event.target.value)}><option value="">请选择已登录账号</option>{geminiAccounts.map((account) => <option key={account.id} value={account.id} disabled={!account.authenticated}>{account.name}{account.authenticated ? account.busy ? "（忙碌）" : "" : "（未登录）"}</option>)}</select></label>
+          <label><span>Gemini 网页账号</span><select value={geminiAccountId} onChange={(event) => setGeminiAccountId(event.target.value)}><option value="">自动（首次领取时固定，必要时切换可用账号）</option>{geminiAccounts.map((account) => <option key={account.id} value={account.id} disabled={!account.authenticated}>{account.name}{account.authenticated ? account.busy ? "（忙碌）" : "" : "（未登录）"}</option>)}</select></label>
           <label><span>TK 归档账号</span><select value={tiktokAccountName} onChange={(event) => setTikTokAccountName(event.target.value)}><option value="">请选择归档文件夹</option>{tiktokAccounts.map((account) => <option key={account.id} value={account.name}>{account.name}</option>)}</select></label>
         </div>
         <div className="remix-options">
-          <label><input type="checkbox" checked={saveToLibrary} onChange={(event) => setSaveToLibrary(event.target.checked)} /> 同时把产品图保存到普通商品库</label>
+          <span>商品图自动保存到商品库；相同商品 ID 自动复用。</span>
           <label><input type="checkbox" checked={autoQueue} onChange={(event) => setAutoQueue(event.target.checked)} /> 提示词完成后自动进入 Seedance</label>
           <button className="primary" type="submit" disabled={busy}>{busy ? "正在上传…" : "开始自动复刻 ↗"}</button>
         </div>
       </form>
 
+      {loadError&&<p className="form-error" role="alert">{loadError}</p>}
       <div className="remix-task-section">
-        <div className="section-title"><div><span className="eyebrow">REMIX RUNS</span><h3>复刻任务</h3></div><span>{tasks.length} 条</span></div>
-        {!tasks.length ? (
-          <EmptyState icon="◎" title="还没有复刻任务" text="上传一条对标视频和产品图，系统会自动跑完双轮对话与视频生成。" />
-        ) : tasks.map((task) => {
-          const activeStage = task.status === "reference_queued" ? 1 : ["reference_analyzing", "product_adapting"].includes(task.status) ? 2 : PROMPT_ONLY_STATUSES.includes(task.status) ? 3 : VIDEO_RUNNING_STATUSES.includes(task.status) ? 4 : task.status === "video_ready" ? 5 : 0;
-          const isExpanded = expanded === task.id;
-          return (
-            <article className="remix-task-card" key={task.id}>
-              <button className="remix-task-summary" type="button" onClick={() => setExpanded(isExpanded ? "" : task.id)}>
-                <div><b>{task.title}</b><span>{task.duration}秒 · {task.region} · TK：{task.tiktok_account_name}</span></div>
-                <div className="remix-progress"><i style={{ width: `${task.progress}%` }} /></div>
-                <span className={`status ${task.status}`}>{TASK_STATUS_LABELS[task.status] || task.status}</span>
-                <em>{isExpanded ? "收起" : "详情"}</em>
-              </button>
-              <div className="remix-stage-chain">
-                {["素材已保存", "拆解对标视频", "同对话换产品", "Seedance 生成", "成片归档"].map((label, index) => (
-                  <div className={activeStage > index + 1 ? "done" : activeStage === index + 1 ? "active" : "waiting"} key={label}><span>{activeStage > index + 1 ? "✓" : index + 1}</span><b>{label}</b></div>
-                ))}
-              </div>
-              {task.error && <div className="warning-box">{task.error}</div>}
-              {isExpanded && (
-                <div className="remix-task-detail">
-                  <GeminiModelInfo value={task.gemini_model_info} />
-                  <SeedanceTaskDetail taskId={task.id} />
-                  <div><h4>第一轮 · 对标结构分析</h4><pre>{task.reference_analysis || "等待 Gemini 完成第一轮分析…"}</pre></div>
-                  <div><h4>第二轮 · 最终 Seedance 提示词</h4><pre>{task.prompt || "等待同一对话上传产品图并继续改编…"}</pre></div>
-                  {task.download_path && <p className="download-note">成片已归档：{task.download_path}</p>}
-                  <div className="row-actions">
-                    {task.prompt && <button type="button" onClick={() => navigator.clipboard.writeText(task.prompt).then(() => onNotice("最终提示词已复制"))}>复制最终提示词</button>}
-                    {task.status === "prompt_ready" && <button type="button" onClick={() => action(task.id, "queue")}>提交 Seedance</button>}
-                    {VIDEO_FAILED_STATUSES.includes(task.status) && <button type="button" onClick={() => action(task.id, "retry")}>从第一轮重试</button>}
-                    <button className="danger-text" type="button" onClick={() => action(task.id, "delete")}>删除</button>
-                  </div>
-                </div>
-              )}
-            </article>
-          );
-        })}
+        <div className="section-title"><h3>分段复刻任务</h3><span>{groups.length} 组</span></div>
+        {!groups.length&&<EmptyState icon="◎" title="还没有分段复刻任务" text="上传参考视频和商品图片，开始分段复刻。" />}
+        {groups.map(group=><RemixGroupPanel key={group.id} task={group} onUpdated={async message=>{if(message)onNotice(message);await onReload();await loadGroups();}} />)}
       </div>
+      {tasks.length>0&&<section className="remix-task-section"><h3>旧版任务（只读）</h3>{tasks.map(task=><details className="remix-task-card" key={task.id}>
+        <summary>{task.title} · {TASK_STATUS_LABELS[task.status] || task.status}</summary><p>{task.region} · TK：{task.tiktok_account_name}</p><pre>{task.reference_analysis}</pre><pre>{task.prompt}</pre>{task.error&&<p className="warning-box">{task.error}</p>}<button className="secondary danger-text" onClick={()=>void deleteLegacy(task.id)}>删除旧版记录</button>
+      </details>)}</section>}
     </div>
   );
 }

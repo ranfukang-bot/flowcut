@@ -16,6 +16,15 @@ export function withChildren(tasks: Task[]) {
 }
 
 export function taskStages(task: Task): TaskStage[] {
+  if(task.task_role==='remix') {
+    const analyzed=Boolean(task.remix_script)||['remix_adapting','remix_segmented','remix_finishing','remix_done'].includes(task.status),ready=['remix_segmented','remix_finishing','remix_done'].includes(task.status);
+    return [
+      {number:'1',label:'对标视频',detail:`${task.remix_video_seconds || '未知'} 秒`,state:'done'},
+      {number:'2',label:'拆解与换品',detail:taskStatusLabel(task),state:ready?'done':task.status==='failed'?'blocked':'active'},
+      {number:'3',label:'分段视频',detail:`${task.batch_size || '待拆解'} 段`,state:ready?'done':analyzed?'active':'waiting'},
+      {number:'4',label:'检查并拼接',detail:task.status==='remix_done'?'已放入 TK 目录':'逐段检查后整组放行',state:task.status==='remix_done'?'done':ready?'active':'waiting'},
+    ];
+  }
   if(task.task_role==='fission'){
     const ready=task.status==='fission_ready',children=task.children||[];
     return [

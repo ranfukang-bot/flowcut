@@ -14,7 +14,8 @@ export async function claimRemixSegments(db: Db, input: {requestUrl:string;worke
   for(const task of rows.results) {
     if(jobs.length>=input.capacity) break;
     if(input.blockedTasks.has(task.id)) continue;
-    const eligible=await availableGemAccounts(input.accounts,input.blocked,REMIX_GEM.id,REMIX_GEM.content);
+    const gem={...REMIX_GEM,content:String(task.gem_content_snapshot || REMIX_GEM.content)};
+    const eligible=await availableGemAccounts(input.accounts,input.blocked,gem.id,gem.content);
     const preferred=String(task.gemini_account_id || '');
     const accountId=eligible.has(preferred)?preferred:eligible.values().next().value;
     if(!accountId) continue;
@@ -27,7 +28,7 @@ export async function claimRemixSegments(db: Db, input: {requestUrl:string;worke
       AND (bridge_claimed_at IS NULL OR bridge_claimed_at<?)`)
       .bind(status,accountId,input.workerId,input.now,input.now,task.id,task.status,task.batch_round,input.staleBefore).run();
     if(!claimed.meta.changes) continue;
-    jobs.push({id:task.id,kind:rewrite?'remix-rewrite' as const:'remix-segments' as const,accountId,gem:REMIX_GEM,
+    jobs.push({id:task.id,kind:rewrite?'remix-rewrite' as const:'remix-segments' as const,accountId,gem,
       analysisPrompt:remixAnalysisRequest(task.remix_video_seconds,plan),
       adaptationPrompt:saved.length?remixAdaptationRequest(saved.map(s=>s.text).join('\n\n'),{productName:String(task.remix_product_name || ''),region:String(task.region),spokenLanguage:String(task.remix_spoken_language || 'auto'),segment:rewrite?saved.find(s=>s.index===task.remix_rewrite_index):undefined,note:String(task.remix_rewrite_note || '')}):'',
       imageUrls:(JSON.parse(String(task.image_keys_snapshot || '[]')) as string[]).map(key=>mediaUrl(input.requestUrl,key)),

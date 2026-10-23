@@ -624,8 +624,8 @@ button.danger-text { border-color: rgba(244,113,113,.35); }
 .remix-builder-head, .script-builder-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 22px; border-bottom: 1px solid var(--line); }
 .remix-builder-head h3, .script-builder-head h3 { margin: 4px 0; font-size: 18px; }
 .remix-builder-head p, .script-builder-head p { margin: 0; color: var(--ink-3); font-size: 13px; }
-.locked-gem-card { min-width: 260px; display: grid; gap: 2px; padding: 12px 14px; border: 1px solid rgba(242,177,60,.3); border-radius: 10px; background: var(--accent-soft); }
-.locked-gem-card span { color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .8px; }
+.locked-gem-card { min-width: 260px; display: grid; gap: 2px; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--panel-2); }
+.locked-gem-card span { color: var(--ink-2); font-size: 12px; font-weight: 700; letter-spacing: .8px; }
 .locked-gem-card b { font-size: 13px; }
 .locked-gem-card small { color: var(--ink-3); }
 .remix-upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 18px 22px; }
@@ -634,7 +634,7 @@ button.danger-text { border-color: rgba(244,113,113,.35); }
 .remix-drop input[type="file"] { position: absolute; z-index: 4; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 .remix-drop video { width: 100%; height: 240px; display: block; object-fit: contain; background: #000; }
 .remix-drop-empty { height: 240px; display: grid; place-content: center; justify-items: center; gap: 6px; text-align: center; }
-.remix-drop-empty b { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 10px; background: var(--panel-3); color: var(--accent); font-size: 12px; }
+.remix-drop-empty b { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 10px; background: var(--panel-3); color: var(--info); font-size: 12px; }
 .remix-drop-empty strong { font-size: 14px; }
 .remix-drop-empty span { color: var(--ink-3); font-size: 12px; }
 .remix-file-caption { position: absolute; z-index: 5; left: 10px; right: 10px; bottom: 10px; display: grid; gap: 2px; padding: 8px 10px; border-radius: 8px; background: rgba(0,0,0,.75); pointer-events: none; }
@@ -647,7 +647,7 @@ button.danger-text { border-color: rgba(244,113,113,.35); }
 .remix-image-strip img { width: 100%; height: 100%; display: block; border-radius: inherit; object-fit: cover; }
 .remix-image-strip button { position: absolute; z-index: 7; top: -6px; right: -6px; width: 22px; height: 22px; border: 1px solid var(--line-2); border-radius: 50%; background: var(--panel); color: #fff; pointer-events: auto; }
 .remix-image-strip em { grid-column: 1 / -1; color: var(--accent); font-size: 12px; font-style: normal; }
-.remix-config-grid { display: grid; grid-template-columns: 1fr .55fr auto 1fr 1fr 1fr 1fr; align-items: end; gap: 10px; padding: 0 22px 18px; }
+.remix-config-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: 10px; padding: 0 22px 18px; }
 .remix-config-grid label { display: grid; gap: 6px; min-width: 0; font-size: 13px; }
 .remix-config-grid label span small { color: var(--ink-3); }
 .remix-config-grid input, .remix-config-grid select { width: 100%; }
@@ -838,3 +838,16 @@ button.danger-text { border-color: rgba(244,113,113,.35); }
   .tk-account-list article { flex-direction: column; align-items: stretch; }
   .modal-backdrop { padding: 8px; }
 }
+
+/* Reference remix segment versions and group review. */
+.remix-group-panel { display:grid; gap:16px; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius-lg); padding:20px; margin-block:16px; }
+.remix-group-panel pre, .locked-gem-card pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:420px; overflow:auto; background:var(--panel-2); padding:14px; font-size:12px; }
+.remix-group-panel summary { cursor:pointer; color:var(--ink-2); }
+.remix-segments { display:grid; gap:14px; }
+.remix-segment { display:grid; gap:12px; background:var(--panel-2); border:1px solid var(--line-2); border-radius:var(--radius); padding:16px; }
+.remix-segment label, .remix-id-entry label { display:grid; gap:6px; font-size:12px; }
+.remix-group-actions, .remix-id-entry { display:flex; gap:10px; flex-wrap:wrap; align-items:end; }
+.remix-segment details input { width:100%; margin-block:8px; }
+.locked-gem-card details { max-width:420px; }
+
+.locked-gem-instructions { white-space:pre-wrap; overflow-wrap:anywhere; padding:20px; font-size:12px; overflow:auto; max-height:70vh; }

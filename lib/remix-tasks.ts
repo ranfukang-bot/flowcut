@@ -47,11 +47,20 @@ export async function finishRemixRound(db: ReturnType<typeof getDb>, task: Remix
   return Boolean(results.at(-1)?.meta.changes);
 }
 
-export async function remixAction(db: ReturnType<typeof getDb>, body: {id:string;action?:string;clipId?:string;index?:number;note?:string}, now=new Date().toISOString()) {
+export async function remixAction(db: ReturnType<typeof getDb>, body: {id:string;action?:string;clipId?:string;index?:number;note?:string;externalId?:string}, now=new Date().toISOString()) {
   const task=await getRemix(db,body.id);
   if (!task) return Response.json({error:'分段复刻任务不存在；旧版记录只支持查看和删除'},{status:404});
   if (['remix_done','remix_finishing','remix_deleting'].includes(task.status) || REMIX_ACTIVE.includes(task.status) || await db.prepare("SELECT id FROM tasks WHERE batch_parent_id=? AND (status='concat_running' OR review_status IN ('merging','approving'))").bind(task.id).first())
     return Response.json({error:'任务正在处理或已放行，请等当前操作结束'},{status:409});
+  if(body.action==='product-id') {
+    const externalId=String(body.externalId || '').trim();
+    if(!/^\d{10,30}$/.test(externalId))return Response.json({error:'请填写 10–30 位数字商品 ID'},{status:400});
+    await db.batch([
+      db.prepare("UPDATE tasks SET product_external_id_snapshot=?,updated_at=? WHERE id=? AND status=?").bind(externalId,now,task.id,task.status),
+      db.prepare("UPDATE tasks SET product_external_id_snapshot=? WHERE batch_parent_id=? AND review_status='pending'").bind(externalId,task.id),
+    ]);
+    return Response.json({ok:true});
+  }
   if (['retry','reanalyze','readapt','rewrite'].includes(body.action || '')) {
     if(body.action==='rewrite' && (!Number.isInteger(body.index)||Number(body.index)<1||Number(body.index)>Number(task.batch_size))) return Response.json({error:'分段序号无效'},{status:400});
     if(['rewrite','readapt'].includes(body.action || '') && !task.remix_analysis_blocks) return Response.json({error:'没有已校验的原脚本，请先拆解'},{status:409});

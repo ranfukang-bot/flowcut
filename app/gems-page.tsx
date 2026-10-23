@@ -17,6 +17,7 @@ export function GemsPage({
   onEdit: (gem: Gem) => void;
   onDelete: (id: string) => void;
 }) {
+  const [instructions,setInstructions]=useState<Gem|null>(null);
   const [webGem, setWebGem] = useState<Gem | null>(null);
   const [exportMessage, setExportMessage] = useState('');
   return (
@@ -24,24 +25,25 @@ export function GemsPage({
       <PageIntro title="Gem 模板中心" text="商品图任务首次使用时，会在执行账号内自动创建并保存真正的 Gem；之后只发送图片和本次要求。也可手动绑定已有 Gem 链接。" action="新建 Gem" onAction={onAdd} />
       <button type="button" className="secondary" onClick={() => void exportAllGems(gems).then(result => setExportMessage(result && typeof result === 'object' && 'directory' in result ? `Gem 已导出：${result.directory}` : '导出已处理')).catch(error => setExportMessage(error instanceof Error ? error.message : '导出失败'))}>导出全部 Gem</button>
       {exportMessage && <p role="status">{exportMessage}</p>}
+      {instructions&&<div className="modal-backdrop"><div className="modal wide-modal" role="dialog" aria-label="锁定 Gem 指令"><ModalHead title={instructions.name} text="内置 Gem · 指令已锁定" onClose={()=>setInstructions(null)} /><pre className="locked-gem-instructions">{instructions.content}</pre></div></div>}
       {webGem && <WebGemModal gem={webGem} onClose={() => setWebGem(null)} />}
       <div className="gem-grid">
         {gems.map((gem, index) => (
           <article className="gem-card" key={gem.id}>
             <div className={`gem-orb orb-${index % 4}`}>◇</div>
             <div className="gem-tags">
-              {gem.is_default ? <span>内置模板</span> : <span>自定义</span>}
+              {gem.locked?<span>内置 · 已锁定</span>:gem.is_default ? <span>内置模板</span> : <span>自定义</span>}
             </div>
             <h3>{gem.name}</h3>
             <p>{gem.description || "未填写模板简介"}</p>
             <div className="gem-meta">
               <span>{gem.content.length.toLocaleString()} 字指令</span>
-              <span>更新于 {formatTime(gem.updated_at)}</span>
+              <span>{gem.locked?"每个账号首次使用时自动创建":`更新于 ${formatTime(gem.updated_at)}`}</span>
             </div>
             <div className="gem-actions">
-              <button className="secondary" onClick={() => onEdit(gem)}>编辑指令</button>
+              {gem.locked?<button className="secondary" onClick={()=>setInstructions(gem)}>查看指令</button>:<button className="secondary" onClick={() => onEdit(gem)}>编辑指令</button>}
               <button className="secondary" onClick={() => setWebGem(gem)}>网页 Gem</button>
-              <button className="danger-text" onClick={() => onDelete(gem.id)}>删除</button>
+              {!gem.locked&&<button className="danger-text" onClick={() => onDelete(gem.id)}>删除</button>}
             </div>
           </article>
         ))}

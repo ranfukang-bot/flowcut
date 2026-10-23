@@ -182,9 +182,9 @@ export function StudioApp() {
       );
       setSelectedProduct((current) => result.products.some(product => product.id === current) ? current : "");
       setSelectedGem((current) =>
-        result.gems.some((gem) => gem.id === current)
+        result.gems.some((gem) => gem.id === current && !gem.locked)
           ? current
-          : result.gems[0]?.id || ""
+          : result.gems.find(gem=>!gem.locked)?.id || ""
       );
       setSelectedTikTokAccount((current) =>
         result.tiktokAccounts.some((account) => account.name === current)
@@ -260,6 +260,7 @@ export function StudioApp() {
           "variant_queued",
           "variant_generating",
           "concat_running",
+          "remix_queued","remix_analyzing","remix_adapting","remix_rewrite_queued","remix_rewriting","remix_finishing",
           "video_queued",
           "video_generating",
         ].includes(task.status)
@@ -477,6 +478,14 @@ export function StudioApp() {
     }
   }
 
+  async function deleteQueueTask(task:Task) {
+    if(task.task_role==='remix' || task.remix_segment_start!=null) {
+      if(!await confirmAction(task.task_role==='remix'?'删除整组和临时视频？已放行成片保留。':'删除这个分段版本和临时视频？'))return;
+      try {const d=desktopBridge();if(task.task_role==='remix'){if(!d?.deleteRemix)throw Error('请更新桌面端');await d.deleteRemix(task.id,true);}else{if(!d?.deleteRemixClip)throw Error('请更新桌面端');await d.deleteRemixClip(task.id,true);}await reload();}catch(e){setNotice(e instanceof Error?e.message:'删除失败');}
+      return;
+    }
+    await deleteRecord('/api/tasks',task.id,GROUP_ROLES.includes(task.task_role||'')?`确认删除这一整组任务（含 ${task.children?.length || 0} 条视频记录）？已下载到待检查文件夹的视频文件会保留。`:'确认删除这个任务？');
+  }
   async function deleteRecord(path: string, id: string, message: string) {
     if (!await confirmAction(message)) return;
     try {
@@ -600,7 +609,7 @@ export function StudioApp() {
 
         {page === "dashboard" && (
           <Dashboard
-            data={data}
+            data={{...data,gems:data.gems.filter(g=>!g.locked)}}
             selectedProduct={selectedProduct}
             productMode={productMode}
             onProductMode={setProductMode}
@@ -655,7 +664,7 @@ export function StudioApp() {
             onNotice={setNotice}
           />
         )}
-        {page === 'fission' && <FissionPage products={data.products} gems={data.gems} accounts={data.tiktokAccounts}
+        {page === 'fission' && <FissionPage products={data.products} gems={data.gems.filter(g=>!g.locked)} accounts={data.tiktokAccounts}
           gemRequestTemplate={gemRequestTemplate}
           request={api} onUpload={quickUploadProduct} onOpenTask={openTask} statusLabel={taskStatusLabel}
           onCreated={async(autoQueue)=>{try{await desktopBridge()?.setQueueRunning?.(true);if(autoQueue)await desktopBridge()?.seedanceSetRunning?.(true);}catch{setNotice('任务已保存，请在账号与设置中启动队列');}await reload();}} />}
@@ -690,9 +699,7 @@ export function StudioApp() {
             initialFilter={taskFilter}
             geminiRuntime={data.integrations.geminiRuntime}
             onPreview={openTask}
-            onDelete={(task) => deleteRecord("/api/tasks", task.id, GROUP_ROLES.includes(task.task_role||'')
-              ? `确认删除这一整组任务（含 ${task.children?.length || 0} 条视频记录）？已下载到待检查文件夹的视频文件会保留。`
-              : "确认删除这个任务？")}
+            onDelete={deleteQueueTask}
             onClearCompleted={clearCompletedTasks}
             onClearAll={clearAllTasks}
           />

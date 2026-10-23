@@ -3,6 +3,7 @@ import type { GeminiLoginState } from './gemini-login';
 import type { TaskCounts } from '../lib/task-list';
 
 export type Gem = {
+  locked?: boolean;
   id: string;
   name: string;
   description: string;
@@ -72,6 +73,14 @@ export type Task = {
   gemini_raw_reply?: string | null;
   variant_request_text?: string | null;
   children?: Task[];
+  remix_video_seconds?: number | null;
+  remix_segment_start?: number | null;
+  remix_segment_end?: number | null;
+  remix_script?: string | null;
+  remix_raw_replies?: string | null;
+  remix_selected_json?: string | null;
+  remix_release_task_id?: string | null;
+  segment_checked_at?: string | null;
 };
 
 export type TikTokAccount = {
@@ -239,6 +248,9 @@ export type FlowCutDesktopBridge = {
   deletePendingReviewVideo?: (id: string, confirmed: boolean) => Promise<boolean>;
   approveReviewVideo?: (id: string, confirmed: boolean) => Promise<{file:string;alreadyApproved?:boolean}>;
   discardReviewVideo?: (id: string, replacementId: string) => Promise<boolean>;
+  finishRemix?: (id:string,confirmed:boolean)=>Promise<{file:string}>;
+  deleteRemix?: (id:string,confirmed:boolean)=>Promise<void>;
+  deleteRemixClip?: (id:string,confirmed:boolean)=>Promise<void>;
   concatReviewVideos?: (groupId: string, ids: string[], confirmed: boolean) => Promise<{ id: string; file: string }>;
   listGemBindings?: (gem: Gem) => Promise<Array<{ id: string; name: string; authenticated: boolean; binding: { url?: string; status: string; name?: string } | null }>>;
   configureGem?: (options: { accountId: string; gem: Gem; action: "create" | "bind" | "open"; url?: string }) => Promise<unknown>;

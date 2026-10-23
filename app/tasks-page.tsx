@@ -63,7 +63,7 @@ export function TasksPage({
   // 失败和待审核的那个按钮用主色，一眼能看到要点哪里。
   const actions = (task: Task, deleteLabel: string) => <div className="row-actions">
     {task.download_path && task.review_status === 'approved' && <button onClick={() => void openVideo(task)}>查看视频</button>}
-    <button className={failed(task) ? "recover-action" : pendingReview(task) ? "review-action" : ""} onClick={() => onPreview(task)}>{failed(task) ? "查看 / 继续" : pendingReview(task) ? "审核" : "查看"}</button>
+    <button className={failed(task) ? "recover-action" : pendingReview(task) ? "review-action" : ""} onClick={() => onPreview(task)}>{task.task_role==='remix'?"爆款复刻":task.remix_segment_start!=null?"检查分段":failed(task) ? "查看 / 继续" : pendingReview(task) ? "审核" : "查看"}</button>
     <button aria-label={deleteLabel} title={deleteLabel} onClick={() => onDelete(task)}>×</button>
   </div>;
   const status = (task: Task) => <div className="task-live-status">
@@ -106,7 +106,7 @@ export function TasksPage({
             <button className="task-name task-product-summary" onClick={() => onPreview(task)}>
               <TaskProductThumbnail task={task} />
               <span className="task-product-copy">
-                <b>{task.task_role==='fission'?task.title:task.product_name || task.title}</b>
+                <b>{['fission','remix'].includes(task.task_role || '')?task.title:task.product_name || task.title}</b>
                 {task.product_external_id && <small className="task-id">ID {task.product_external_id}</small>}
                 <small>
                   {task.gem_name}

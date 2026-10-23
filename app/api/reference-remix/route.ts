@@ -149,7 +149,7 @@ export async function PUT(request: Request) {
 export async function PATCH(request: Request) {
   try {
     await ensureWorkspace();
-    const body=await request.json() as {id:string;action?:string;clipId?:string;index?:number;note?:string};
+    const body=await request.json() as {id:string;action?:string;clipId?:string;index?:number;note?:string;externalId?:string};
     if(!body.id) return Response.json({error:'缺少复刻任务 ID'},{status:400});
     return remixAction(getDb(),body);
   } catch (error) {

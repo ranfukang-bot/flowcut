@@ -6,6 +6,7 @@ import { confirmAction } from './confirm-action';
 import { GeminiModelInfo } from './gemini-model-settings';
 import { SeedanceTaskDetail } from './seedance-task-detail';
 import { TaskBatchPanel, clipLabel } from './task-batch-panel';
+import { RemixGroupPanel } from './remix-group-panel';
 import { FissionBatchPanel } from './fission-batch-panel';
 import { api, desktopBridge } from './studio-client';
 import type { Gem, Task } from './studio-types';
@@ -26,6 +27,7 @@ export function PromptDrawer({
   onUpdated: (message: string) => Promise<void>;
   onOpenTask: (task: Task) => void;
 }) {
+  const isRemixClip=task.task_role==='clip'&&task.remix_segment_start!=null;
   const isFission=task.task_role==='fission';
   const isFissionChild=task.task_role==='fission_child';
   const isGroup = task.task_role === "group" || isFission;
@@ -50,6 +52,7 @@ export function PromptDrawer({
       const gemLabel = recreateGemId ? gems.find(gem => gem.id === recreateGemId)?.name : '原任务 Gem 设定';
       const confirmText = rewriteMother
         ? '确认用母版重新写这条提示词并生成新视频？将重新运行本商品的变体 Gem，使用原商品图片、商品 ID 和共用母版，会额外消耗一次视频额度。旧视频会删除，新视频仍需检查。'
+        : isRemixClip ? '用同一条提示词重新生成此段？原版本保留，新版本仍需检查。'
         : isClip
         ? `确认删除这条视频并用同一条提示词重新生成？不经过 Gemini，旧视频将永久删除，会消耗一次视频生成额度。新视频仍为待检查，不会自动发布。`
         : `确认删除旧成片并重新生成？本次使用：${gemLabel}。旧视频将永久删除，旧任务也会从列表移除。沿用本任务的图片、商品 ID 和视频参数，从提示词开始重新生成，会消耗生成额度。新成片仍为待检查，不会自动发布。`;
@@ -60,15 +63,17 @@ export function PromptDrawer({
       const result = await api("/api/tasks/recreate", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ id: task.id, requestId: recreateRequest.current, gemId: isClip ? undefined : recreateGemId || undefined, rewriteMother }),
-      }) as { id: string; status?: string; created: boolean };
+      }) as { id: string; status?: string; created: boolean;preserveSource?:boolean };
       let message = !result.created ? "已有重做任务，未重复创建"
         : rewriteMother ? '已保存重写任务，将用原母版和本商品图片重新运行变体 Gem'
         : isClip ? (result.status === "prompt_ready" ? "已新建重做任务（同一条提示词），请打开它点“提交 Seedance”" : "已新建重做任务，将用同一条提示词重新生成视频")
         : "已新建重做任务，将从 Gemini 提示词开始完整生成视频";
       const desktop = desktopBridge();
+      if (!result.preserveSource) {
       if (!desktop?.discardReviewVideo) throw new Error('重做任务已保存，但旧视频尚未删除：请在最新版桌面程序中操作');
       try { await desktop.discardReviewVideo(task.id, result.id); }
       catch (error) { throw new Error(`重做任务已保存，但旧视频或旧任务删除失败，请重试：${error instanceof Error ? error.message : error}`); }
+      }
       try {
         const desktop = desktopBridge();
         await desktop?.setQueueRunning?.(true);
@@ -144,6 +149,7 @@ export function PromptDrawer({
       await onUpdated(error instanceof Error ? error.message : "任务操作失败");
     }
   }
+  if(task.task_role==='remix') return <div className="drawer-backdrop"><aside className="drawer"><div className="drawer-head"><h2>爆款复刻</h2><button onClick={onClose}>×</button></div><RemixGroupPanel task={task} onUpdated={onUpdated} /><div className="drawer-foot"><button className="secondary" onClick={onClose}>关闭</button></div></aside></div>;
   return (
     <div
       className="drawer-backdrop"
@@ -219,11 +225,12 @@ export function PromptDrawer({
             <span>{task.approved_path || task.download_path}</span>
             <button className="secondary" disabled={Boolean(busy) || task.review_status === 'replaced'} onClick={() => reviewAction('open')}>外部打开视频</button>
             {!APPROVED_REVIEW_STATUSES.includes(task.review_status || '') && <button className="secondary" disabled={Boolean(busy)} onClick={() => reviewAction('folder')}>打开临时存放目录</button>}
-            {!['approved','replaced','deleting','merging','merged'].includes(task.review_status || '') && <button className="primary" disabled={Boolean(busy)} onClick={() => reviewAction('approve')}>通过检查并送入发布目录</button>}
+            {!isRemixClip && !['approved','replaced','deleting','merging','merged'].includes(task.review_status || '') && <button className="primary" disabled={Boolean(busy)} onClick={() => reviewAction('approve')}>通过检查并送入发布目录</button>}
             {task.approved_path && <span>已放行至：{task.approved_path}</span>}
             {!task.download_path.includes('review-videos') && task.review_status !== 'approved' && <span>这是旧版已下载的文件，可能早已在发布目录中。此状态不会撤回已开始的发布。</span>}
           </div>
         )}
+        {isRemixClip&&<div className="download-result"><p>这条视频属于爆款复刻分段，请在整组里选用版本并标记「这段可以」。</p><button className="secondary" onClick={()=>onOpenTask({...task,id:task.batch_parent_id!})}>打开复刻整组</button></div>}
         {isConcat && VIDEO_DONE_STATUSES.includes(task.status) && ['pending','deleting'].includes(task.review_status || 'pending') && task.download_path && (
           <div className="download-result">
             <b>拼接成片不满意？</b>
@@ -236,7 +243,7 @@ export function PromptDrawer({
         {!isConcat && !merged && VIDEO_DONE_STATUSES.includes(task.status) && !['approved','approving'].includes(task.review_status || '') && (
           <div className="download-result">
             <b>{isClip ? "这条视频不满意？" : "成片不满意？用这些素材重新制作"}</b>
-            <span>{isClip
+            <span>{isRemixClip ? "用同一提示词生成新版本，原版本保留，新视频仍需在整组中检查。" : isClip
               ? "用同一条提示词重新生成视频（不经过 Gemini），旧视频会删除，新视频放回本组同一位置，仍需检查。"
               : "删除旧成片和旧任务，复用原图片和商品 ID，从提示词开始重做。默认沿用原 Gem，也可切换。新成片仍需检查。"}</span>
             {!isClip && <label>重做使用的 Gem
@@ -309,7 +316,7 @@ export function PromptDrawer({
                 {busy === "check" ? "查询中…" : "刷新生成状态"}
               </button>
             )}
-          {task.status === "failed" && (
+          {task.status === "failed" && !isRemixClip && (
             <button
               className="primary"
               disabled={Boolean(busy)}

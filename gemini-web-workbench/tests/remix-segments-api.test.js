@@ -25,7 +25,7 @@ test('creation uses tasks, saves deduplicated library product and immutable snap
 });
 test('claim uses actual saved Gem, pins first account and prefers it on resume with fallback',async t=>{
   const f=await setup(t);const j=await claim(f);assert.equal(j.gem.id,'builtin-reference-remix');assert.equal(j.gem.name,'爆款视频复刻智能体');assert.equal(j.kind,'remix-segments');assert.ok(j.referenceVideoUrl);assert.match(j.analysisPrompt,/15-24/);
-  await report(f,'release');const j2=await claim(f,'b');assert.equal(j2.accountId,'b');assert.equal(f.row('SELECT gemini_account_id FROM tasks WHERE id=?',f.id).gemini_account_id,'b');
+  await report(f,'release');const j2=await claim(f,'b');assert.equal(j2.accountId,'b');assert.equal(f.row('SELECT gemini_account_id FROM tasks WHERE id=?',f.id).gemini_account_id,'a','fallback retains the originally pinned account for future rounds');
 });
 test('first-round validation is durable before adaptation; resume skips video',async t=>{
   const f=await setup(t);await claim(f);const analysis=[block(1,0,15),block(2,15,24)];

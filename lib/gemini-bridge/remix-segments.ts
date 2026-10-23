@@ -23,7 +23,7 @@ export async function claimRemixSegments(db: Db, input: {requestUrl:string;worke
     const saved=task.remix_analysis_blocks?savedRemixSegments(task):[];
     const rewrite=Boolean(task.remix_rewrite_index);
     const status=rewrite?'remix_rewriting':saved.length?'remix_adapting':'remix_analyzing';
-    const claimed=await db.prepare(`UPDATE tasks SET status=?,progress=18,gemini_account_id=?,bridge_worker_id=?,bridge_claimed_at=?,
+    const claimed=await db.prepare(`UPDATE tasks SET status=?,progress=18,gemini_account_id=COALESCE(NULLIF(gemini_account_id,''),?),bridge_worker_id=?,bridge_claimed_at=?,
       gemini_retry_at=NULL,error=NULL,updated_at=? WHERE id=? AND status=? AND batch_round=?
       AND (bridge_claimed_at IS NULL OR bridge_claimed_at<?)`)
       .bind(status,accountId,input.workerId,input.now,input.now,task.id,task.status,task.batch_round,input.staleBefore).run();

@@ -164,6 +164,12 @@ export function clipAwaitingReview(task: Task): boolean {
 }
 
 export function taskStatusClass(task: Task) {
+  if(task.task_role==='remix') {
+    if(task.status==='remix_done')return 'video_ready';
+    if(task.status==='remix_segmented')return 'review_pending';
+    if(task.status==='remix_finishing')return 'concat_running';
+    if(task.status.startsWith('remix_'))return 'prompt_generating';
+  }
   if(task.task_role==='fission'&&task.status==='fission_ready'){
     const children=task.children||[];
     if(children.some(clipAwaitingReview))return 'review_pending';

@@ -3,14 +3,17 @@ import { useRef, useState } from 'react';
 import type { Task } from './studio-types';
 import { api, desktopBridge } from './studio-client';
 import { confirmAction } from './confirm-action';
-import { StageBar, taskStatusLabel } from './task-status';
+import { parseSegmentHeader } from '../lib/remix-segments';
+import { StageBar, taskStatusLabel, taskStatusClass } from './task-status';
 import { REMIX_GEMINI_STATUSES, VIDEO_DONE_STATUSES } from '../lib/task-statuses';
 
 export function remixSelected(task:Task) {
   const explicit=JSON.parse(task.remix_selected_json || '{}') as Record<string,string>;
   const clips=(task.children || []).filter(c=>c.task_role==='clip').sort((a,b)=>Number(b.batch_round)-Number(a.batch_round)||b.created_at.localeCompare(a.created_at)||b.id.localeCompare(a.id));
   return Array.from({length:task.batch_size || 0},(_,i)=>{
-    const versions=clips.filter(c=>c.batch_index===i+1);
+    const saved=JSON.parse(task.remix_analysis_blocks || '[]') as string[];
+    const target=saved[i]?parseSegmentHeader(saved[i].split('\n')[0]):null;
+    const versions=clips.filter(c=>c.batch_index===i+1 && (!target||(c.remix_segment_start===target.start&&c.remix_segment_end===target.end&&c.duration===target.duration)));
     return {versions,selected:versions.find(c=>c.id===explicit[i+1]) || versions.find(c=>VIDEO_DONE_STATUSES.includes(c.status)&&c.download_path&&!['merging','merged','deleting','replaced'].includes(c.review_status || '')) || versions[0]};
   });
 }
@@ -29,7 +32,7 @@ export function RemixGroupPanel({task,onUpdated}:{task:Task;onUpdated:(message:s
   }
   const patch=(action:string,extra:object={})=>api('/api/reference-remix',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({id:task.id,action,...extra})});
   return <section className="remix-group-panel" aria-label="分段复刻详情">
-    <div className="section-title"><div><h3>{task.title}</h3><p>{task.remix_video_seconds || '未知'} 秒 · {task.batch_size || '待拆解'} 段 · {task.region} · TK：{task.tiktok_account_name}</p></div><span className="status">{taskStatusLabel(task)}</span></div>
+    <div className="section-title"><div><h3>{task.title}</h3><p>{task.remix_video_seconds || '未知'} 秒 · {task.batch_size || '待拆解'} 段 · {task.region} · TK：{task.tiktok_account_name}</p></div><span className={`status ${taskStatusClass(task)}`}>{taskStatusLabel(task)}</span></div>
     <StageBar task={task} />
     {task.error && <p className="warning-box">{task.error}</p>}
     <details><summary>第一轮原脚本{task.remix_script?'（已保存，重试可复用）':''}</summary><pre>{task.remix_script || '等待完整拆解并校验通过'}</pre></details>
@@ -46,6 +49,7 @@ export function RemixGroupPanel({task,onUpdated}:{task:Task;onUpdated:(message:s
             <button className="secondary" disabled={!selected.download_path||Boolean(busy)} onClick={()=>void run('preview',async()=>{const d=desktopBridge();if(!d?.openReviewVideo)throw Error('请在新版桌面程序中预览视频');await d.openReviewVideo(selected.id);},'')}>预览视频</button>
             <button className={selected.segment_checked_at?'secondary':'review-action'} disabled={!selected.download_path||Boolean(busy)||active||done||finishing} onClick={()=>void run('check',()=>patch('check',{clipId:selected.id}),'此版本已标记「这段可以」')}>{selected.segment_checked_at?'✓ 这段可以':'这段可以'}</button>
             <button className="secondary" disabled={!selected.download_path||Boolean(busy)||active||done||finishing} onClick={()=>void run('regenerate',async()=>{regenerateRequests.current[selected.id] ||= crypto.randomUUID();await api('/api/tasks/recreate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:selected.id,requestId:regenerateRequests.current[selected.id]})});delete regenerateRequests.current[selected.id];},'已用同一提示词生成新版本，原版本保留')}>重新生成视频</button>
+            {selected.status==='failed'&&<button className="secondary" disabled={Boolean(busy)||active||done||finishing} onClick={()=>void run('resume-clip',async()=>{const d=desktopBridge();if(!d?.resumeRemixSeedance)throw Error('请更新桌面程序');await d.resumeRemixSeedance(selected.id);},'已按原 Seedance 任务核对恢复，未新建任务')}>恢复原 Seedance 任务</button>}
             <button className="secondary danger-text" disabled={Boolean(busy)||active||done||finishing} onClick={()=>void run('delete-clip',async()=>{if(!await confirmAction('删除这个分段版本及其临时视频？'))return;const d=desktopBridge();if(!d?.deleteRemixClip)throw Error('请在新版桌面程序中删除分段');await d.deleteRemixClip(selected.id,true);},'已删除该分段版本')}>删除此版本</button>
           </div>
           {!done && <details><summary>重新写这段提示词</summary><label>修改说明（选填）<input value={notes[offset+1] || ''} onChange={e=>setNotes({...notes,[offset+1]:e.target.value})} placeholder="例如：加快运镜，保留原区间" /></label><button className="secondary" disabled={Boolean(busy)||active||finishing||!task.remix_script} onClick={()=>void run('rewrite',()=>patch('rewrite',{index:offset+1,note:notes[offset+1] || ''}),'已排队重写这一段，旧版本保留')}>重新写这段提示词</button></details>}
@@ -56,6 +60,7 @@ export function RemixGroupPanel({task,onUpdated}:{task:Task;onUpdated:(message:s
     {reason&&<p role="status">{reason}</p>}
     <div className="remix-group-actions">
       {!done&&<button className="primary" disabled={Boolean(busy)||(!finishing&&Boolean(reason))} onClick={()=>void run('finish',async()=>{if(!await confirmAction('确认全部选用分段都已检查？将按顺序拼接并放入所选 TK 目录，放行后清理未选用版本。'))return;const d=desktopBridge();if(!d?.finishRemix)throw Error('请在新版桌面程序中拼接放行');await d.finishRemix(task.id,true);},'复刻成片已放入 TK 目录')}>{busy==='finish'?'正在拼接放行…':finishing?'继续放行 / 清理':'拼接并放入 TK 目录'}</button>}
+      {task.status==='failed'&&Boolean(task.remix_script)&&Boolean(task.children?.length)&&<button className="secondary" disabled={Boolean(busy)} onClick={()=>void run('resume-segments',()=>patch('resume-segments'),'已恢复原分段检查；未重新运行 Gemini 或提交视频')}>恢复已有分段检查</button>}
       {task.status==='failed'&&<button className="secondary" disabled={Boolean(busy)} onClick={()=>void run('retry',()=>patch('retry'),'已恢复任务；已保存的原脚本会复用')}>恢复任务</button>}
       {!done&&<><button className="secondary" disabled={Boolean(busy)||active||finishing||!task.remix_script} onClick={()=>void run('readapt',()=>patch('readapt'),'已用原脚本重新换品，旧段保留')}>用原脚本重新换品</button><button className="secondary" disabled={Boolean(busy)||active||finishing} onClick={()=>void run('reanalyze',async()=>{if(await confirmAction('清空原脚本并重新上传视频拆解？已有分段版本保留。'))await patch('reanalyze');},'已排队重新拆解')}>重新拆解</button></>}
       <button className="secondary danger-text" disabled={Boolean(busy)||finishing} onClick={()=>void run('delete',async()=>{if(!await confirmAction('删除整组及所有临时视频和对标视频？已放入 TK 目录的成片保留。'))return;const d=desktopBridge();if(!d?.deleteRemix)throw Error('请在新版桌面程序中删除整组');await d.deleteRemix(task.id,true);},'已删除整组和临时视频')}>删除整组</button>

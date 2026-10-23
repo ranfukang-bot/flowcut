@@ -5,7 +5,7 @@ import type { Db, TaskBody } from "./types";
 // The desktop gave a job back: released unstarted, deferred after a temporary
 // failure (retried later, up to the plan's limit), being retried now, or failed.
 export async function releaseJob(db: Db, body: TaskBody, now: string) {
-  const state = kindState(body.kind,body.workerId);
+  const state = kindState(body.kind,body.workerId,body.remixRound);
   await db
     .prepare(
       `UPDATE ${state.table} SET status = ${state.queued}, progress = ${state.queuedProgress},
@@ -18,7 +18,7 @@ export async function releaseJob(db: Db, body: TaskBody, now: string) {
 }
 
 export async function deferJob(db: Db, body: TaskBody, now: string) {
-  const state = kindState(body.kind,body.workerId);
+  const state = kindState(body.kind,body.workerId,body.remixRound);
   const isRemix=body.kind==='remix-segments'||body.kind==='remix-rewrite';
   const rawReplySql = state.rawReply ? ", gemini_raw_reply = COALESCE(?, gemini_raw_reply)"+(isRemix?",remix_raw_replies=json_insert(COALESCE(remix_raw_replies,'[]'),'$[#]',json(?))":"") : "";
   const rawReplyArgs = state.rawReply ? [rawReplyValue(body.rawReply),...(isRemix?[JSON.stringify(body.rawReplies || [])]:[])] : [];
@@ -83,7 +83,7 @@ export async function deferJob(db: Db, body: TaskBody, now: string) {
 }
 
 export async function markRetrying(db: Db, body: TaskBody, now: string) {
-  const state = kindState(body.kind,body.workerId);
+  const state = kindState(body.kind,body.workerId,body.remixRound);
   await db
     .prepare(
       `UPDATE ${state.table} SET status = ${state.active}, progress = ${state.activeProgress},
@@ -101,7 +101,7 @@ export async function markRetrying(db: Db, body: TaskBody, now: string) {
 }
 
 export async function failJob(db: Db, body: TaskBody, now: string) {
-  const state = kindState(body.kind,body.workerId);
+  const state = kindState(body.kind,body.workerId,body.remixRound);
   const isRemix=body.kind==='remix-segments'||body.kind==='remix-rewrite';
   const rawReplySql = state.rawReply ? ", gemini_raw_reply = COALESCE(?, gemini_raw_reply)"+(isRemix?",remix_raw_replies=json_insert(COALESCE(remix_raw_replies,'[]'),'$[#]',json(?))":"") : "";
   await db

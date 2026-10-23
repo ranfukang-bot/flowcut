@@ -249,7 +249,7 @@ class Store {
     const priorResults = this.state.pendingResults, priorErrors = this.state.pendingErrors;
     this.state.pendingResults = priorResults.filter(item => item.taskId !== pending.taskId);
     this.state.pendingErrors = [...priorErrors.filter(item => item.taskId !== pending.taskId), {
-      taskId: pending.taskId, kind: pending.kind || 'standard', workerId: pending.workerId,
+      taskId: pending.taskId, kind: pending.kind || 'standard', workerId: pending.workerId,remixRound:pending.remixRound,
       error, createdAt: new Date().toISOString(), nextRetryAt: Date.now() + 5000,
       rawReply: String(pending.rawReply || pending.prompt || '').slice(0,60000),
     }];

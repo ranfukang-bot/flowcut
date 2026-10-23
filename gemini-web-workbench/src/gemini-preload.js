@@ -1000,7 +1000,7 @@ async function runSegmentedRemixJob(job) {
     if(!job.gemUrl) throw codedError('缺少复刻 Gem 链接','GEM_SETUP_REQUIRED');
     await ensureFreshConversation(job.gemUrl);
     await ensureJobModel();
-    const scale=Math.max(1,Math.ceil((job.remix.plan?.length || job.remix.analysisBlocks?.length || 1)/2));
+    const scale=Math.max(1,Math.ceil((job.remix.plan?.length || job.remix.analysisBlocks?.length || 10)/2));
     async function round(prompt,phase) {
       await typePrompt(prompt);
       let baseline=responseSnapshot();

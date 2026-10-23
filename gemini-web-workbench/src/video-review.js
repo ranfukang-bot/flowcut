@@ -300,6 +300,16 @@ class VideoReview {
     await this.beforeDelete(row.id);
     if(row.review_status!=='approved' && row.download_path && fs.existsSync(row.download_path)) fs.unlinkSync(this.clipFile(row));
     cleanupSegments(this.userData,row.id);
+    const folder=path.resolve(reviewDirectory(this.userData,row.id));
+    if(fs.existsSync(folder)) {
+      if(fs.realpathSync(folder)!==folder)throw Error('临时目录含链接，未清理');
+      for(const entry of fs.readdirSync(folder,{withFileTypes:true})) {
+        if(!entry.isFile() || !/\.mp4(?:\.partial)?$/i.test(entry.name))continue;
+        const file=path.join(folder,entry.name);
+        if(fs.realpathSync(file)!==file)throw Error('临时视频含链接，未清理');
+        fs.unlinkSync(file);
+      }
+    }
   }
   async deleteRemix(groupId,confirmed) {
     if(confirmed!==true) throw Error('请确认删除整组和临时视频');
@@ -327,9 +337,7 @@ class VideoReview {
   async cleanupRemix(groupId) {
     const rows=await this.request('/api/tasks/review?remix=cleanup&group='+encodeURIComponent(groupId));
     for(const row of rows || []) {
-      await this.beforeDelete(row.id);
-      if(row.download_path && fs.existsSync(row.download_path)) fs.unlinkSync(this.clipFile(row));
-      cleanupSegments(this.userData,row.id);
+      await this.removeRemixFile(row);
       await this.request('/api/tasks/review',{method:'POST',body:JSON.stringify({id:row.id,groupId,action:'remix-delete-unused',confirmed:true})});
       const folder=reviewDirectory(this.userData,row.id);
       try {fs.rmdirSync(folder);}catch(error){if(!['ENOENT','ENOTEMPTY','EEXIST'].includes(error.code))throw error;}

@@ -77,6 +77,7 @@ export type Task = {
   remix_segment_start?: number | null;
   remix_segment_end?: number | null;
   remix_script?: string | null;
+  remix_analysis_blocks?: string | null;
   remix_raw_replies?: string | null;
   remix_selected_json?: string | null;
   remix_release_task_id?: string | null;
@@ -248,6 +249,7 @@ export type FlowCutDesktopBridge = {
   deletePendingReviewVideo?: (id: string, confirmed: boolean) => Promise<boolean>;
   approveReviewVideo?: (id: string, confirmed: boolean) => Promise<{file:string;alreadyApproved?:boolean}>;
   discardReviewVideo?: (id: string, replacementId: string) => Promise<boolean>;
+  resumeRemixSeedance?: (id:string)=>Promise<unknown>;
   finishRemix?: (id:string,confirmed:boolean)=>Promise<{file:string}>;
   deleteRemix?: (id:string,confirmed:boolean)=>Promise<void>;
   deleteRemixClip?: (id:string,confirmed:boolean)=>Promise<void>;

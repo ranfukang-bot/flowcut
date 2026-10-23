@@ -248,6 +248,7 @@ class BridgeEngine {
         if (index < 0) {
           await this.report(job.id, "release", {
             kind: job.kind,
+            remixRound:job.remix?.round,
             error: "指定的 Gemini 账号当前不可用，任务已退回队列",
           });
           continue;
@@ -255,11 +256,12 @@ class BridgeEngine {
         const [account] = remaining.splice(index, 1);
         // An account can be paused while the claim request is in flight.
         if (account.enabled === false || !this.store.state.settings.queueRunning) {
-          await this.report(job.id, "release", { kind: job.kind, error: "账号或队列已暂停，任务已退回队列" });
+          await this.report(job.id, "release", { kind: job.kind, remixRound:job.remix?.round, error: "账号或队列已暂停，任务已退回队列" });
           continue;
         }
         this.active.set(account.id, {
           taskId: job.id,
+          remixRound:job.remix?.round,
           accountId: account.id,
           accountName: account.name,
           startedAt: new Date().toISOString(),
@@ -278,9 +280,10 @@ class BridgeEngine {
   }
 
   async report(taskId, action, extra = {}, options = {}) {
+    const remixRound=[...this.active.values()].find(job=>job.taskId===taskId)?.remixRound;
     return this.request("", {
       method: "POST",
-      body: JSON.stringify({ action, taskId, workerId: this.workerId, ...extra }),
+      body: JSON.stringify({ action, taskId, workerId: this.workerId, remixRound, ...extra }),
     }, options);
   }
 
@@ -299,7 +302,7 @@ class BridgeEngine {
       for (const pending of [...(this.store.state.pendingErrors || [])]) {
         if (Number(pending.nextRetryAt || 0) > Date.now()) continue;
         try {
-          await this.report(pending.taskId, 'error', { kind: pending.kind, workerId: pending.workerId, error: pending.error,rawReply:pending.rawReply || '' });
+          await this.report(pending.taskId, 'error', { kind: pending.kind, workerId: pending.workerId, remixRound:pending.remixRound,error: pending.error,rawReply:pending.rawReply || '' });
           this.store.removePendingError(pending.taskId);
         } catch (error) {
           if (error.ignorable || Number(error.status) === 409) this.store.removePendingError(pending.taskId);

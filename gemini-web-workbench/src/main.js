@@ -1,3 +1,4 @@
+const { resumeRemixSeedance } = require('./remix-seed-recovery');
 const { validateRemixJob } = require('./remix-job-validation');
 const {
   app,
@@ -522,7 +523,7 @@ async function runGeminiJob(account, job) {
   const resultPromise = new Promise((resolve, reject) => {
     const watchdog = watchGeminiJob({
       contents: window.webContents,
-      timeoutMs: (job.kind === "script-pipeline" ? 60 : ["reference-remix","remix-segments","remix-rewrite"].includes(job.kind) ? 52 : job.kind === "variant" ? 20 : 13) * 60_000,
+      timeoutMs: (["remix-segments","remix-rewrite"].includes(job.kind) ? 6 + (job.remix?.analysisBlocks?.length ? 1 : 2) * 16 * Math.max(1,Math.ceil((job.remix?.plan?.length || job.remix?.analysisBlocks?.length || 10)/2)) : job.kind === "script-pipeline" ? 60 : job.kind === "reference-remix" ? 26 : job.kind === "variant" ? 20 : 13) * 60_000,
       onFailure(error) {
         error = modelWatchdogError(error, pendingJobs.get(requestId));
         pendingJobs.delete(requestId);
@@ -1133,6 +1134,12 @@ function bindIpc() {
   handle("publisher:release", (_event, input) => publisherRuntime.release(String(input?.taskId || ""), input?.confirmed === true));
   handle("update:get-state", () => publicState().update);
   handle("seedance:get-state", () => seedanceRuntime?.state() || null);
+  handle('seedance:resume-remix', async (_event,id) => {
+    const task=await videoReview.task(String(id || ''));
+    const parent=await videoReview.task(String(task.batch_parent_id || ''));
+    if(!seedanceRuntime?.engine || !seedanceRuntime.flowcutBridge)throw Error('视频执行器尚未就绪');
+    return resumeRemixSeedance({task,parent,store:seedanceRuntime.store,engine:seedanceRuntime.engine,bridge:seedanceRuntime.flowcutBridge});
+  });
   handle('seedance:task-detail', (_event, id) => {
     const task = seedanceRuntime?.store?.getTask(String(id)) || seedanceRuntime?.store?.tasks.find(task => task.flowcutTaskId === String(id));
     if (!task) throw new Error('Seedance 任务不存在');

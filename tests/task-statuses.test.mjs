@@ -12,8 +12,8 @@ test('every task status used in a group has a Chinese name, so a new status cann
   }
 });
 
-test('Gemini statuses are exactly the first round plus the variant round', () => {
-  assert.deepEqual([...statuses.GEMINI_STATUSES], [...statuses.PROMPT_ROUND_STATUSES, ...statuses.VARIANT_ROUND_STATUSES]);
+test('Gemini statuses are the first round, variant round and segmented remix stages', () => {
+  assert.deepEqual([...statuses.GEMINI_STATUSES], [...statuses.PROMPT_ROUND_STATUSES, ...statuses.VARIANT_ROUND_STATUSES, ...statuses.REMIX_GEMINI_STATUSES]);
 });
 
 test('SQL lists are built only from the fixed constants, in order', () => {

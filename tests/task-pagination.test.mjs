@@ -15,7 +15,7 @@ function fixture(t) {
       segment_progress TEXT,download_error TEXT,created_at TEXT,updated_at TEXT,prompt TEXT,image_keys_snapshot TEXT,
       product_external_id_snapshot TEXT,gem_content_snapshot TEXT,gemini_request_text TEXT,gemini_model_info TEXT,
       task_role TEXT,batch_parent_id TEXT,batch_index INTEGER,batch_round INTEGER,batch_size INTEGER,merged_into_task_id TEXT,
-      prompt_note TEXT,variant_gem_snapshot TEXT);
+      prompt_note TEXT,variant_gem_snapshot TEXT,segment_checked_at TEXT,remix_segment_start INTEGER,remix_segment_end INTEGER,remix_video_seconds REAL,remix_selected_json TEXT);
     INSERT INTO gems VALUES('gem','测试 Gem');`);
   const insertProduct = sqlite.prepare('INSERT INTO products VALUES(?,?,?,NULL)');
   const insertTask = sqlite.prepare(`INSERT INTO tasks(id,product_id,gem_id,title,status,provider,tiktok_account_name,review_status,created_at,updated_at,prompt,gem_content_snapshot,gemini_request_text,image_keys_snapshot)

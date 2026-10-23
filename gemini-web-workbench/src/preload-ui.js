@@ -22,6 +22,7 @@ const desktopApi = {
   deletePendingReviewVideo: (id, confirmed) => ipcRenderer.invoke('video-review:delete-pending', { id, confirmed }),
   deleteRemix: (id,confirmed) => ipcRenderer.invoke('video-review:remix-delete',{id,confirmed}),
   deleteRemixClip: (id,confirmed) => ipcRenderer.invoke('video-review:remix-delete-clip',{id,confirmed}),
+  resumeRemixSeedance: id => ipcRenderer.invoke('seedance:resume-remix',id),
   finishRemix: (id,confirmed) => ipcRenderer.invoke('video-review:remix-finish',{id,confirmed}),
   approveReviewVideo: (id, confirmed) => ipcRenderer.invoke('video-review:approve', { id, confirmed }),
   discardReviewVideo: (id, replacementId) => ipcRenderer.invoke('video-review:discard', { id, replacementId }),

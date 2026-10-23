@@ -6,20 +6,18 @@ import { bridgeSource, uiSource } from "./helpers/sources.mjs";
 const root = new URL("../", import.meta.url);
 const source = async (path) => (await readFile(new URL(path, root), "utf8")).replace(/\r\n/g, "\n");
 
-test("reference remix is isolated from the editable Gem library", async () => {
-  const [studio, storage, remix, gemPolicy] = await Promise.all([
-    Promise.resolve(uiSource()),
-    source("lib/storage.ts"),
-    source("app/api/reference-remix/route.ts"),
-    source("tests/gemini-prompt-policy.test.mjs"),
-  ]);
-  assert.match(studio, /爆款复刻/);
-  assert.match(studio, /仅本模块使用，不会出现在普通 Gem 列表/);
-  assert.match(storage, /reference_remix_tasks/);
-  assert.match(storage, /reference_remix_assets/);
-  assert.match(remix, /referenceRemixGemPreview/);
-  assert.match(gemPolicy, /DELETE FROM gems WHERE is_default = 1/);
-  assert.doesNotMatch(storage, /INSERT INTO gems[\s\S]*爆款视频结构复刻/);
+test("segmented remix exposes the exact immutable Gem for per-account bindings", async t => {
+  const {siteFixture}=await import('../gemini-web-workbench/tests/helpers/site-routes.cjs');
+  const fixture=await siteFixture(t);
+  const result=await fixture.call('reference-remix','GET');
+  assert.equal(result.body.gem.id,'builtin-reference-remix');
+  assert.equal(result.body.gem.name,'爆款视频复刻智能体');
+  assert.equal(result.body.gem.content,await readFile(new URL('lib/reference-remix-segments-gem.txt',root),'utf8'));
+  assert.equal(result.body.gem.locked,true);
+  const workspace=await fixture.call('workspace','GET');
+  assert.ok(workspace.body.gems.some(g=>g.id===result.body.gem.id&&g.locked));
+  assert.equal((await fixture.call('gems','PUT',{body:{...result.body.gem,content:'changed'}})).status,409);
+  assert.equal((await fixture.call('gems','DELETE',{body:{id:result.body.gem.id}})).status,409);
 });
 
 test("Gemini runs video analysis and product adaptation in one conversation", async () => {

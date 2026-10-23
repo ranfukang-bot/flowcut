@@ -8,14 +8,14 @@ export const SPLIT_GUARD = " AND status NOT IN ('split_done','fission_ready')";
 
 // Table and queue/active states for each Gemini job kind. A variant job is the
 // second round of a product task and lives in the tasks table.
-export function kindState(kind: GeminiKind | undefined, workerId = '') {
+export function kindState(kind: GeminiKind | undefined, workerId = '', remixRound?: number) {
   const fissionGuard = ` AND (COALESCE(task_role,'') NOT IN ('fission','fission_child') OR
     (provider='gemini-web' AND status IN (${kind==='variant'?"'variant_queued','variant_generating'":"'prompt_queued','prompt_generating'"}) AND bridge_worker_id=?))`;
   if (kind === 'remix-segments' || kind === 'remix-rewrite') {
     const rewrite=kind==='remix-rewrite';
     return {table:'tasks',queued:rewrite?"'remix_rewrite_queued'":"'remix_queued'",queuedProgress:'5',
       active:rewrite?"'remix_rewriting'":"CASE WHEN remix_analysis_blocks IS NOT NULL THEN 'remix_adapting' ELSE 'remix_analyzing' END",activeProgress:'18',rawReply:true,
-      guard:` AND task_role='remix' AND provider='gemini-web' AND status IN (${rewrite?"'remix_rewrite_queued','remix_rewriting'":"'remix_queued','remix_analyzing','remix_adapting'"}) AND bridge_worker_id=?`,guardArgs:[workerId]};
+      guard:` AND task_role='remix' AND provider='gemini-web' AND status IN (${rewrite?"'remix_rewrite_queued','remix_rewriting'":"'remix_queued','remix_analyzing','remix_adapting'"}) AND bridge_worker_id=? AND batch_round=?`,guardArgs:[workerId,Number.isInteger(remixRound)?remixRound!:-1]};
   }
   if (kind === "reference-remix") {
     return { table: "reference_remix_tasks", queued: "'reference_queued'", queuedProgress: "5", active: "'reference_analyzing'", activeProgress: "14", rawReply: false, guard: "", guardArgs: [] as string[] };

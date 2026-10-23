@@ -36,20 +36,19 @@ test("studio exposes multi-image product upload", async () => {
   assert.doesNotMatch(products, /产品名称不能为空/);
 });
 
-test("task queue can clear all completed records without deleting product assets", async () => {
-  const [studio, tasks] = await Promise.all([
-    Promise.resolve(uiSource()),
-    source("app/api/tasks/route.ts"),
-  ]);
-
-  assert.match(studio, /清除已完成/);
-  assert.match(studio, /\/api\/tasks\?completed=1/);
-  assert.match(tasks, /url\.searchParams\.get\("completed"\) === "1"/);
-  assert.match(tasks, /DELETE FROM schedules/);
-  assert.match(tasks, /completedWhere = `status IN \(\?, \?\) AND review_status IN \('approved','replaced'\)/);
-  assert.match(tasks, /DELETE FROM tasks WHERE \$\{completedWhere\}/);
-  assert.match(tasks, /const completedStatuses = VIDEO_DONE_STATUSES;/);
-  assert.doesNotMatch(tasks, /DELETE FROM products WHERE status/);
+test("clearing completed tasks retains product assets and remix group history", async t => {
+  const {siteFixture}=await import('../gemini-web-workbench/tests/helpers/site-routes.cjs');
+  const f=await siteFixture(t),at=new Date().toISOString();
+  f.sqlite.prepare("INSERT INTO products(id,name,external_id,created_at) VALUES('product','商品','1735360337668113923',?)").run(at);
+  f.objects.set('products/product/image.png','image');
+  for(const id of ['ordinary','remix','release'])f.sqlite.prepare("INSERT INTO tasks(id,product_id,gem_id,title,status,prompt,provider,created_at,updated_at,review_status) VALUES(?,'product','gem',?,'video_ready','','seedance-bridge',?,?,'approved')").run(id,id,at,at);
+  f.sqlite.prepare("UPDATE tasks SET task_role='remix',status='remix_done',review_status='pending' WHERE id='remix'").run();
+  f.sqlite.prepare("UPDATE tasks SET task_role='concat',batch_parent_id='remix' WHERE id='release'").run();
+  const result=await f.call('tasks','DELETE',{query:'?completed=1'});
+  assert.equal(result.status,200);assert.equal(result.body.deleted,1);
+  assert.equal(f.row("SELECT id FROM tasks WHERE id='ordinary'"),null);
+  assert.deepEqual(f.rows('SELECT id FROM tasks ORDER BY id').map(r=>r.id),['release','remix']);
+  assert.ok(f.row("SELECT id FROM products WHERE id='product'"));assert.equal(f.objects.get('products/product/image.png'),'image');
 });
 
 test("Gemini web transient failures are persisted for delayed automatic recovery", async () => {

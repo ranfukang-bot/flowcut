@@ -127,6 +127,7 @@ export async function POST(request: Request) {
         .bind(reserve ? 'approving' : 'pending',body.id).run();
       return result.meta.changes ? Response.json({ok:true}) : Response.json({error:'任务已重做或审核状态已改变，请刷新'}, {status:409});
     }
+    if(!await allowRemixClipApproval(getDb(),body.id,body.remixGroupId)) return Response.json({error:'复刻分段不能单独放行，请在整组中检查放行'},{status:409});
     if (!body.path) return Response.json({error:'缺少放行路径'}, {status:400});
     const db = getDb();
     const previous = await db.prepare('SELECT reviewed_at FROM tasks WHERE id=?').bind(body.id).first<{reviewed_at:string|null}>();

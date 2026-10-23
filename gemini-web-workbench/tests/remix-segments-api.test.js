@@ -103,6 +103,42 @@ test('failed local concat returns checked clips and parent to segmented state',a
   review.concatClips=async()=>{throw Error('fake ffmpeg failure');};await assert.rejects(review.finishRemix(f.id,true),/拼接未完成/);
   assert.equal(f.row('SELECT status FROM tasks WHERE id=?',f.id).status,'remix_segmented');assert.ok(f.rows("SELECT review_status FROM tasks WHERE task_role='clip'").every(r=>r.review_status==='pending'));
 });
+test('lost approval acknowledgement resumes the receipt and startup completes cleanup without another release',async t=>{
+  const {f,review,check,publish}=await reviewFixture(t);for(const c of f.rows("SELECT id FROM tasks WHERE task_role='clip'"))await check(c.id);
+  const request=review.request;let lost=true;
+  review.request=async(route,init)=>{const result=await request(route,init);if(init?.body){const b=JSON.parse(init.body);if(lost&&b.path&&!b.action){lost=false;throw Error('lost ack');}}return result;};
+  await assert.rejects(review.finishRemix(f.id,true),/lost ack/);assert.equal(fs.readdirSync(publish).length,1);
+  const recovered=await review.recoverConcats();assert.deepEqual(recovered.errors,[]);assert.equal(f.row('SELECT status FROM tasks WHERE id=?',f.id).status,'remix_done');assert.equal(fs.readdirSync(publish).length,1);
+});
+test('whole-group deletion cleans owned videos and partial files, retaining the library and other files',async t=>{
+  const {f,root,review}=await reviewFixture(t);const clip=f.row("SELECT * FROM tasks WHERE task_role='clip' ORDER BY batch_index");
+  const folder=reviewDirectory(root,clip.id);const partial=path.join(folder,'clip.mp4.partial'),other=path.join(folder,'notes.txt');fs.writeFileSync(partial,'partial');fs.writeFileSync(other,'keep');
+  assert.equal((await f.call('tasks','DELETE',{body:{id:f.id}})).status,409);
+  await review.deleteRemix(f.id,true);assert.equal(f.rows('SELECT * FROM tasks').length,0);assert.equal(f.rows('SELECT * FROM products').length,1);assert.ok(fs.existsSync(other));assert.equal(fs.existsSync(partial),false);assert.equal(fs.existsSync(clip.download_path),false);assert.equal([...f.objects.keys()].some(k=>k.startsWith('reference-remix/')),false);
+});
+test('saved-Gem holds apply to remix, and all held accounts leave it unclaimed',async t=>{
+  const f=await setup(t);const task=f.row('SELECT gem_id,gem_content_snapshot FROM tasks WHERE id=?',f.id);
+  const key=require('node:crypto').createHash('sha256').update(JSON.stringify([task.gem_id,task.gem_content_snapshot.trim()])).digest('hex');
+  let result=await f.call('gemini-bridge','GET',{query:'?workerId=worker&accountIds=a,b&blockedGemVersions='+encodeURIComponent(JSON.stringify({a:[key],b:[key]}))});assert.equal(result.body.jobs.length,0);
+  result=await f.call('gemini-bridge','GET',{query:'?workerId=worker&accountIds=a,b&blockedGemVersions='+encodeURIComponent(JSON.stringify({a:[key]}))});assert.equal(result.body.jobs[0].accountId,'b');
+});
+test('restored groups can reopen existing segments without starting a Gemini round or clearing original Task IDs',async t=>{
+  const {f}=await reviewFixture(t);f.sqlite.prepare("UPDATE tasks SET status='failed',provider_job_id='original-local-task' WHERE task_role='clip'").run();f.sqlite.prepare("UPDATE tasks SET status='failed' WHERE id=?").run(f.id);
+  const round=f.row('SELECT batch_round FROM tasks WHERE id=?',f.id).batch_round;
+  assert.equal((await f.call('reference-remix','PATCH',{body:{id:f.id,action:'resume-segments'}})).status,200);assert.equal(f.row('SELECT batch_round FROM tasks WHERE id=?',f.id).batch_round,round);
+  assert.ok(f.rows("SELECT provider_job_id FROM tasks WHERE task_role='clip'").every(c=>c.provider_job_id==='original-local-task'));assert.equal(await claim(f),undefined);
+});
+test('reanalyzed ranges cannot accidentally approve an old checked version',async t=>{
+  const {f,check}=await reviewFixture(t);const old=f.row("SELECT id FROM tasks WHERE task_role='clip' AND batch_index=1").id;await check(old);
+  await f.call('reference-remix','PATCH',{body:{id:f.id,action:'reanalyze'}});await claim(f);
+  const changed=[block(1,0,14),block(2,14,24)];await report(f,'stage',{remixRound:2,analysisBlocks:changed});await report(f,'result',{remixRound:2,codeBlocks:changed});
+  assert.equal((await f.call('reference-remix','PATCH',{body:{id:f.id,action:'check',clipId:old}})).status,409);
+});
+test('late failure and release reports from a prior round cannot reopen a newer claim, even with the same desktop worker',async t=>{
+  const {f}=await reviewFixture(t);await f.call('reference-remix','PATCH',{body:{id:f.id,action:'readapt'}});const job=await claim(f);assert.equal(job.remix.round,2);
+  assert.equal((await report(f,'defer',{error:'old round'})).status,409);await report(f,'release');await report(f,'error',{error:'old failure'});
+  assert.equal(f.row('SELECT status FROM tasks WHERE id=?',f.id).status,'remix_adapting');assert.equal(f.rows("SELECT * FROM tasks WHERE task_role='clip'").length,2);
+});
 test('backup restore pauses unfinished remix work while retaining scripts, ranges, task ids and completed groups',()=>{
   const restored=restorableTables({tasks:[{id:'g',task_role:'remix',status:'remix_adapting',remix_script:'durable',error:null},{id:'c',task_role:'clip',status:'video_generating',provider_job_id:'remote',remix_segment_start:15,error:null},{id:'done',task_role:'remix',status:'remix_done'}]});
   assert.equal(restored.tasks[0].status,'failed');assert.equal(restored.tasks[0].remix_script,'durable');assert.equal(restored.tasks[1].provider_job_id,'remote');assert.equal(restored.tasks[1].status,'failed');assert.equal(restored.tasks[2].status,'remix_done');

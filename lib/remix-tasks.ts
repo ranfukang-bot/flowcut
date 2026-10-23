@@ -16,7 +16,8 @@ export async function selectedRemixClips(db: ReturnType<typeof getDb>, parent: R
   const rows = await db.prepare("SELECT * FROM tasks WHERE batch_parent_id=? AND task_role='clip' ORDER BY batch_round DESC,created_at DESC,id DESC").bind(parent.id).all<Record<string, unknown> & { id: string; batch_index: number }>();
   const explicit = JSON.parse(String(parent.remix_selected_json || '{}')) as Record<string,string>;
   return Array.from({length:Number(parent.batch_size || 0)},(_,i) => {
-    const versions=rows.results.filter(r=>Number(r.batch_index)===i+1);
+    const target=parent.remix_analysis_blocks?savedRemixSegments(parent)[i]:null;
+    const versions=rows.results.filter(r=>Number(r.batch_index)===i+1 && (!target || (Number(r.remix_segment_start)===target.start && Number(r.remix_segment_end)===target.end && Number(r.duration)===target.duration)));
     return versions.find(r=>r.id===explicit[i+1]) || versions.find(r=>['video_ready','scheduled'].includes(String(r.status)) && r.download_path && !['merged','merging','deleting','replaced'].includes(String(r.review_status))) || versions[0];
   });
 }
@@ -52,6 +53,11 @@ export async function remixAction(db: ReturnType<typeof getDb>, body: {id:string
   if (!task) return Response.json({error:'分段复刻任务不存在；旧版记录只支持查看和删除'},{status:404});
   if (['remix_done','remix_finishing','remix_deleting'].includes(task.status) || REMIX_ACTIVE.includes(task.status) || await db.prepare("SELECT id FROM tasks WHERE batch_parent_id=? AND (status='concat_running' OR review_status IN ('merging','approving'))").bind(task.id).first())
     return Response.json({error:'任务正在处理或已放行，请等当前操作结束'},{status:409});
+  if(body.action==='resume-segments') {
+    if(task.status!=='failed' || !task.remix_analysis_blocks || !await db.prepare("SELECT id FROM tasks WHERE batch_parent_id=? AND task_role='clip'").bind(task.id).first())return Response.json({error:'没有可恢复的原分段'},{status:409});
+    await db.prepare("UPDATE tasks SET status='remix_segmented',progress=70,error=NULL,bridge_worker_id=NULL,bridge_claimed_at=NULL,updated_at=? WHERE id=? AND status='failed'").bind(now,task.id).run();
+    return Response.json({ok:true});
+  }
   if(body.action==='product-id') {
     const externalId=String(body.externalId || '').trim();
     if(!/^\d{10,30}$/.test(externalId))return Response.json({error:'请填写 10–30 位数字商品 ID'},{status:400});
@@ -72,8 +78,11 @@ export async function remixAction(db: ReturnType<typeof getDb>, body: {id:string
     return Response.json({ok:true});
   }
   if(body.action==='select' || body.action==='check') {
-    const clip=await db.prepare("SELECT * FROM tasks WHERE id=? AND batch_parent_id=? AND task_role='clip' AND status IN ('video_ready','scheduled') AND download_path IS NOT NULL AND review_status='pending'").bind(body.clipId,task.id).first<{id:string;batch_index:number}>();
+    if(task.status!=='remix_segmented')return Response.json({error:'请先恢复并完成当前换品任务'},{status:409});
+    const clip=await db.prepare("SELECT * FROM tasks WHERE id=? AND batch_parent_id=? AND task_role='clip' AND status IN ('video_ready','scheduled') AND download_path IS NOT NULL AND review_status='pending'").bind(body.clipId,task.id).first<{id:string;batch_index:number;remix_segment_start:number;remix_segment_end:number;duration:number}>();
     if(!clip) return Response.json({error:'此版本尚无可检查的视频'},{status:409});
+    const expected=savedRemixSegments(task).find(s=>s.index===clip.batch_index);
+    if(!expected || clip.remix_segment_start!==expected.start || clip.remix_segment_end!==expected.end || clip.duration!==expected.duration)return Response.json({error:'这个旧版本的区间与当前原脚本不同，请使用新拆解后生成的版本'},{status:409});
     await db.batch([
       db.prepare("UPDATE tasks SET remix_selected_json=json_set(COALESCE(remix_selected_json,'{}'),?,?),updated_at=? WHERE id=? AND status='remix_segmented'").bind(`$."${clip.batch_index}"`,clip.id,now,task.id),
       ...(body.action==='check'?[db.prepare("UPDATE tasks SET segment_checked_at=?,updated_at=? WHERE id=? AND EXISTS(SELECT 1 FROM tasks p WHERE p.id=? AND p.status='remix_segmented')").bind(now,now,clip.id,task.id)]:[]),

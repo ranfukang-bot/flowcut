@@ -39,7 +39,7 @@ export async function claimGeminiJobs(request: Request) {
     const pending = await db
       .prepare(
       `SELECT t.id, t.product_id, t.gemini_account_id, t.created_at, COALESCE(t.gemini_retry_at, t.created_at) AS queue_at,
-                t.duration, t.region, t.shooting_style, t.gemini_request_text, t.image_keys_snapshot, t.gem_id, g.name AS gem_name,
+                t.task_role, t.duration, t.region, t.shooting_style, t.gemini_request_text, t.image_keys_snapshot, t.gem_id, g.name AS gem_name,
                 p.name, p.features, COALESCE(t.gem_content_snapshot, g.content) AS content,
                 t.variant_gem_snapshot IS NOT NULL AS variant_mode
          FROM tasks t
@@ -69,6 +69,7 @@ export async function claimGeminiJobs(request: Request) {
         created_at: string;
         queue_at: string;
         variant_mode: number;
+        task_role: string | null;
       }>();
 
     // Second round of a two-round task: the mother prompt (saved as the
@@ -268,7 +269,7 @@ export async function claimGeminiJobs(request: Request) {
           id: standardTask.id,
           kind: "standard",
           accountId,
-          blockMode: Number(standardTask.duration) === 30 ? "raw" : standardTask.variant_mode ? "single" : "split",
+          blockMode: standardTask.task_role === 'prompt_item' ? 'single' : Number(standardTask.duration) === 30 ? "raw" : standardTask.variant_mode ? "single" : "split",
           gem: { id: standardTask.gem_id || `snapshot-${standardTask.id}`, name: standardTask.gem_name || "历史任务 Gem", content: standardTask.content },
           prompt: buildSavedGemPrompt(standardTask),
           spokenLanguage: requestSpokenLanguage(buildSavedGemPrompt(standardTask),standardTask.region),

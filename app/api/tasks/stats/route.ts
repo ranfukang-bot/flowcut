@@ -14,7 +14,7 @@ export async function GET(request: Request) {
     }
     const db=getDb();
     // Restore already-approved records from earlier versions, never pending videos.
-    const missing=await db.prepare(`SELECT id,reviewed_at FROM tasks WHERE review_status='approved' AND reviewed_at IS NOT NULL
+    const missing=await db.prepare(`SELECT id,reviewed_at FROM tasks WHERE COALESCE(task_role,'') <> 'prompt_item' AND review_status='approved' AND reviewed_at IS NOT NULL
       AND NOT EXISTS(SELECT 1 FROM approval_counts WHERE task_id=tasks.id)`).all<{id:string;reviewed_at:string}>();
     for(let i=0;i<missing.results.length;i+=50) {
       const rows=missing.results.slice(i,i+50).filter(row=>Number.isFinite(Date.parse(row.reviewed_at)));

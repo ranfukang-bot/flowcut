@@ -47,7 +47,7 @@ export async function GET(request: Request) {
                 COALESCE(tasks.product_external_id_snapshot, products.external_id, '') AS product_external_id
          FROM tasks
          LEFT JOIN products ON products.id = tasks.product_id
-         WHERE tasks.provider = 'seedance-bridge'
+         WHERE tasks.provider = 'seedance-bridge' AND COALESCE(tasks.task_role,'') <> 'prompt_item'
            AND (tasks.duration <> 30 OR ? = 1)
            AND tasks.status = 'video_queued'
            AND tasks.provider_job_id IS NULL

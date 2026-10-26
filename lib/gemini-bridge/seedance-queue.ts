@@ -9,7 +9,7 @@ export async function queueSeedance(taskId: string, requestUrl: string) {
   const task = await db
     .prepare(
       `SELECT product_id, prompt, callback_token, duration, image_keys_snapshot
-       FROM tasks WHERE id = ?`
+       FROM tasks WHERE id = ? AND COALESCE(task_role,'') <> 'prompt_item'`
     )
     .bind(taskId)
     .first<{

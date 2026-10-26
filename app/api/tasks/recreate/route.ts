@@ -13,6 +13,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "缺少原任务 ID 或重做请求标识" }, { status: 400 });
     }
     const db = getDb();
+    if (await db.prepare("SELECT id FROM tasks WHERE id=? AND task_role='prompt_item'").bind(id).first()) return Response.json({ error: '提示词条目请在提示词生成页重试，不生成视频' }, { status: 409 });
     const prior = await db.prepare("SELECT id, status, regenerated_from_task_id,remix_segment_start FROM tasks WHERE id = ?")
       .bind(requestId).first<{ id: string; status: string; regenerated_from_task_id: string | null;remix_segment_start:number|null }>();
     if (prior) {

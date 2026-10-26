@@ -13,6 +13,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "请填写任务、账号和发布时间" }, { status: 400 });
     }
     const id = crypto.randomUUID();
+    if (await getDb().prepare("SELECT id FROM tasks WHERE id=? AND task_role='prompt_item'").bind(body.taskId).first()) return Response.json({ error: '提示词条目不能排期发布' }, { status: 409 });
     await getDb()
       .prepare(
         `INSERT INTO schedules (id, task_id, account_name, scheduled_at, caption, status, created_at)

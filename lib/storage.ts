@@ -184,6 +184,8 @@ async function initializeWorkspace() {
   // an optional second "variant" round, and locally concatenated clips.
   for (const [column, type] of [
     ["task_role", "TEXT"],
+    ["prompt_batch_id", "TEXT"],
+    ["prompt_copied_at", "TEXT"],
     ["batch_parent_id", "TEXT"],
     ["batch_index", "INTEGER"],
     ["batch_round", "INTEGER"],
@@ -221,6 +223,7 @@ async function initializeWorkspace() {
   }
   await db.prepare("CREATE INDEX IF NOT EXISTS idx_tasks_batch_parent ON tasks(batch_parent_id, batch_round, batch_index)").run();
   await db.prepare("CREATE INDEX IF NOT EXISTS idx_tasks_merged_into ON tasks(merged_into_task_id)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_tasks_prompt_batch ON tasks(prompt_batch_id)").run();
 
   // 旧版本曾自动注入一个“内置模板”。Gem 现在完全由用户维护，
   // 因此升级时清理旧内置记录，之后也不再自动创建。

@@ -26,17 +26,17 @@ export async function GET(request: Request) {
     }
     if (params.get('merged')) {
       const rows = await getDb().prepare(`SELECT id, download_path, review_status, batch_index, batch_round FROM tasks
-        WHERE merged_into_task_id=? ORDER BY batch_round ASC, batch_index ASC, created_at ASC`).bind(params.get('merged')).all();
+        WHERE merged_into_task_id=? AND COALESCE(task_role,'') <> 'prompt_item' ORDER BY batch_round ASC, batch_index ASC, created_at ASC`).bind(params.get('merged')).all();
       return Response.json(rows.results);
     }
     if (params.get('approved') === '1') {
       const tasks = await getDb().prepare(`SELECT t.*, COALESCE(t.product_external_id_snapshot,p.external_id) AS product_external_id
-        FROM tasks t LEFT JOIN products p ON p.id=t.product_id WHERE review_status='approved'`).all();
+        FROM tasks t LEFT JOIN products p ON p.id=t.product_id WHERE review_status='approved' AND COALESCE(t.task_role,'') <> 'prompt_item'`).all();
       return Response.json(tasks.results);
     }
     const id = new URL(request.url).searchParams.get("id");
     const task = await getDb().prepare(`SELECT t.*, COALESCE(t.product_external_id_snapshot,p.external_id) AS product_external_id
-      FROM tasks t LEFT JOIN products p ON p.id=t.product_id WHERE t.id=?`).bind(id).first();
+      FROM tasks t LEFT JOIN products p ON p.id=t.product_id WHERE t.id=? AND COALESCE(t.task_role,'') <> 'prompt_item'`).bind(id).first();
     return task || new URL(request.url).searchParams.get('optional') === '1' ? Response.json(task || null) : Response.json({ error: "任务不存在" }, { status: 404 });
   } catch (error) { return jsonError(error); }
 }
@@ -47,6 +47,8 @@ export async function POST(request: Request) {
     await ensureWorkspace();
     const body = await request.json() as { id: string; path: string; oldPath?: string; confirmed: boolean; action?: string; replacementId?: string; approvedAt?: string; timeZone?: string; concatId?: string; sourceIds?: string[]; groupId?:string; remixGroupId?:string };
     if (body.confirmed !== true || !body.id) return Response.json({ error: "请确认审核通过" }, { status: 400 });
+    const guardedIds = [body.id, ...(body.sourceIds || []), body.concatId, body.replacementId].filter((id): id is string => Boolean(id));
+    if (guardedIds.length && await getDb().prepare(`SELECT id FROM tasks WHERE task_role='prompt_item' AND id IN (${guardedIds.map(() => '?').join(',')})`).bind(...guardedIds).first()) return Response.json({ error: '提示词条目不能审核放行或拼接' }, { status: 409 });
     const remixResult=await remixReviewAction(getDb(),body);
     if(remixResult) return remixResult;
     if (body.action === 'concat-reserve') return await reserveConcat(body);

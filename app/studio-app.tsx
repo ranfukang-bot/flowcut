@@ -8,6 +8,7 @@ import { SPOKEN_LANGUAGE_OPTIONS } from '../lib/spoken-language';
 import { DEFAULT_VARIANT_REQUEST, validateVariantRequest } from '../lib/prompt-blocks';
 import type { VariantConfig } from './variant-config';
 import { FissionPage } from './fission-page';
+import { PromptBatchPage } from './prompt-batch-page';
 import { CalendarPage } from './calendar-page';
 import { Dashboard } from './dashboard-page';
 import { GemsPage, GemModal } from './gems-page';
@@ -31,6 +32,7 @@ const nav: Array<{ id: Page; label: string; icon: IconName }> = [
   { id: "scripts", label: "剧本提示词", icon: "scripts" },
   { id: "remix", label: "爆款复刻", icon: "remix" },
   { id: "fission", label: "多品裂变", icon: "fission" },
+  { id: "prompt-batches", label: "提示词生成", icon: "prompt-batches" },
   { id: "products", label: "商品库", icon: "products" },
   { id: "gems", label: "Gem 模板", icon: "gems" },
   { id: "tasks", label: "任务队列", icon: "tasks" },
@@ -550,7 +552,7 @@ export function StudioApp() {
         </button>
 
         <nav className="nav-list" aria-label="主导航">
-          {(["dashboard", "remix", "fission", "tasks", "products", "publisher", "gems", "settings"] as Page[]).map((id) => nav.find((item) => item.id === id)!).map((item) => (
+          {(["dashboard", "remix", "fission", "prompt-batches", "tasks", "products", "publisher", "gems", "settings"] as Page[]).map((id) => nav.find((item) => item.id === id)!).map((item) => (
             <button
               key={item.id}
               className={page === item.id ? "active" : ""}
@@ -668,6 +670,7 @@ export function StudioApp() {
           gemRequestTemplate={gemRequestTemplate}
           request={api} onUpload={quickUploadProduct} onOpenTask={openTask} statusLabel={taskStatusLabel}
           onCreated={async(autoQueue)=>{try{await desktopBridge()?.setQueueRunning?.(true);if(autoQueue)await desktopBridge()?.seedanceSetRunning?.(true);}catch{setNotice('任务已保存，请在账号与设置中启动队列');}await reload();}} />}
+        {page === 'prompt-batches' && <PromptBatchPage gems={data.gems} />}
         {page === "products" && (
           <ProductsPage
             products={data.products}

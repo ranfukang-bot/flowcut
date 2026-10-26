@@ -16,7 +16,8 @@ test('one count per approved task survives clearing and excludes pending, failed
   try {
     db.exec(`CREATE TABLE tasks(id TEXT PRIMARY KEY,tiktok_account_name TEXT,review_status TEXT,reviewed_at TEXT);
       CREATE TABLE approval_counts(task_id TEXT PRIMARY KEY,account_name TEXT,day_key TEXT,approved_at TEXT);`);
-    const add=db.prepare('INSERT INTO tasks VALUES(?,?,?,?)');
+    db.exec('ALTER TABLE tasks ADD COLUMN task_role TEXT');
+    const add=db.prepare('INSERT INTO tasks(id,tiktok_account_name,review_status,reviewed_at) VALUES(?,?,?,?)');
     add.run('a','账号1','approved','2026-10-01T16:01:00Z');
     add.run('b','账号2','approved','2026-10-01T16:02:00Z');
     add.run('c','账号1','pending',null);add.run('d','账号1','replaced',null);

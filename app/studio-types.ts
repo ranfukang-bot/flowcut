@@ -215,7 +215,7 @@ export type Workspace = {
   };
 };
 
-export type Page = "dashboard" | "scripts" | "remix" | "fission" | "products" | "gems" | "tasks" | "calendar" | "settings" | "publisher";
+export type Page = "dashboard" | "scripts" | "remix" | "fission" | "prompt-batches" | "products" | "gems" | "tasks" | "calendar" | "settings" | "publisher";
 
 export type SeedanceRuntime = {
   status: "checking" | "ready" | "missing-key" | "offline" | "blocked";

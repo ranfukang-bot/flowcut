@@ -67,7 +67,7 @@ export async function listTasks(db: TaskDatabase, query: TaskQuery = {}) {
   const requestedLimit = query.limit ?? 50;
   if (!Number.isInteger(requestedLimit) || requestedLimit < 1) throw new Error('分页条数必须是正整数');
   const limit = Math.min(200, requestedLimit);
-  const where = ['t.batch_parent_id IS NULL', filter === 'all' ? '1 = 1'
+  const where = ["COALESCE(t.task_role,'') <> 'prompt_item'", 't.batch_parent_id IS NULL', filter === 'all' ? '1 = 1'
     : `((${condition(filter, 't')}) OR (t.task_role IN ('group','fission','remix') AND EXISTS (SELECT 1 FROM tasks c WHERE c.batch_parent_id = t.id AND ${condition(filter, 'c')})))`];
   const args: (string | number)[] = [];
   if (query.q?.trim()) {
@@ -89,11 +89,11 @@ export async function countTasks(db: TaskDatabase): Promise<TaskCounts> {
     COUNT(CASE WHEN ${condition('active', 't')} THEN 1 END) AS active,
     COUNT(CASE WHEN ${condition('review', 't')} THEN 1 END) AS review,
     COUNT(CASE WHEN ${condition('completed', 't')} THEN 1 END) AS completed,
-    COUNT(CASE WHEN ${condition('attention', 't')} THEN 1 END) AS attention FROM tasks t WHERE COALESCE(t.task_role,'') <> 'fission'`).first<TaskCounts>();
+    COUNT(CASE WHEN ${condition('attention', 't')} THEN 1 END) AS attention FROM tasks t WHERE COALESCE(t.task_role,'') NOT IN ('fission','prompt_item')`).first<TaskCounts>();
   return result || { total: 0, active: 0, review: 0, completed: 0, attention: 0 };
 }
 
 export async function taskDetail(db: TaskDatabase, id: string) {
-  const task = await db.prepare(`SELECT t.*,t.variant_gem_snapshot IS NOT NULL AS variant_mode,${displayColumns} ${joins} WHERE t.id=?`).bind(id).first<TaskRow>();
+  const task = await db.prepare(`SELECT t.*,t.variant_gem_snapshot IS NOT NULL AS variant_mode,${displayColumns} ${joins} WHERE t.id=? AND COALESCE(t.task_role,'') <> 'prompt_item'`).bind(id).first<TaskRow>();
   return task ? (await attachChildren(db, [task]))[0] : null;
 }

@@ -1,9 +1,10 @@
 // 侧栏和按钮用的线条图标。只画简单几何形，统一 24×24、1.8 线宽，颜色跟随文字。
 export type IconName =
   | "create" | "scripts" | "remix" | "fission" | "products" | "gems" | "tasks"
-  | "publisher" | "calendar" | "settings" | "plus" | "minus" | "upload";
+  | "publisher" | "calendar" | "settings" | "plus" | "minus" | "upload" | "prompt-batches";
 
 const PATHS: Record<IconName, string[]> = {
+  'prompt-batches': ['M6 3h12v18H6z', 'M9 7h6', 'M9 11h6', 'M9 15h4', 'M3 6v15'],
   create: ["M12 3l1.8 4.6 4.7 1.8-4.7 1.8L12 16l-1.8-4.8-4.7-1.8 4.7-1.8z", "M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"],
   scripts: ["M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z", "M14 3v5h5", "M9 13h6", "M9 17h6"],
   remix: ["M17 2l4 4-4 4", "M3 11V9a3 3 0 0 1 3-3h15", "M7 22l-4-4 4-4", "M21 13v2a3 3 0 0 1-3 3H3"],

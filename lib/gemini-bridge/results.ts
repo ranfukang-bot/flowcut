@@ -132,6 +132,20 @@ export async function applyPromptResult(db: Db, body: TaskBody, now: string, pro
       { status: 409 }
     );
   }
+  if (task.task_role === 'prompt_item') {
+    let text: string;
+    try { text = splitPromptBlocks({ text: prompt, mode: 'single' }).prompts[0]; }
+    catch (error) { return Response.json({ error: error instanceof Error ? error.message : '提示词不完整' }, { status: 400 }); }
+    if (task.status === 'prompt_ready' && task.prompt === text) return Response.json({ ok: true, alreadyApplied: true });
+    if (body.kind && body.kind !== 'standard') return Response.json({ error: '提示词领取类型已失效', ignorable: true }, { status: 409 });
+    if (!body.workerId) return Response.json({ error: '缺少提示词执行器标识', ignorable: true }, { status: 409 });
+    const result = await db.prepare(`UPDATE tasks SET prompt=?,gemini_raw_reply=?,status='prompt_ready',progress=100,
+      error=NULL,bridge_claimed_at=NULL,bridge_worker_id=NULL,gemini_failures=0,gemini_retry_at=NULL,updated_at=?
+      WHERE id=? AND task_role='prompt_item' AND status='prompt_generating' AND provider='gemini-web' AND bridge_worker_id=?`)
+      .bind(text, rawReplyValue(String(body.rawReply || prompt)), now, body.taskId, body.workerId).run();
+    return result.meta.changes ? Response.json({ ok: true, promptReady: true })
+      : Response.json({ error: '提示词领取已失效，忽略过期结果', ignorable: true }, { status: 409 });
+  }
   const variantRound = body.kind === "variant";
   const expectedStatus = variantRound ? "variant_generating" : "prompt_generating";
   const fissionChild=task.task_role==='fission_child';

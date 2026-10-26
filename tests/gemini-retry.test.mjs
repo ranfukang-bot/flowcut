@@ -46,6 +46,7 @@ test('real claim SELECT skips waiting tasks and places ready retries behind alre
       CREATE TABLE products (id TEXT, name TEXT, features TEXT);
       CREATE TABLE gems (id TEXT, name TEXT, content TEXT);
       INSERT INTO products VALUES ('p','fixture','');`);
+    db.exec('ALTER TABLE tasks ADD COLUMN task_role TEXT');
     const insert = db.prepare(`INSERT INTO tasks (id, product_id, created_at, gemini_retry_at, provider, status) VALUES (?, 'p', ?, ?, 'gemini-web', 'prompt_queued')`);
     insert.run('retry', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:30.000Z');
     insert.run('next', '2026-01-01T00:00:01.000Z', null);

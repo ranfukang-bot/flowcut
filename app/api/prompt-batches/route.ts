@@ -59,7 +59,11 @@ export async function GET(request: Request) {
       WHERE task_role='prompt_item' GROUP BY prompt_batch_id ${gate} ORDER BY created_at DESC,prompt_batch_id DESC LIMIT 21`)
       .bind(...args).all<{ id: string; created_at: string }>();
     const selected = groups.results.slice(0, 20);
-    const rows = selected.length ? await db.prepare(`SELECT t.*,p.name AS product_name,g.name AS gem_name FROM tasks t
+    // Only what the page shows: this list is polled every 5 s while items run,
+    // and Gem snapshots and raw replies would multiply every response by megabytes.
+    const rows = selected.length ? await db.prepare(`SELECT t.id,t.prompt_batch_id,t.title,t.status,t.prompt,t.error,t.batch_index,t.batch_size,t.prompt_copied_at,
+      t.image_keys_snapshot,t.product_external_id_snapshot,t.created_at,t.gemini_request_text,t.region,
+      p.name AS product_name,g.name AS gem_name FROM tasks t
       LEFT JOIN products p ON p.id=t.product_id LEFT JOIN gems g ON g.id=t.gem_id
       WHERE t.task_role='prompt_item' AND t.prompt_batch_id IN (${selected.map(() => '?').join(',')}) ORDER BY t.batch_index`)
       .bind(...selected.map(row => row.id)).all<PromptItem & { prompt_batch_id: string }>() : { results: [] };

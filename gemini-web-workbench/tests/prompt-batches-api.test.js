@@ -136,3 +136,13 @@ test('backup restore preserves completed prompt items and pauses queued/generati
   assert.equal(tables.tasks[0].prompt, text); assert.equal(tables.tasks[0].error, null);
   assert.match(tables.tasks[1].error, /未自动重发/);
 });
+
+test('the polled batch list carries what the page shows, never Gem snapshots or raw replies', async t => {
+  const f = await fixture(t), c = await f.create({ count: 1 });
+  const [id] = f.items(c.body.id).map(row => row.id);
+  f.sqlite.prepare("UPDATE tasks SET prompt=?,gemini_raw_reply=?,status='prompt_ready' WHERE id=?").run(text, '原始回复'.repeat(500), id);
+  const item = (await f.call('prompt-batches', 'GET')).body.batches[0].items[0];
+  assert.equal(item.prompt, text); assert.equal(item.product_name, '测试商品'); assert.equal(item.gem_name, '测试 Gem');
+  assert.equal(item.gemini_request_text.split('\n')[0], '印尼，iPhone实拍质感'); assert.equal(JSON.parse(item.image_keys_snapshot).length, 1);
+  for (const column of ['gem_content_snapshot', 'gemini_raw_reply', 'callback_token']) assert.equal(column in item, false, column);
+});

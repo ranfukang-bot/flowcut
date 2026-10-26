@@ -271,8 +271,8 @@ export async function claimGeminiJobs(request: Request) {
           accountId,
           blockMode: standardTask.task_role === 'prompt_item' ? 'single' : Number(standardTask.duration) === 30 ? "raw" : standardTask.variant_mode ? "single" : "split",
           gem: { id: standardTask.gem_id || `snapshot-${standardTask.id}`, name: standardTask.gem_name || "历史任务 Gem", content: standardTask.content },
-          prompt: buildSavedGemPrompt(standardTask),
-          spokenLanguage: requestSpokenLanguage(buildSavedGemPrompt(standardTask),standardTask.region),
+          prompt: standardTask.task_role === 'prompt_item' ? (standardTask.gemini_request_text ?? buildSavedGemPrompt(standardTask)) : buildSavedGemPrompt(standardTask),
+          spokenLanguage: requestSpokenLanguage(standardTask.task_role === 'prompt_item' ? (standardTask.gemini_request_text ?? '') : buildSavedGemPrompt(standardTask),standardTask.region),
           imageUrls: (standardTask.image_keys_snapshot ? JSON.parse(standardTask.image_keys_snapshot) as string[] : images.results.map(image => image.object_key))
             .map(key => mediaUrl(request.url, key)),
         });

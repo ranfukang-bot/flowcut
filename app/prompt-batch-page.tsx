@@ -20,6 +20,7 @@ export function PromptBatchPage({ gems }: { gems: Gem[] }) {
   const [region, setRegion] = useState('印尼');
   const [description, setDescription] = useState('iPhone实拍质感');
   const [count, setCount] = useState(5);
+  const [customRequest, setCustomRequest] = useState<string | null>(null);
   const [settingsReady, setSettingsReady] = useState(false);
   const [batches, setBatches] = useState<PromptBatch[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -33,7 +34,7 @@ export function PromptBatchPage({ gems }: { gems: Gem[] }) {
   const selectedGem = gems.find(gem => gem.id === gemId);
   const previews = useMemo(() => files.map(file => URL.createObjectURL(file)), [files]);
   useEffect(() => () => previews.forEach(url => URL.revokeObjectURL(url)), [previews]);
-  const requestText = promptBatchRequest(region, description);
+  const requestText = customRequest ?? promptBatchRequest(region, description);
 
   useEffect(() => {
     let alive = true;
@@ -45,14 +46,15 @@ export function PromptBatchPage({ gems }: { gems: Gem[] }) {
       if (TASK_REGIONS.includes(saved.region)) setRegion(saved.region);
       if (typeof saved.description === 'string') setDescription(saved.description);
       if (Number.isInteger(saved.count) && saved.count >= 1 && saved.count <= 20) setCount(saved.count);
+      if (typeof saved.requestText === 'string') setCustomRequest(saved.requestText);
       } catch { /* Local storage may be disabled or contain an older invalid value. */ }
       setSettingsReady(true);
     });
     return () => { alive = false; };
   }, []);
   useEffect(() => {
-    if (settingsReady) try { localStorage.setItem(PROMPT_BATCH_SETTINGS_KEY, JSON.stringify({ gemId, region, description, count })); } catch { /* Generation still works without persistence. */ }
-  }, [settingsReady, gemId, region, description, count]);
+    if (settingsReady) try { localStorage.setItem(PROMPT_BATCH_SETTINGS_KEY, JSON.stringify({ gemId, region, description, count, requestText: customRequest })); } catch { /* Generation still works without persistence. */ }
+  }, [settingsReady, gemId, region, description, count, customRequest]);
 
   const refresh = useCallback(async (pageCount = pages.current) => {
     const current = ++serial.current;
@@ -95,13 +97,13 @@ export function PromptBatchPage({ gems }: { gems: Gem[] }) {
     try { await desktopBridge()?.setQueueRunning?.(true); }
     catch { setNotice('提示词已保存，请在账号与设置中启动 Gemini 队列'); }
   }
-  const missing = [!files.length && '请先放入图片', !selectedGem && '请选择 Gem', !description.trim() && '请填写描述', (!Number.isInteger(count) || count < 1 || count > 20) && '条数应为 1–20'].filter(Boolean).join('；');
+  const missing = [!files.length && '请先放入图片', !selectedGem && '请选择 Gem', !description.trim() && '请填写描述', !requestText.trim() && '请填写发送给 Gem 的文字', requestText.length > 12000 && '发送文字不能超过 12000 字', (!Number.isInteger(count) || count < 1 || count > 20) && '条数应为 1–20'].filter(Boolean).join('；');
   async function create(event: FormEvent) {
     event.preventDefault(); if (missing || busy) return;
     setBusy('create'); setNotice('');
     try {
       const form = new FormData(); files.forEach(file => form.append('images', file));
-      Object.entries({ externalId, productName: name, gemId, region, description, count: String(count) }).forEach(([key, value]) => form.set(key, value));
+      Object.entries({ externalId, productName: name, gemId, region, description, count: String(count), geminiRequestText: requestText }).forEach(([key, value]) => form.set(key, value));
       await api('/api/prompt-batches', { method: 'POST', body: form });
       await startQueue(); await refresh();
     } catch (error) { setNotice(error instanceof Error ? error.message : '批次创建失败'); }
@@ -155,7 +157,10 @@ export function PromptBatchPage({ gems }: { gems: Gem[] }) {
         <label>描述<input value={description} onChange={event => setDescription(event.target.value)} maxLength={1000} /></label>
         <label>条数<input type="number" min={1} max={20} step={1} value={count} onChange={event => setCount(Number(event.target.value))} /></label>
       </div>
-      <details><summary>发送给 Gem 的文字</summary><pre className="prompt-batch-text">{requestText}</pre></details>
+      <details><summary>发送给 Gem 的文字{customRequest !== null ? ' · 已自定义' : ''}</summary>
+        <label>实际发送内容<textarea aria-label="发送给 Gem 的文字" className="prompt-batch-text" rows={7} maxLength={12000} value={requestText} onChange={event => setCustomRequest(event.target.value)} /></label>
+        <div className="prompt-batch-actions"><button type="button" className="secondary" onClick={() => setCustomRequest(null)}>恢复默认文字</button><span>{customRequest !== null ? '按你编辑的内容原样发送；更换地区或描述不会覆盖。' : '默认文字随地区、描述生成，你可以直接修改。'}</span></div>
+      </details>
       <div className="prompt-batch-actions"><button className="primary" disabled={Boolean(missing) || Boolean(busy) || !settingsReady}>生成 {count} 条提示词</button><span>{missing}</span></div>
     </form>
     {notice && <p role="status">{notice}</p>}

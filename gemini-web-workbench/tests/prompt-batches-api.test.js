@@ -65,6 +65,21 @@ test('prompt items store a three-code-block reply as ONE ready prompt, never spl
   assert.deepEqual((await f.call('seedance-bridge', 'GET')).body.jobs, []);
 });
 
+test('custom Gem text is frozen and claimed verbatim, including removed default lines and literal placeholders', async t => {
+  const f = await fixture(t);
+  const custom = '\n按我写的要求输出，保持这两段原文。\n\n{地区} 和 {时长} 是我写的字面文字。\n';
+  const c = await f.create({ count: 1, geminiRequestText: custom });
+  assert.equal(c.status, 201, JSON.stringify(c.body));
+  const [row] = f.items(c.body.id); assert.equal(row.gemini_request_text, custom);
+  const [job] = await f.claim(); assert.equal(job.prompt, custom); assert.equal(job.blockMode, 'single');
+  assert.ok(!job.prompt.includes('口播语言：')); assert.ok(!job.prompt.includes('不要提问'));
+  await f.call('gemini-bridge', 'POST', { body: { action: 'error', kind: 'standard', taskId: job.id, workerId: 'desk', error: 'test failure' } });
+  assert.equal((await f.action('retry', job.id)).status, 200);
+  assert.equal((await f.claim('retry-worker'))[0].prompt, custom);
+  assert.equal((await f.create({ geminiRequestText: '   ' })).status, 400);
+  assert.equal((await f.create({ geminiRequestText: 'a'.repeat(12001) })).status, 400);
+});
+
 test('prompt batches: atomic inserts, web-only mode, image/count validation and blank product name', async t => {
   const f = await fixture(t);
   for (const count of [0, 21, 1.5]) assert.equal((await f.create({ count })).status, 400);

@@ -856,6 +856,8 @@ button.danger-text { border-color: rgba(244,113,113,.35); }
 .prompt-batch-page { min-width: 0; display: grid; gap: 18px; }
 .prompt-batch-page .panel { padding: 20px; min-width: 0; }
 .prompt-batch-form { display: grid; gap: 18px; }
+.prompt-batch-form details label { display: grid; gap: 8px; margin: 12px 0; }
+.prompt-batch-form textarea { width: 100%; min-width: 0; resize: vertical; }
 .prompt-batch-drop { padding: 22px; border: 1px dashed var(--line-2); border-radius: var(--radius); background: var(--panel-2); }
 .prompt-batch-drop label { display: grid; gap: 12px; }
 .prompt-batch-drop input { max-width: 100%; }

@@ -3,6 +3,7 @@ const fs = require('node:fs'), path = require('node:path'), esbuild = require('e
 const { chromium } = require('../../vendor/publisher/node_modules/playwright-core');
 const text = '供外部 Seedance 2.5 使用的完整提示词：' + '产品保持原图外观，自然光实拍，连续镜头展示细节和使用动作。'.repeat(20);
 const at = '2026-10-26T02:00:00Z';
+const customRequest = '完全按我自己的文字生成。\n保留第二段，不自动追加固定要求。';
 const bundle = () => esbuild.buildSync({ stdin: { contents: "import {StudioApp} from './studio-app';import{createRoot}from'react-dom/client';createRoot(document.getElementById('root')).render(<StudioApp/>);", loader: 'tsx', resolveDir: path.resolve(__dirname, '../../app') }, bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' } }).outputFiles[0].text;
 
 test('prompt-only page: drag images, Gem/count, create, poll to completion, copy/view, remembered settings, paging and mobile', { timeout: 90000 }, async t => {
@@ -28,7 +29,7 @@ test('prompt-only page: drag images, Gem/count, create, poll to completion, copy
         const form = new Request('http://fixture', { method: 'POST', headers: { 'content-type': request.headers()['content-type'] }, body: request.postDataBuffer() });
         const data = await form.formData(); posts.push(data);
         const n = Number(data.get('count'));
-        batches.unshift({ id: 'batch', created_at: at, items: Array.from({ length: n }, (_, i) => ({ id: 'item-' + (i + 1), batch_index: i + 1, batch_size: n, status: 'prompt_queued', prompt: '', prompt_copied_at: null, product_name: data.get('productName'), product_external_id_snapshot: data.get('externalId'), image_keys_snapshot: '["products/test/image"]', gem_name: '商品提示词 Gem', gemini_request_text: '泰国，手持实拍\n口播语言：泰语\n不要提问，直接按以上信息输出提示词', created_at: at })) });
+        batches.unshift({ id: 'batch', created_at: at, items: Array.from({ length: n }, (_, i) => ({ id: 'item-' + (i + 1), batch_index: i + 1, batch_size: n, status: 'prompt_queued', prompt: '', prompt_copied_at: null, product_name: data.get('productName'), product_external_id_snapshot: data.get('externalId'), image_keys_snapshot: '["products/test/image"]', gem_name: '商品提示词 Gem', gemini_request_text: data.get('geminiRequestText'), created_at: at })) });
         return route.fulfill({ status: 201, json: { id: 'batch' } });
       }
       if (request.method() === 'PATCH') {
@@ -70,11 +71,17 @@ test('prompt-only page: drag images, Gem/count, create, poll to completion, copy
   await panel.getByLabel('描述', { exact: true }).fill('手持实拍');
   await panel.getByLabel('条数', { exact: true }).fill('3');
   await panel.getByText('发送给 Gem 的文字', { exact: true }).click();
-  assert.equal(await panel.locator('details pre').textContent(), '泰国，手持实拍\n口播语言：泰语\n不要提问，直接按以上信息输出提示词');
+  const requestEditor = panel.getByLabel('发送给 Gem 的文字', { exact: true });
+  assert.equal(await requestEditor.inputValue(), '泰国，手持实拍\n口播语言：泰语\n不要提问，直接按以上信息输出提示词');
+  await requestEditor.fill(customRequest);
+  await panel.getByLabel('地区', { exact: true }).selectOption('印尼');
+  assert.equal(await requestEditor.inputValue(), customRequest, 'changing region never overwrites edited text');
+  await panel.getByLabel('地区', { exact: true }).selectOption('泰国');
   await panel.getByRole('button', { name: '生成 3 条提示词', exact: true }).click();
   await panel.getByText('已完成 0/3', { exact: false }).waitFor();
   assert.equal(posts.length, 1); assert.equal(posts[0].get('count'), '3'); assert.equal(posts[0].get('gemId'), 'gem');
   assert.equal(posts[0].get('externalId'), '1735360337668113999'); assert.equal(posts[0].getAll('images').length, 1);
+  assert.equal(posts[0].get('geminiRequestText').replace(/\r\n?/g, '\n'), customRequest);
   assert.deepEqual(await page.evaluate(() => window.__queueStarts), [true]);
   completed = true;
   await panel.getByText('已完成 3/3', { exact: false }).waitFor({ timeout: 12000 });
@@ -99,5 +106,13 @@ test('prompt-only page: drag images, Gem/count, create, poll to completion, copy
   assert.equal(await panel.getByLabel('地区', { exact: true }).inputValue(), '泰国');
   assert.equal(await panel.getByLabel('描述', { exact: true }).inputValue(), '手持实拍');
   assert.equal(await panel.getByLabel('条数', { exact: true }).inputValue(), '3');
+  assert.equal(await requestEditor.inputValue(), customRequest, 'custom text survives reloading');
+  await panel.locator('summary').click();
+  await panel.getByRole('button', { name: '恢复默认文字', exact: true }).click();
+  assert.equal(await requestEditor.inputValue(), '泰国，手持实拍\n口播语言：泰语\n不要提问，直接按以上信息输出提示词');
+  await panel.getByLabel('地区', { exact: true }).selectOption('印尼');
+  assert.equal(await requestEditor.inputValue(), '印尼，手持实拍\n口播语言：印尼语\n不要提问，直接按以上信息输出提示词');
+  await requestEditor.fill('');
+  assert.equal(await panel.getByRole('button', { name: '生成 3 条提示词', exact: true }).isDisabled(), true);
   assert.deepEqual(errors, []);
 });

@@ -3,6 +3,7 @@ import { getProviderConfig } from '../../../lib/provider-config';
 import { saveLibraryProduct } from '../../../lib/product-library';
 import { TASK_REGIONS } from '../../../lib/task-config';
 import { promptBatchRequest, type PromptItem } from '../../../lib/prompt-batches';
+import { validateGemRequest } from '../../../lib/gem-request';
 
 const conflict = (error: string) => Response.json({ error }, { status: 409 });
 
@@ -21,6 +22,9 @@ export async function POST(request: Request) {
     if (!TASK_REGIONS.includes(region)) throw Error('请选择有效地区');
     const description = String(form.get('description') ?? 'iPhone实拍质感').trim();
     if (!description || description.length > 1000 || /[\r\n]/.test(description)) throw Error('请填写一句描述（最多 1000 字）');
+    const submittedText = form.get('geminiRequestText');
+    // Multipart transport uses CRLF; match the textarea's LF without changing its text.
+    const text = form.has('geminiRequestText') ? validateGemRequest(typeof submittedText === 'string' ? submittedText.replace(/\r\n?/g, '\n') : submittedText) : promptBatchRequest(region, description);
     const name = String(form.get('productName') || '').trim();
     const externalId = String(form.get('externalId') || '').trim();
     if (name.length > 200 || externalId.length > 200) throw Error('商品名称或 ID 过长');
@@ -29,7 +33,6 @@ export async function POST(request: Request) {
     if (!gem?.content.trim()) throw Error('请选择已有且内容非空的 Gem');
     const product = await saveLibraryProduct(db, runtimeEnv().MEDIA, { externalId, name, country: region, files: images });
     const id = crypto.randomUUID(), now = new Date().toISOString();
-    const text = promptBatchRequest(region, description);
     // The entire N-item batch is committed together; a partial batch is never visible.
     await db.batch(Array.from({ length: count }, (_, i) => db.prepare(`INSERT INTO tasks
       (id,product_id,gem_id,title,status,provider,auto_queue,gemini_account_id,tiktok_account_name,archive_directory,

@@ -217,8 +217,8 @@ export function PromptBatchPage({ gems }: { gems: Gem[] }) {
     <div className="prompt-batch-actions"><h3>提示词批次</h3><button className="secondary" disabled={loading} onClick={() => void refresh()}>刷新</button></div>
     {!batches.length && <p>{loading ? '正在加载…' : '还没有提示词批次，上传图片后开始生成。'}</p>}
     {batches.map(batch => {
-      const first = batch.items[0]; if (!first) return null;
       if ((batch.kind === 'fission' || batch.kind === 'variants') && batch.mother) return fissionCard(batch);
+      const first = batch.items[0]; if (!first) return null;
       const completed = batch.items.filter(item => item.status === 'prompt_ready').length;
       const copied = batch.items.filter(item => item.prompt_copied_at).length;
       const keys: string[] = JSON.parse(first.image_keys_snapshot || '[]');

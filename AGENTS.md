@@ -4,7 +4,7 @@
 
 ## 项目结构
 
-- 提示词生成：`app/prompt-batch-page.tsx`、`app/api/prompt-batches/route.ts`，复用 tasks 的 `prompt_item` 行，只出提示词，不进入视频列表/计数或 Seedance；详见 `docs/prompt-batches.md`。
+- 提示词生成：`app/prompt-batch-page.tsx`、`app/api/prompt-batches/route.ts`，复用 tasks 的 `prompt_item` / `fission` / `fission_child` 行，以 `prompt_batch_id` 统一隔离；共用商品卡片在 `app/fission-product-cards.tsx`，提示词裂变表单在 `app/prompt-fission-form.tsx`，只出提示词，不进入视频列表/计数或 Seedance；详见 `docs/prompt-batches.md`。
 - 爆款复刻分段：`lib/remix-segments.ts` 共用规则，`lib/remix-tasks.ts` 和 `lib/remix-review.ts` 管组及放行预留，`lib/gemini-bridge/remix-segments.ts` 管桥接写回，`app/remix-group-panel.tsx` 管分段版本检查；详见 `docs/reference-remix-segments.md`。
 - `app/`、`lib/`、`worker/`：本机网页服务，使用 vinext 和本地 D1/R2；当前表结构以 `lib/storage.ts` 为准。
 - 界面按页面分文件：`app/studio-app.tsx` 只管整体框架、导航、数据加载和弹窗开关；页面各在 `dashboard-page.tsx`（创作中心）、`tasks-page.tsx`（任务队列）、`products-page.tsx`（商品库及商品弹窗）、`gems-page.tsx`、`settings-page.tsx`、`reference-remix-page.tsx`、`script-pipeline-page.tsx`、`fission-page.tsx`、`calendar-page.tsx`、`publisher-page.tsx`；任务详情抽屉在 `prompt-drawer.tsx`。共用类型在 `studio-types.ts`，任务状态的中文名和常用分组（成片已出、需处理、Gemini 处理中、任务组等）统一在 `lib/task-statuses.ts`，新增状态先改这里；界面上的状态文字与进度阶段在 `task-status.tsx`，接口与桌面桥在 `studio-client.ts`，通用小组件在 `studio-ui.tsx`，侧栏和按钮图标在 `icons.tsx`。改哪个页面就只改对应文件。

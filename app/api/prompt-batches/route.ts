@@ -1,3 +1,4 @@
+import { createPromptFission, type PromptFissionInput } from '../../../lib/prompt-fission';
 import { ensureWorkspace, getDb, runtimeEnv, jsonError } from '../../../lib/storage';
 import { getProviderConfig } from '../../../lib/provider-config';
 import { saveLibraryProduct } from '../../../lib/product-library';
@@ -11,6 +12,7 @@ export async function POST(request: Request) {
   try {
     await ensureWorkspace();
     if ((await getProviderConfig('gemini')).config.mode !== 'web') return conflict('提示词生成需要 Gemini 网页模式，请先在账号与设置中切换');
+    if (request.headers.get('content-type')?.includes('application/json')) return await createPromptFission(await request.json() as PromptFissionInput);
     const form = await request.formData();
     const files = form.getAll('images');
     if (!files.length || files.length > 12 || files.some(file => !(file instanceof File) || !file.size || !file.type.startsWith('image/'))) throw Error('请上传 1–12 张图片，只接受非空图片文件');
@@ -59,20 +61,26 @@ export async function GET(request: Request) {
       args.push(parsed[0], parsed[0], parsed[1]);
     }
     const groups = await db.prepare(`SELECT prompt_batch_id AS id,MAX(created_at) AS created_at FROM tasks
-      WHERE task_role='prompt_item' GROUP BY prompt_batch_id ${gate} ORDER BY created_at DESC,prompt_batch_id DESC LIMIT 21`)
+      WHERE COALESCE(prompt_batch_id,'')<>'' GROUP BY prompt_batch_id ${gate} ORDER BY created_at DESC,prompt_batch_id DESC LIMIT 21`)
       .bind(...args).all<{ id: string; created_at: string }>();
     const selected = groups.results.slice(0, 20);
     // Only what the page shows: this list is polled every 5 s while items run,
     // and Gem snapshots and raw replies would multiply every response by megabytes.
     const rows = selected.length ? await db.prepare(`SELECT t.id,t.prompt_batch_id,t.title,t.status,t.prompt,t.error,t.batch_index,t.batch_size,t.prompt_copied_at,
-      t.image_keys_snapshot,t.product_external_id_snapshot,t.created_at,t.gemini_request_text,t.region,
+      t.image_keys_snapshot,t.product_external_id_snapshot,t.created_at,
+      CASE WHEN t.task_role='prompt_item' THEN t.gemini_request_text ELSE '' END AS gemini_request_text,t.region,t.task_role,
       p.name AS product_name,g.name AS gem_name FROM tasks t
       LEFT JOIN products p ON p.id=t.product_id LEFT JOIN gems g ON g.id=t.gem_id
-      WHERE t.task_role='prompt_item' AND t.prompt_batch_id IN (${selected.map(() => '?').join(',')}) ORDER BY t.batch_index`)
+      WHERE t.prompt_batch_id IN (${selected.map(() => '?').join(',')}) ORDER BY t.batch_index`)
       .bind(...selected.map(row => row.id)).all<PromptItem & { prompt_batch_id: string }>() : { results: [] };
     const last = selected.at(-1);
-    const active = await db.prepare("SELECT id FROM tasks WHERE task_role='prompt_item' AND status IN ('prompt_queued','prompt_generating') LIMIT 1").first();
-    return Response.json({ batches: selected.map(group => ({ ...group, items: rows.results.filter(row => row.prompt_batch_id === group.id) })),
+    const active = await db.prepare(`SELECT t.id FROM tasks t WHERE COALESCE(t.prompt_batch_id,'')<>'' AND
+      (t.status IN ('prompt_queued','prompt_generating','variant_queued','variant_generating') OR
+       (t.status='fission_wait' AND EXISTS (SELECT 1 FROM tasks parent WHERE parent.id=t.batch_parent_id AND parent.status<>'failed'))) LIMIT 1`).first();
+    return Response.json({ batches: selected.map(group => {
+      const all = rows.results.filter(row => row.prompt_batch_id === group.id), mother = all.find(row => row.task_role === 'fission');
+      return { ...group, kind: mother ? 'fission' : 'single', ...(mother ? { mother } : {}), items: all.filter(row => row.task_role !== 'fission') };
+    }),
       nextCursor: groups.results.length > 20 && last ? btoa(JSON.stringify([last.created_at, last.id])) : null, hasActive: Boolean(active) }, { headers: { 'cache-control': 'no-store' } });
   } catch (error) { return jsonError(error, 400); }
 }
@@ -97,22 +105,25 @@ export async function PATCH(request: Request) {
     if (!id || !['retry', 'copied', 'delete-item', 'delete-batch'].includes(action)) throw Error('操作参数无效');
     const db = getDb(), now = new Date().toISOString();
     if (action === 'retry') {
-      const result = await db.prepare(`UPDATE tasks SET status='prompt_queued',progress=0,prompt='',gemini_raw_reply=NULL,prompt_copied_at=NULL,
+      const result = await db.prepare(`UPDATE tasks SET status=CASE WHEN task_role='fission_child' THEN
+          CASE WHEN EXISTS (SELECT 1 FROM tasks parent WHERE parent.id=tasks.batch_parent_id AND parent.status='fission_ready' AND length(trim(parent.prompt))>=300) THEN 'variant_queued' ELSE 'fission_wait' END
+          ELSE 'prompt_queued' END,progress=0,prompt='',gemini_raw_reply=NULL,prompt_copied_at=NULL,
         error=NULL,bridge_claimed_at=NULL,bridge_worker_id=NULL,gemini_account_id=NULL,gemini_failures=0,gemini_retry_at=NULL,updated_at=?
-        WHERE id=? AND task_role='prompt_item' AND status='failed'`).bind(now, id).run();
+        WHERE id=? AND COALESCE(prompt_batch_id,'')<>'' AND status='failed'`).bind(now, id).run();
       return result.meta.changes ? Response.json({ ok: true }) : conflict('只能重试失败的提示词');
     }
     if (action === 'copied') {
-      const result = await db.prepare("UPDATE tasks SET prompt_copied_at=?,updated_at=? WHERE id=? AND task_role='prompt_item' AND length(trim(prompt))>0").bind(now, now, id).run();
+      const result = await db.prepare("UPDATE tasks SET prompt_copied_at=?,updated_at=? WHERE id=? AND COALESCE(prompt_batch_id,'')<>'' AND length(trim(prompt))>0").bind(now, now, id).run();
       return result.meta.changes ? Response.json({ ok: true, copiedAt: now }) : conflict('没有可复制的提示词');
     }
     const batch = action === 'delete-batch';
     const predicate = batch ? 'prompt_batch_id=?' : 'id=?';
-    const rows = await db.prepare(`SELECT status,image_keys_snapshot FROM tasks WHERE task_role='prompt_item' AND ${predicate}`).bind(id).all<{ status: string; image_keys_snapshot: string | null }>();
-    if (rows.results.some(row => row.status === 'prompt_generating')) return conflict('Gemini 正在生成，请等本批生成结束再删除');
+    const rows = await db.prepare(`SELECT status,task_role,image_keys_snapshot FROM tasks WHERE COALESCE(prompt_batch_id,'')<>'' AND ${predicate}`).bind(id).all<{ status: string; task_role: string; image_keys_snapshot: string | null }>();
+    if (!batch && rows.results.some(row => row.task_role !== 'prompt_item')) return conflict('裂变商品不能单独删除，请删除整批');
+    if (rows.results.some(row => ['prompt_generating','variant_generating'].includes(row.status))) return conflict('Gemini 正在生成，请等本批生成结束再删除');
     // Repeat the generation check in the DELETE itself to close a claim/delete race.
-    const result = await db.prepare(`DELETE FROM tasks WHERE task_role='prompt_item' AND ${predicate}
-      AND NOT EXISTS (SELECT 1 FROM tasks active WHERE active.task_role='prompt_item' AND active.${predicate} AND active.status='prompt_generating')`).bind(id, id).run();
+    const result = await db.prepare(`DELETE FROM tasks WHERE COALESCE(prompt_batch_id,'')<>'' AND ${predicate}
+      AND NOT EXISTS (SELECT 1 FROM tasks active WHERE COALESCE(active.prompt_batch_id,'')<>'' AND active.${predicate} AND active.status IN ('prompt_generating','variant_generating'))`).bind(id, id).run();
     if (rows.results.length && !result.meta.changes) return conflict('条目状态已变化，请刷新后重试删除');
     await cleanupImages(rows.results.flatMap(row => JSON.parse(row.image_keys_snapshot || '[]') as string[]));
     return Response.json({ ok: true, deleted: result.meta.changes });

@@ -9,7 +9,7 @@ export const SPLIT_GUARD = " AND status NOT IN ('split_done','fission_ready')";
 // Table and queue/active states for each Gemini job kind. A variant job is the
 // second round of a product task and lives in the tasks table.
 export function kindState(kind: GeminiKind | undefined, workerId = '', remixRound?: number) {
-  const fissionGuard = ` AND (COALESCE(task_role,'') NOT IN ('fission','fission_child','prompt_item') OR
+  const fissionGuard = ` AND ((COALESCE(task_role,'') NOT IN ('fission','fission_child') AND COALESCE(prompt_batch_id,'')='') OR
     (provider='gemini-web' AND status IN (${kind==='variant'?"'variant_queued','variant_generating'":"'prompt_queued','prompt_generating'"}) AND bridge_worker_id=?))`;
   if (kind === 'remix-segments' || kind === 'remix-rewrite') {
     const rewrite=kind==='remix-rewrite';

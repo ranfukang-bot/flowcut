@@ -2,7 +2,7 @@
 // block). Clips are ordinary tasks for Seedance, review and publishing.
 
 // A split group is a container, not a video; it is removed once empty.
-export const ORPHAN_GROUP_DELETE = `DELETE FROM tasks WHERE ((task_role = 'group' AND status = 'split_done') OR task_role = 'fission')
+export const ORPHAN_GROUP_DELETE = `DELETE FROM tasks WHERE COALESCE(prompt_batch_id,'')='' AND ((task_role = 'group' AND status = 'split_done') OR task_role = 'fission')
   AND NOT EXISTS (SELECT 1 FROM tasks child WHERE child.batch_parent_id = tasks.id)`;
 
 type Statement<S> = { bind(...values: unknown[]): S };

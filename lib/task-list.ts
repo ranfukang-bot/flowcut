@@ -49,7 +49,7 @@ function decodeCursor(value: string): [string, string] {
 async function attachChildren(db: TaskDatabase, rows: TaskRow[]) {
   const groupIds = rows.filter(row => GROUP_ROLES.includes(String(row.task_role))).map(row => row.id);
   if (!groupIds.length) return rows;
-  const children = await db.prepare(`SELECT ${listColumns} ${joins} WHERE t.batch_parent_id IN (${groupIds.map(() => '?').join(',')})
+  const children = await db.prepare(`SELECT ${listColumns} ${joins} WHERE COALESCE(t.prompt_batch_id,'')='' AND t.batch_parent_id IN (${groupIds.map(() => '?').join(',')})
     ORDER BY CASE WHEN t.task_role='concat' THEN 1 ELSE 0 END, t.batch_round ASC, t.batch_index ASC, t.created_at ASC, t.id ASC`)
     .bind(...groupIds).all<TaskRow>();
   const byGroup = new Map<string, TaskRow[]>();
@@ -67,11 +67,11 @@ export async function listTasks(db: TaskDatabase, query: TaskQuery = {}) {
   const requestedLimit = query.limit ?? 50;
   if (!Number.isInteger(requestedLimit) || requestedLimit < 1) throw new Error('分页条数必须是正整数');
   const limit = Math.min(200, requestedLimit);
-  const where = ["COALESCE(t.task_role,'') <> 'prompt_item'", 't.batch_parent_id IS NULL', filter === 'all' ? '1 = 1'
-    : `((${condition(filter, 't')}) OR (t.task_role IN ('group','fission','remix') AND EXISTS (SELECT 1 FROM tasks c WHERE c.batch_parent_id = t.id AND ${condition(filter, 'c')})))`];
+  const where = ["COALESCE(t.prompt_batch_id,'') = ''", 't.batch_parent_id IS NULL', filter === 'all' ? '1 = 1'
+    : `((${condition(filter, 't')}) OR (t.task_role IN ('group','fission','remix') AND EXISTS (SELECT 1 FROM tasks c WHERE COALESCE(c.prompt_batch_id,'')='' AND c.batch_parent_id = t.id AND ${condition(filter, 'c')})))`];
   const args: (string | number)[] = [];
   if (query.q?.trim()) {
-    where.push("(instr(lower(COALESCE(NULLIF(p.name,''),t.title,'') || ' ' || COALESCE(t.product_external_id_snapshot,p.external_id,'') || ' ' || COALESCE(t.tiktok_account_name,'')),lower(?)) > 0 OR (t.task_role='fission' AND EXISTS (SELECT 1 FROM tasks c LEFT JOIN products cp ON cp.id=c.product_id WHERE c.batch_parent_id=t.id AND instr(lower(COALESCE(cp.name,'') || ' ' || COALESCE(c.product_external_id_snapshot,'')),lower(?))>0)))");
+    where.push("(instr(lower(COALESCE(NULLIF(p.name,''),t.title,'') || ' ' || COALESCE(t.product_external_id_snapshot,p.external_id,'') || ' ' || COALESCE(t.tiktok_account_name,'')),lower(?)) > 0 OR (t.task_role='fission' AND EXISTS (SELECT 1 FROM tasks c LEFT JOIN products cp ON cp.id=c.product_id WHERE COALESCE(c.prompt_batch_id,'')='' AND c.batch_parent_id=t.id AND instr(lower(COALESCE(cp.name,'') || ' ' || COALESCE(c.product_external_id_snapshot,'')),lower(?))>0)))");
     args.push(query.q.trim(),query.q.trim());
   }
   if (query.cursor) {
@@ -89,11 +89,11 @@ export async function countTasks(db: TaskDatabase): Promise<TaskCounts> {
     COUNT(CASE WHEN ${condition('active', 't')} THEN 1 END) AS active,
     COUNT(CASE WHEN ${condition('review', 't')} THEN 1 END) AS review,
     COUNT(CASE WHEN ${condition('completed', 't')} THEN 1 END) AS completed,
-    COUNT(CASE WHEN ${condition('attention', 't')} THEN 1 END) AS attention FROM tasks t WHERE COALESCE(t.task_role,'') NOT IN ('fission','prompt_item')`).first<TaskCounts>();
+    COUNT(CASE WHEN ${condition('attention', 't')} THEN 1 END) AS attention FROM tasks t WHERE COALESCE(t.task_role,'') <> 'fission' AND COALESCE(t.prompt_batch_id,'') = ''`).first<TaskCounts>();
   return result || { total: 0, active: 0, review: 0, completed: 0, attention: 0 };
 }
 
 export async function taskDetail(db: TaskDatabase, id: string) {
-  const task = await db.prepare(`SELECT t.*,t.variant_gem_snapshot IS NOT NULL AS variant_mode,${displayColumns} ${joins} WHERE t.id=? AND COALESCE(t.task_role,'') <> 'prompt_item'`).bind(id).first<TaskRow>();
+  const task = await db.prepare(`SELECT t.*,t.variant_gem_snapshot IS NOT NULL AS variant_mode,${displayColumns} ${joins} WHERE t.id=? AND COALESCE(t.prompt_batch_id,'') = ''`).bind(id).first<TaskRow>();
   return task ? (await attachChildren(db, [task]))[0] : null;
 }

@@ -146,7 +146,7 @@ test('prompt batch pagination returns 20 groups with full prompts, newest first,
 });
 
 test('backup restore preserves completed prompt items and pauses queued/generating ones without replay', () => {
-  const tables = restorableTables({ tasks: ['prompt_ready', 'prompt_queued', 'prompt_generating'].map(status => ({ task_role: 'prompt_item', status, prompt: text, error: null })) });
+  const tables = restorableTables({ tasks: ['prompt_ready', 'prompt_queued', 'prompt_generating'].map(status => ({ task_role: 'prompt_item', prompt_batch_id: 'batch', status, prompt: text, error: null })) });
   assert.deepEqual(tables.tasks.map(row => row.status), ['prompt_ready', 'failed', 'failed']);
   assert.equal(tables.tasks[0].prompt, text); assert.equal(tables.tasks[0].error, null);
   assert.match(tables.tasks[1].error, /未自动重发/);

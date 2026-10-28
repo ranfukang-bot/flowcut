@@ -8,7 +8,7 @@ export async function GET() {
   try {
     await ensureWorkspace();
     const db=getDb();
-    const rows=await db.prepare("SELECT id FROM tasks WHERE task_role='fission' ORDER BY created_at DESC,id DESC LIMIT 100").all<{id:string}>();
+    const rows=await db.prepare("SELECT id FROM tasks WHERE task_role='fission' AND COALESCE(prompt_batch_id,'')='' ORDER BY created_at DESC,id DESC LIMIT 100").all<{id:string}>();
     return Response.json({batches:await Promise.all(rows.results.map(row=>taskDetail(db,row.id)))},{headers:{'cache-control':'no-store'}});
   } catch(error){return jsonError(error);}
 }

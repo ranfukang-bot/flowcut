@@ -335,7 +335,7 @@ export async function PATCH(request: Request) {
     const body = (await request.json()) as { id?: string; action?: string };
     if (!body.id) return Response.json({ error: "缺少任务 ID" }, { status: 400 });
     const db = getDb();
-    if (await db.prepare("SELECT id FROM tasks WHERE id=? AND task_role='prompt_item'").bind(body.id).first()) return Response.json({ error: '请在提示词生成页操作；提示词条目不能提交视频' }, { status: 409 });
+    if (await db.prepare("SELECT id FROM tasks WHERE id=? AND COALESCE(prompt_batch_id,'') <> ''").bind(body.id).first()) return Response.json({ error: '请在提示词生成页操作；提示词条目不能提交视频' }, { status: 409 });
 
     const remix=await db.prepare("SELECT t.task_role,t.batch_parent_id,p.task_role AS parent_role FROM tasks t LEFT JOIN tasks p ON p.id=t.batch_parent_id WHERE t.id=? AND (t.task_role='remix' OR p.task_role='remix')").bind(body.id).first<{task_role:string;parent_role?:string}>();
     if(remix?.task_role==='remix') {
@@ -583,12 +583,12 @@ export async function DELETE(request: Request) {
     await ensureWorkspace();
     const url = new URL(request.url);
     if (url.searchParams.get("all") === "1") {
-      const rows = await getDb().prepare("SELECT id FROM tasks WHERE COALESCE(task_role,'') <> 'prompt_item'").all<{ id: string }>();
+      const rows = await getDb().prepare("SELECT id FROM tasks WHERE COALESCE(prompt_batch_id,'') = ''").all<{ id: string }>();
       const ids = rows.results.map(row => row.id);
       // One atomic batch clears every row, including tasks beyond the visible 60.
       if (ids.length) await getDb().batch([
-        getDb().prepare("DELETE FROM schedules WHERE task_id IN (SELECT id FROM tasks WHERE COALESCE(task_role,'') <> 'prompt_item')"),
-        getDb().prepare("DELETE FROM tasks WHERE COALESCE(task_role,'') <> 'prompt_item'"),
+        getDb().prepare("DELETE FROM schedules WHERE task_id IN (SELECT id FROM tasks WHERE COALESCE(prompt_batch_id,'') = '')"),
+        getDb().prepare("DELETE FROM tasks WHERE COALESCE(prompt_batch_id,'') = ''"),
       ]);
       return Response.json({ ok: true, deleted: ids.length, ids });
     }
@@ -596,7 +596,7 @@ export async function DELETE(request: Request) {
       const completedStatuses = VIDEO_DONE_STATUSES;
       // A concatenated video keeps its row until the desktop has removed the
       // clips merged into it; otherwise those clips would be stranded.
-      const completedWhere = `NOT EXISTS(SELECT 1 FROM tasks parent WHERE parent.id=tasks.batch_parent_id AND parent.task_role='remix') AND status IN (?, ?) AND review_status IN ('approved','replaced')
+      const completedWhere = `COALESCE(prompt_batch_id,'')='' AND NOT EXISTS(SELECT 1 FROM tasks parent WHERE parent.id=tasks.batch_parent_id AND parent.task_role='remix') AND status IN (?, ?) AND review_status IN ('approved','replaced')
         AND NOT EXISTS (SELECT 1 FROM tasks merged WHERE merged.merged_into_task_id = tasks.id AND merged.review_status = 'merged')`;
       const completed = await getDb()
         .prepare(`SELECT COUNT(*) AS count FROM tasks WHERE ${completedWhere}`)
@@ -615,7 +615,7 @@ export async function DELETE(request: Request) {
     }
     const { id, remixCleaned } = (await request.json()) as { id?: string;remixCleaned?:boolean };
     if (!id) return Response.json({ error: "缺少任务 ID" }, { status: 400 });
-    if (await getDb().prepare("SELECT id FROM tasks WHERE id=? AND task_role='prompt_item'").bind(id).first()) return Response.json({ error: '请在提示词生成页删除条目' }, { status: 409 });
+    if (await getDb().prepare("SELECT id FROM tasks WHERE id=? AND COALESCE(prompt_batch_id,'') <> ''").bind(id).first()) return Response.json({ error: '请在提示词生成页删除条目' }, { status: 409 });
     // Deleting a group removes its clips and concatenated videos as well.
     // Clips merged into a deleted concatenated video return to review.
     const db = getDb();

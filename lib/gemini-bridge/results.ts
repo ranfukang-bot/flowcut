@@ -111,7 +111,7 @@ export async function applyRemixResult(db: Db, body: TaskBody, now: string, prom
 export async function applyPromptResult(db: Db, body: TaskBody, now: string, prompt: string, requestUrl: string) {
   const task = await db
     .prepare(
-      `SELECT auto_queue, status, provider, prompt, bridge_worker_id, duration, task_role,
+      `SELECT auto_queue, status, provider, prompt, bridge_worker_id, duration, task_role, prompt_batch_id,
               variant_gem_snapshot IS NOT NULL AS variant_mode
        FROM tasks WHERE id = ?`
     )
@@ -125,6 +125,7 @@ export async function applyPromptResult(db: Db, body: TaskBody, now: string, pro
       duration: number;
       variant_mode: number;
       task_role: string | null;
+      prompt_batch_id: string | null;
     }>();
   if (!task) {
     return Response.json(
@@ -150,7 +151,7 @@ export async function applyPromptResult(db: Db, body: TaskBody, now: string, pro
   const expectedStatus = variantRound ? "variant_generating" : "prompt_generating";
   const fissionChild=task.task_role==='fission_child';
   const fissionMother=task.task_role==='fission';
-  const mode: PromptBlockMode = fissionChild ? 'single' : variantRound ? "split" : Number(task.duration) === 30 ? "raw" : task.variant_mode ? "single" : "split";
+  const mode: PromptBlockMode = task.prompt_batch_id || fissionChild ? 'single' : variantRound ? "split" : Number(task.duration) === 30 ? "raw" : task.variant_mode ? "single" : "split";
   let parsed;
   try {
     parsed = splitPromptBlocks({ text: prompt, blocks: body.codeBlocks, hint: body.codeBlockHint === true, mode });
@@ -260,7 +261,8 @@ export async function applyPromptResult(db: Db, body: TaskBody, now: string, pro
   const updated = await db
     .prepare(
       `UPDATE tasks SET prompt = ?, prompt_note = ?, gemini_raw_reply = ?,
-       status = 'prompt_ready', progress = 32,
+       status = 'prompt_ready', progress = CASE WHEN COALESCE(prompt_batch_id,'')<>'' THEN 100 ELSE 32 END,
+       auto_queue = CASE WHEN COALESCE(prompt_batch_id,'')<>'' THEN 0 ELSE auto_queue END,
        error = NULL, bridge_claimed_at = NULL, bridge_worker_id = NULL,
        gemini_failures = 0, gemini_retry_at = NULL,
        updated_at = ? WHERE id = ? AND provider = 'gemini-web'
@@ -275,7 +277,7 @@ export async function applyPromptResult(db: Db, body: TaskBody, now: string, pro
       { status: 409 }
     );
   }
-  if (task.auto_queue) {
+  if (task.auto_queue && !task.prompt_batch_id) {
     try {
       await queueSeedance(body.taskId, requestUrl);
     } catch (error) {

@@ -9,7 +9,7 @@ function fixture(t) {
   sqlite.exec(`CREATE TABLE products(id TEXT PRIMARY KEY,name TEXT,external_id TEXT,image_key TEXT);
     CREATE TABLE gems(id TEXT PRIMARY KEY,name TEXT);
     CREATE TABLE product_images(id TEXT,product_id TEXT,object_key TEXT,sort_order INTEGER);
-    CREATE TABLE tasks(id TEXT PRIMARY KEY,product_id TEXT,gem_id TEXT,title TEXT,status TEXT,progress INTEGER,provider TEXT,
+    CREATE TABLE tasks(id TEXT PRIMARY KEY,prompt_batch_id TEXT,product_id TEXT,gem_id TEXT,title TEXT,status TEXT,progress INTEGER,provider TEXT,
       duration INTEGER,region TEXT,shooting_style TEXT,provider_job_id TEXT,provider_status_url TEXT,output_url TEXT,error TEXT,
       gemini_account_id TEXT,tiktok_account_name TEXT,archive_directory TEXT,download_path TEXT,review_status TEXT,approved_path TEXT,
       segment_progress TEXT,download_error TEXT,created_at TEXT,updated_at TEXT,prompt TEXT,image_keys_snapshot TEXT,

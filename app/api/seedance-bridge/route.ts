@@ -47,7 +47,7 @@ export async function GET(request: Request) {
                 COALESCE(tasks.product_external_id_snapshot, products.external_id, '') AS product_external_id
          FROM tasks
          LEFT JOIN products ON products.id = tasks.product_id
-         WHERE tasks.provider = 'seedance-bridge' AND COALESCE(tasks.task_role,'') <> 'prompt_item'
+         WHERE tasks.provider = 'seedance-bridge' AND COALESCE(tasks.prompt_batch_id,'') = ''
            AND (tasks.duration <> 30 OR ? = 1)
            AND tasks.status = 'video_queued'
            AND tasks.provider_job_id IS NULL
@@ -216,6 +216,7 @@ export async function POST(request: Request) {
     if (!body.taskId) {
       return Response.json({ error: "缺少工作台任务 ID" }, { status: 400 });
     }
+    if (body.kind !== 'reference-remix' && await db.prepare("SELECT id FROM tasks WHERE id=? AND COALESCE(prompt_batch_id,'')<>''").bind(body.taskId).first()) return Response.json({ error: '提示词批次不提交视频' }, { status: 409 });
     if (body.action === "submitted") {
       if (!body.providerJobId) {
         return Response.json({ error: "缺少 Seedance 任务 ID" }, { status: 400 });

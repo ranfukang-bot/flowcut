@@ -41,7 +41,7 @@ function restorableTables(tables) {
     }
   }
   for (const name of ['tasks', 'reference_remix_tasks', 'script_pipeline_tasks']) for (const row of tables[name] || []) {
-    if (name === 'tasks' && row.task_role === 'prompt_item' && row.status === 'prompt_ready') continue;
+    if (name === 'tasks' && row.prompt_batch_id && (row.status === 'prompt_ready' || (row.task_role === 'fission' && row.status === 'fission_ready' && String(row.prompt || '').trim().length >= 300))) continue;
     // split_done: a group whose clips exist as their own rows; finished.
     // fission_wait and fission_ready still own unfinished work. Pause them
     // on restore so a historical mother/child queue can never replay itself.

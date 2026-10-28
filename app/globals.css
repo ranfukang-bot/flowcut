@@ -866,6 +866,13 @@ button.danger-text { border-color: rgba(244,113,113,.35); }
 .prompt-batch-fields input,.prompt-batch-fields select { width: 100%; min-width: 0; }
 .prompt-batch-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .prompt-batch-actions span { color: var(--ink-2); font-size: 13px; }
+.prompt-batch-actions button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.prompt-batch-thumb { width: 56px; height: 56px; object-fit: contain; border-radius: var(--radius); }
+.prompt-batch-thumb + div { flex: 1 1 180px; min-width: 0; }
+.prompt-batch-page .fission-card.dragging, .prompt-batch-page .fission-drop.dragging { background: var(--panel-3); }
+.prompt-batch-page .fission-drop, .prompt-batch-page .fission-drop:hover { border-color: var(--line-2); }
+.prompt-batch-page .fission-drop:hover { background: var(--panel-3); }
+.prompt-batch-page .fission-step { min-width: 0; }
 .prompt-batch-images { display: flex; gap: 12px; flex-wrap: wrap; }
 .prompt-batch-images figure { margin: 0; display: grid; gap: 6px; width: 96px; }
 .prompt-batch-images img { width: 96px; height: 96px; object-fit: contain; background: var(--panel-2); border-radius: var(--radius); }

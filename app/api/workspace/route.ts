@@ -21,7 +21,7 @@ export async function GET() {
         .prepare(
           `SELECT s.*, t.title AS task_title
            FROM schedules s LEFT JOIN tasks t ON t.id = s.task_id
-           WHERE COALESCE(t.task_role,'') <> 'prompt_item'
+           WHERE COALESCE(t.prompt_batch_id,'') = ''
            ORDER BY s.scheduled_at ASC LIMIT 60`
         )
         .all(),

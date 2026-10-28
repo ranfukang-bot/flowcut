@@ -1,8 +1,8 @@
 # FlowCut 全自动 AI 视频工作台
 
-当前桌面版本：`1.4.65`（个人本机版）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，开发交接入口为 [AGENTS.md](AGENTS.md)。
+当前桌面版本：`1.4.66`（个人本机版）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，开发交接入口为 [AGENTS.md](AGENTS.md)。
 
-新增「提示词生成」：上传产品图，选 Gem、地区和条数，生成后逐条复制到外部 Seedance 2.5 使用，无需 TK 账号，也不提交视频任务。详见 [使用说明](docs/prompt-batches.md)。
+「提示词生成」支持单个商品和多品裂变：上传商品图，选 Gem，直接编辑两轮发送文字；生成后逐条复制到外部 Seedance 2.5 使用，无需 TK 账号，也不提交视频任务。详见 [使用说明](docs/prompt-batches.md)。
 
 Gemini 账号旁的“打开 Gemini”直接查看已有登录和当前任务页面，关闭只隐藏窗口；新增账号和“重新登录”仍通过 Firefox 完成，详见 [登录说明](docs/gemini-login-import.md)。
 

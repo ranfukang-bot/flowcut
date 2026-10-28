@@ -1,4 +1,5 @@
 "use client";
+import { PromptFissionForm } from './prompt-fission-form';
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { PROMPT_BATCH_SETTINGS_KEY, promptBatchRequest, type PromptBatch, type PromptItem } from '../lib/prompt-batches';
@@ -13,6 +14,7 @@ import type { Gem } from './studio-types';
 type BatchResponse = { batches: PromptBatch[]; nextCursor: string | null; hasActive: boolean };
 
 export function PromptBatchPage({ gems }: { gems: Gem[] }) {
+  const [mode, setMode] = useState<'single' | 'fission'>('single');
   const [files, setFiles] = useState<File[]>([]);
   const [externalId, editExternalId] = useImageProductId(files);
   const [name, setName] = useState('');
@@ -42,6 +44,7 @@ export function PromptBatchPage({ gems }: { gems: Gem[] }) {
       if (!alive) return;
       try {
       const saved = JSON.parse(localStorage.getItem(PROMPT_BATCH_SETTINGS_KEY) || '{}');
+      if (saved.mode === 'fission') setMode('fission');
       if (typeof saved.gemId === 'string') setGemId(saved.gemId);
       if (TASK_REGIONS.includes(saved.region)) setRegion(saved.region);
       if (typeof saved.description === 'string') setDescription(saved.description);
@@ -53,8 +56,8 @@ export function PromptBatchPage({ gems }: { gems: Gem[] }) {
     return () => { alive = false; };
   }, []);
   useEffect(() => {
-    if (settingsReady) try { localStorage.setItem(PROMPT_BATCH_SETTINGS_KEY, JSON.stringify({ gemId, region, description, count, requestText: customRequest })); } catch { /* Generation still works without persistence. */ }
-  }, [settingsReady, gemId, region, description, count, customRequest]);
+    if (settingsReady) try { localStorage.setItem(PROMPT_BATCH_SETTINGS_KEY, JSON.stringify({ mode, gemId, region, description, count, requestText: customRequest })); } catch { /* Generation still works without persistence. */ }
+  }, [settingsReady, mode, gemId, region, description, count, customRequest]);
 
   const refresh = useCallback(async (pageCount = pages.current) => {
     const current = ++serial.current;
@@ -80,7 +83,7 @@ export function PromptBatchPage({ gems }: { gems: Gem[] }) {
     const timer = window.setInterval(() => { void refresh(); }, 5000);
     return () => window.clearInterval(timer);
   }, [hasActive, refresh]);
-  const viewed = batches.flatMap(batch => batch.items).find(item => item.id === viewId);
+  const viewed = batches.flatMap(batch => batch.mother ? [batch.mother, ...batch.items] : batch.items).find(item => item.id === viewId);
   const hasViewed = Boolean(viewed);
   useEffect(() => {
     if (hasViewed) dialog.current?.showModal();
@@ -126,7 +129,7 @@ export function PromptBatchPage({ gems }: { gems: Gem[] }) {
     let copied = false;
     const markCopied = (copiedAt: string) => {
       serial.current++; setLoading(false);
-      setBatches(current => current.map(batch => ({ ...batch, items: batch.items.map(row => row.id === item.id ? { ...row, prompt_copied_at: copiedAt } : row) })));
+      setBatches(current => current.map(batch => ({ ...batch, ...(batch.mother?.id === item.id ? { mother: { ...batch.mother, prompt_copied_at: copiedAt } } : {}), items: batch.items.map(row => row.id === item.id ? { ...row, prompt_copied_at: copiedAt } : row) })));
     };
     try {
       await navigator.clipboard.writeText(item.prompt);
@@ -141,9 +144,44 @@ export function PromptBatchPage({ gems }: { gems: Gem[] }) {
     return <button type="button" className="secondary" disabled={!item.prompt || Boolean(busy)} onClick={() => void copy(item)}>{item.prompt_copied_at ? '已复制' : '复制提示词'}</button>;
   }
 
+  function fissionCard(batch: PromptBatch) {
+    const mother = batch.mother!;
+    const all = [mother, ...batch.items], generating = all.some(item => ['prompt_generating','variant_generating'].includes(item.status));
+    const complete = batch.items.filter(item => item.status === 'prompt_ready').length;
+    const copied = all.filter(item => item.prompt_copied_at).length;
+    function row(item: PromptItem, isMother = false) {
+      const keys: string[] = JSON.parse(item.image_keys_snapshot || '[]');
+      return <li key={item.id}>
+        {!isMother && keys[0] && <img className="prompt-batch-thumb" src={'/api/media?key=' + encodeURIComponent(keys[0])} alt="商品缩略图" />}
+        <div><strong>{isMother ? '母版' : (item.product_name || '商品') + ' · ' + item.product_external_id_snapshot}</strong> · <span className={item.status === 'failed' ? 'prompt-batch-failed' : ''}>{item.status === 'fission_wait' ? '等待母版' : TASK_STATUS_LABELS[item.status] || item.status}</span>
+          {isMother ? <details><summary>母版预览 · {item.product_name || item.product_external_id_snapshot}</summary><p className="prompt-batch-text">{item.prompt || item.error || '等待生成母版'}</p></details> : <p>{item.prompt ? item.prompt.slice(0,60) + (item.prompt.length > 60 ? '…' : '') : item.error || '等待生成提示词'}</p>}
+          {item.prompt_copied_at && <small>已复制 · {formatTime(item.prompt_copied_at)}</small>}
+        </div><div className="prompt-batch-actions">
+          {isMother ? <button type="button" className="secondary" disabled={!item.prompt || Boolean(busy)} onClick={() => void copy(item)}>{item.prompt_copied_at ? '已复制' : '复制母版'}</button> : copyButton(item)}
+          <button className="secondary" onClick={() => setViewId(item.id)}>查看</button>
+          {item.status === 'failed' && <button className="secondary" disabled={Boolean(busy)} onClick={() => void change('retry',item.id)}>重试</button>}
+        </div>
+      </li>;
+    }
+    return <article className="panel prompt-batch-card" key={batch.id} aria-label="多品裂变提示词批次">
+      <header className="prompt-batch-header"><div><h3>多品裂变 · {batch.items.length} 个商品</h3><p>母版 Gem：{mother.gem_name} / 变体 Gem：{batch.items[0]?.gem_name}</p><p>{mother.region} · {formatTime(batch.created_at)} · 已完成 {complete}/{batch.items.length} · 已复制 {copied}</p></div>
+      <button className="secondary" disabled={Boolean(busy) || generating} onClick={() => void change('delete-batch',batch.id)}>删除整批</button></header>
+      <ol className="prompt-batch-items">{row(mother,true)}{batch.items.map(item => row(item))}</ol>
+    </article>;
+  }
+  function firstEditor() { return <><details><summary>发送给 Gem 的文字{customRequest !== null ? ' · 已自定义' : ''}</summary>
+        <label>实际发送内容<textarea aria-label="发送给 Gem 的文字" className="prompt-batch-text" rows={7} maxLength={12000} value={requestText} onChange={event => setCustomRequest(event.target.value)} /></label>
+        <div className="prompt-batch-actions"><button type="button" className="secondary" onClick={() => setCustomRequest(null)}>恢复默认文字</button><span>{customRequest !== null ? '按你编辑的内容原样发送；更换地区或描述不会覆盖。' : '默认文字随地区、描述生成，你可以直接修改。'}</span></div>
+      </details></>; }
+  function regionFields() { return <div className="prompt-batch-fields">
+    <label>地区<select aria-label="地区" value={region} onChange={event => setRegion(event.target.value)}>{TASK_REGIONS.map(value => <option key={value}>{value}</option>)}</select></label>
+    <label>描述<input value={description} onChange={event => setDescription(event.target.value)} maxLength={1000} /></label>
+  </div>; }
+
   return <section className="prompt-batch-page">
     <PageIntro title="提示词生成" text="为 Seedance 2.5 准备提示词，在这里逐条复制，再到需要的地方使用。" />
-    <form className="panel prompt-batch-form" onSubmit={create}>
+    <div className="prompt-batch-actions" role="group" aria-label="生成模式">{(['single','fission'] as const).map(value => <button key={value} type="button" className="secondary" aria-pressed={mode === value} onClick={() => setMode(value)}>{value === 'single' ? '单个商品' : '多品裂变'}</button>)}</div>
+    {mode === 'fission' ? <PromptFissionForm gems={gems} region={region} firstText={requestText} onCreated={async () => { await startQueue(); await refresh(); }}>{paste => <>{regionFields()}{!paste && firstEditor()}</>}</PromptFissionForm> : <form className="panel prompt-batch-form" onSubmit={create}>
       <h3>本次素材与设置</h3>
       <div className="prompt-batch-drop" data-testid="prompt-batch-drop" onDragOver={event => { event.preventDefault(); }} onDrop={event => { event.preventDefault(); addFiles(Array.from(event.dataTransfer.files)); }}>
         <label>拖入产品图片，或选择图片（1–12 张）<input aria-label="选择产品图片" type="file" accept="image/*" multiple onChange={event => { addFiles(Array.from(event.target.files || [])); event.target.value = ''; }} /></label>
@@ -157,17 +195,16 @@ export function PromptBatchPage({ gems }: { gems: Gem[] }) {
         <label>描述<input value={description} onChange={event => setDescription(event.target.value)} maxLength={1000} /></label>
         <label>条数<input type="number" min={1} max={20} step={1} value={count} onChange={event => setCount(Number(event.target.value))} /></label>
       </div>
-      <details><summary>发送给 Gem 的文字{customRequest !== null ? ' · 已自定义' : ''}</summary>
-        <label>实际发送内容<textarea aria-label="发送给 Gem 的文字" className="prompt-batch-text" rows={7} maxLength={12000} value={requestText} onChange={event => setCustomRequest(event.target.value)} /></label>
-        <div className="prompt-batch-actions"><button type="button" className="secondary" onClick={() => setCustomRequest(null)}>恢复默认文字</button><span>{customRequest !== null ? '按你编辑的内容原样发送；更换地区或描述不会覆盖。' : '默认文字随地区、描述生成，你可以直接修改。'}</span></div>
-      </details>
+      {firstEditor()}
       <div className="prompt-batch-actions"><button className="primary" disabled={Boolean(missing) || Boolean(busy) || !settingsReady}>生成 {count} 条提示词</button><span>{missing}</span></div>
-    </form>
+    </form>}
     {notice && <p role="status">{notice}</p>}
     <div className="prompt-batch-actions"><h3>提示词批次</h3><button className="secondary" disabled={loading} onClick={() => void refresh()}>刷新</button></div>
     {!batches.length && <p>{loading ? '正在加载…' : '还没有提示词批次，上传图片后开始生成。'}</p>}
     {batches.map(batch => {
-      const first = batch.items[0], completed = batch.items.filter(item => item.status === 'prompt_ready').length;
+      const first = batch.items[0]; if (!first) return null;
+      if (batch.kind === 'fission' && batch.mother) return fissionCard(batch);
+      const completed = batch.items.filter(item => item.status === 'prompt_ready').length;
       const copied = batch.items.filter(item => item.prompt_copied_at).length;
       const keys: string[] = JSON.parse(first.image_keys_snapshot || '[]');
       return <article className="panel prompt-batch-card" key={batch.id} aria-label={`${first.product_name || '图片识别商品'}提示词批次`}>
@@ -188,7 +225,7 @@ export function PromptBatchPage({ gems }: { gems: Gem[] }) {
     })}
     {nextCursor && <button className="secondary" disabled={loading} onClick={() => void refresh(pages.current + 1)}>加载更多</button>}
     <dialog ref={dialog} className="prompt-batch-dialog" aria-label="提示词全文" onClose={() => setViewId(null)}>
-      {viewed && <><div className="prompt-batch-actions"><h3>第 {viewed.batch_index} 条提示词</h3><button className="secondary" onClick={() => dialog.current?.close()}>关闭</button></div><pre className="prompt-batch-text">{viewed.prompt || viewed.error || '尚未生成提示词'}</pre>{copyButton(viewed)}{viewed.prompt_copied_at && <p>已复制 · {formatTime(viewed.prompt_copied_at)}</p>}</>}
+      {viewed && <><div className="prompt-batch-actions"><h3>{viewed.task_role === 'fission' ? '母版提示词' : '第 ' + viewed.batch_index + ' 条提示词'}</h3><button className="secondary" onClick={() => dialog.current?.close()}>关闭</button></div><pre className="prompt-batch-text">{viewed.prompt || viewed.error || '尚未生成提示词'}</pre>{copyButton(viewed)}{viewed.prompt_copied_at && <p>已复制 · {formatTime(viewed.prompt_copied_at)}</p>}</>}
     </dialog>
   </section>;
 }

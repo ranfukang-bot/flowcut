@@ -39,7 +39,7 @@ export async function claimGeminiJobs(request: Request) {
     const pending = await db
       .prepare(
       `SELECT t.id, t.product_id, t.gemini_account_id, t.created_at, COALESCE(t.gemini_retry_at, t.created_at) AS queue_at,
-                t.task_role, t.duration, t.region, t.shooting_style, t.gemini_request_text, t.image_keys_snapshot, t.gem_id, g.name AS gem_name,
+                t.task_role, t.prompt_batch_id, t.duration, t.region, t.shooting_style, t.gemini_request_text, t.image_keys_snapshot, t.gem_id, g.name AS gem_name,
                 p.name, p.features, COALESCE(t.gem_content_snapshot, g.content) AS content,
                 t.variant_gem_snapshot IS NOT NULL AS variant_mode
          FROM tasks t
@@ -70,6 +70,7 @@ export async function claimGeminiJobs(request: Request) {
         queue_at: string;
         variant_mode: number;
         task_role: string | null;
+        prompt_batch_id: string | null;
       }>();
 
     // Second round of a two-round task: the mother prompt (saved as the
@@ -77,7 +78,7 @@ export async function claimGeminiJobs(request: Request) {
     const variantPending = await db
       .prepare(
         `SELECT t.id, t.product_id, t.gemini_account_id, t.created_at, COALESCE(t.gemini_retry_at, t.created_at) AS queue_at,
-                CASE WHEN t.task_role='fission_child' THEN parent.prompt ELSE t.prompt END AS mother_prompt, t.task_role, t.variant_request_text, t.image_keys_snapshot,
+                CASE WHEN t.task_role='fission_child' THEN parent.prompt ELSE t.prompt END AS mother_prompt, t.task_role, t.prompt_batch_id, t.variant_request_text, t.image_keys_snapshot,
                 t.duration,t.region,t.shooting_style,t.gemini_request_text,
                 COALESCE(t.variant_gem_id, 'snapshot-variant-' || t.id) AS gem_id, COALESCE(vg.name, '变体 Gem') AS gem_name,
                 t.variant_gem_snapshot AS content
@@ -103,6 +104,7 @@ export async function claimGeminiJobs(request: Request) {
         shooting_style: string;
         gemini_request_text: string | null;
         task_role: string | null;
+        prompt_batch_id: string | null;
         variant_request_text: string | null;
         image_keys_snapshot: string | null;
         gem_id: string;
@@ -269,10 +271,10 @@ export async function claimGeminiJobs(request: Request) {
           id: standardTask.id,
           kind: "standard",
           accountId,
-          blockMode: standardTask.task_role === 'prompt_item' ? 'single' : Number(standardTask.duration) === 30 ? "raw" : standardTask.variant_mode ? "single" : "split",
+          blockMode: standardTask.prompt_batch_id ? 'single' : Number(standardTask.duration) === 30 ? "raw" : standardTask.variant_mode ? "single" : "split",
           gem: { id: standardTask.gem_id || `snapshot-${standardTask.id}`, name: standardTask.gem_name || "历史任务 Gem", content: standardTask.content },
-          prompt: standardTask.task_role === 'prompt_item' ? (standardTask.gemini_request_text ?? buildSavedGemPrompt(standardTask)) : buildSavedGemPrompt(standardTask),
-          spokenLanguage: requestSpokenLanguage(standardTask.task_role === 'prompt_item' ? (standardTask.gemini_request_text ?? '') : buildSavedGemPrompt(standardTask),standardTask.region),
+          prompt: standardTask.prompt_batch_id ? (standardTask.gemini_request_text ?? '') : buildSavedGemPrompt(standardTask),
+          spokenLanguage: requestSpokenLanguage(standardTask.prompt_batch_id ? (standardTask.gemini_request_text ?? '') : buildSavedGemPrompt(standardTask),standardTask.region),
           imageUrls: (standardTask.image_keys_snapshot ? JSON.parse(standardTask.image_keys_snapshot) as string[] : images.results.map(image => image.object_key))
             .map(key => mediaUrl(request.url, key)),
         });
@@ -286,10 +288,10 @@ export async function claimGeminiJobs(request: Request) {
           id: variantTask.id,
           kind: "variant",
           accountId,
-          blockMode: variantTask.task_role==='fission_child' ? "single" : "split",
+          blockMode: (variantTask.prompt_batch_id || variantTask.task_role==='fission_child') ? "single" : "split",
           gem: { id: variantTask.gem_id, name: variantTask.gem_name, content: variantTask.content },
-          prompt: renderVariantRequest(buildGemRequest(variantTask.variant_request_text || "",{duration:variantTask.duration,region:variantTask.region,shooting_style:variantTask.shooting_style,spoken_language:requestSpokenLanguage(variantTask.gemini_request_text || '',variantTask.region)}), variantTask.mother_prompt),
-          spokenLanguage: requestSpokenLanguage(variantTask.gemini_request_text || '',variantTask.region),
+          prompt: renderVariantRequest(variantTask.prompt_batch_id ? (variantTask.variant_request_text || "") : buildGemRequest(variantTask.variant_request_text || "",{duration:variantTask.duration,region:variantTask.region,shooting_style:variantTask.shooting_style,spoken_language:requestSpokenLanguage(variantTask.gemini_request_text || '',variantTask.region)}), variantTask.mother_prompt),
+          spokenLanguage: requestSpokenLanguage((variantTask.prompt_batch_id ? variantTask.variant_request_text : variantTask.gemini_request_text) || '',variantTask.region),
           imageUrls: (variantTask.image_keys_snapshot ? JSON.parse(variantTask.image_keys_snapshot) as string[] : (images?.results || []).map(image => image.object_key))
             .map(key => mediaUrl(request.url, key)),
         });

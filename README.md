@@ -1,6 +1,6 @@
 # FlowCut 全自动 AI 视频工作台
 
-当前桌面版本：`1.4.67`（个人本机版）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，开发交接入口为 [AGENTS.md](AGENTS.md)。
+当前桌面版本：`1.4.68`（个人本机版）。版本历史见 [CHANGELOG.md](CHANGELOG.md)，开发交接入口为 [AGENTS.md](AGENTS.md)。
 
 「提示词生成」支持单个商品和多品裂变：上传商品图，选 Gem，直接编辑两轮发送文字；生成后逐条复制到外部 Seedance 2.5 使用，无需 TK 账号，也不提交视频任务。详见 [使用说明](docs/prompt-batches.md)。
 

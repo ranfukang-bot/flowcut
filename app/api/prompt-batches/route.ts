@@ -21,7 +21,7 @@ export async function POST(request: Request) {
     if (images.some(file => file.size > 12 * 1024 * 1024) || images.reduce((sum, file) => sum + file.size, 0) > 48 * 1024 * 1024) throw Error('单张图片不能超过 12MB，总大小不能超过 48MB');
     const variants = form.get('mode') === 'variants';
     const count = Number(form.get('count') ?? 5);
-    if (!Number.isInteger(count) || count < 1 || count > (variants ? 10 : 20)) throw Error('条数必须是 1–20 的整数');
+    if (!Number.isInteger(count) || count < 1 || count > (variants ? 10 : 20)) throw Error(variants ? '裂变条数必须是 1–10 的整数' : '条数必须是 1–20 的整数');
     const region = String(form.get('region') || '印尼');
     if (!TASK_REGIONS.includes(region)) throw Error('请选择有效地区');
     const description = String(form.get('description') ?? 'iPhone实拍质感').trim();

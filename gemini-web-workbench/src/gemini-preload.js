@@ -936,8 +936,11 @@ async function readPromptReply(job, baseline) {
       try {
         const reply=await waitForResponse(baseline,200,true);raw.push(reply);
         const unusable=classifyUnusableResponse(reply);if(unusable) throw unusable;
-        collected.push(...responseCodeBlocks().blocks);
-        if(collected.length>=n)return {prompt:raw.join('\n\n'),rawReply:raw.join('\n\n'),codeBlocks:collected.slice(0,n),codeBlockHint:false};
+        const blocks=responseCodeBlocks().blocks;
+        if(collected.length+blocks.length>=n){collected.push(...blocks);return {prompt:raw.join('\n\n'),rawReply:raw.join('\n\n'),codeBlocks:collected.slice(0,n),codeBlockHint:false};}
+        // A short answer usually means Gemini stopped mid-reply: its last block
+        // may be cut off. Never keep it; ask for that one again instead.
+        collected.push(...blocks.slice(0,-1));
         if(attempt===2)throw codedError('补充两次后仍不足 '+n+' 条','PROMPT_BLOCKS_INVALID');
         const k=collected.length;
         await typePrompt(k ? '只收到 '+k+' 条，请继续输出第 '+(k+1)+' 到第 '+n+' 条，每条一个代码块，第一行格式不变，开头不要与前面重复，代码块之外不写文字。' : '请按格式输出第 1 到第 '+n+' 条');

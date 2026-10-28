@@ -1,4 +1,4 @@
-# 提示词生成（1.4.66）
+# 提示词生成（1.4.67）
 
 用于准备在其他地方的 Seedance 2.5 中使用的提示词。上传 1–12 张产品图片、选 Gem 和地区、写一句描述、选择 1–20 条，每条单独调用 Gemini 网页 Gem。生成后在本页逐条查看、复制、重试或删除。无需 TK 账号，不提交 Seedance，不出现在视频任务队列。
 
@@ -54,3 +54,15 @@ retry 只处理失败行：单条和裂变母版回 `prompt_queued`；失败子�
 发布前运行 `npm run verify`、`npx tsc --noEmit -p tsconfig.json` 和隔离桌面启动自检；推送后检查 GitHub Actions verify 与 desktop-smoke。
 
 `prompt-fission-api.test.js` 覆盖三商品创建、原子回滚、UUID 幂等、快照、两轮原文领取、母版屏障、多代码块 single 写回、过期和重复结果、重试两种去向、视频入口与列表隔离、商品删除保护、列表投影、复制和生成中整批删除保护、备份恢复。`prompt-fission-ui.test.js` 用隔离浏览器验证两组拖图、选择母版和 Gem、编辑两轮、缺占位符提示、回包失败重试 UUID、复制母版与商品、记住设置和手机布局。原多品裂变及单商品提示词测试一并回归；不连接真实 Gemini、不读真实资料目录。
+
+## 单品裂变（1.4.67）
+
+一个商品先用母版 Gem 生成母版或粘贴 300–60000 字母版，再用裂变 Gem 一次输出 1–10 条，默认 4 条（建议 4–6 条）。两轮文字可编辑，地区、描述、第一轮与单个商品共用，裂变 Gem、条数及第二轮自定义内容记在浏览器中。
+
+POST multipart mode=variants 保存 group 父行，prompt_variant_count 记录 N，prompt_batch_id 等于父行 ID，无 TK、auto_queue=0。生成模式 prompt_queued，粘贴模式 variant_queued。第二轮只替换 {母版提示词}、{条数}、{已用开头}，其中前两个必填，已用开头取已有子行 prompt_note 以分号连接，无则写「无」。默认文字直接代入地区，不补语言行。
+
+第一轮 single 保存母版；第二轮 split 携带 expectedBlocks。代码块不足时原对话最多补两次，多于 N 只取前 N。服务器必须收到 N 块；每块首行符合「裂变第 i 条｜开头：内容」时，将内容写入 prompt_note，去首行正文再检查至少 300 字和重复，整轮原子生成 clip。clip 继承 prompt_batch_id，停在 prompt_ready；父行 split_done。创作中心不执行这套首行/条数规则，多品裂变子行仍 single。
+
+GET kind=variants，返回母版、裂变 Gem 名、条数及按轮次和序号排序的正文/开头。more 仅 split_done 可用，设置新条数并重新进入第二轮，保留旧子行；retry 有至少 300 字母版时保留并重排第二轮，否则重排第一轮。clip 可以单独删除，父行仅整批删除。所有视频隔离继续按 prompt_batch_id；恢复保留 prompt_ready、split_done，未完成行标记失败，手动重试保留母版。
+
+新增 API、Chromium 续写和页面行为测试验证创建、两轮、标签、条数、再裂变、恢复与复制；完整 verify 和 TypeScript 检查后打包并使用隔离资料启动。

@@ -186,6 +186,7 @@ async function initializeWorkspace() {
     ["task_role", "TEXT"],
     ["prompt_batch_id", "TEXT"],
     ["prompt_copied_at", "TEXT"],
+    ["prompt_variant_count", "INTEGER"],
     ["batch_parent_id", "TEXT"],
     ["batch_index", "INTEGER"],
     ["batch_round", "INTEGER"],

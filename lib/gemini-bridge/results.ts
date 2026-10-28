@@ -111,7 +111,7 @@ export async function applyRemixResult(db: Db, body: TaskBody, now: string, prom
 export async function applyPromptResult(db: Db, body: TaskBody, now: string, prompt: string, requestUrl: string) {
   const task = await db
     .prepare(
-      `SELECT auto_queue, status, provider, prompt, bridge_worker_id, duration, task_role, prompt_batch_id,
+      `SELECT auto_queue, status, provider, prompt, bridge_worker_id, duration, task_role, prompt_batch_id, prompt_variant_count,
               variant_gem_snapshot IS NOT NULL AS variant_mode
        FROM tasks WHERE id = ?`
     )
@@ -126,6 +126,7 @@ export async function applyPromptResult(db: Db, body: TaskBody, now: string, pro
       variant_mode: number;
       task_role: string | null;
       prompt_batch_id: string | null;
+      prompt_variant_count: number | null;
     }>();
   if (!task) {
     return Response.json(
@@ -151,12 +152,19 @@ export async function applyPromptResult(db: Db, body: TaskBody, now: string, pro
   const expectedStatus = variantRound ? "variant_generating" : "prompt_generating";
   const fissionChild=task.task_role==='fission_child';
   const fissionMother=task.task_role==='fission';
-  const mode: PromptBlockMode = task.prompt_batch_id || fissionChild ? 'single' : variantRound ? "split" : Number(task.duration) === 30 ? "raw" : task.variant_mode ? "single" : "split";
+  const mode: PromptBlockMode = fissionChild ? 'single' : variantRound ? "split" : task.prompt_batch_id ? 'single' : Number(task.duration) === 30 ? "raw" : task.variant_mode ? "single" : "split";
   let parsed;
+  let notes: string[] | undefined;
   try {
-    parsed = splitPromptBlocks({ text: prompt, blocks: body.codeBlocks, hint: body.codeBlockHint === true, mode });
+    let blocks = body.codeBlocks;
+    if(task.prompt_batch_id && task.task_role==='group' && variantRound) {
+      if(!Array.isArray(blocks) || blocks.length!==task.prompt_variant_count) throw Error('PROMPT_BLOCKS_INVALID：代码块数必须等于 '+task.prompt_variant_count);
+      notes=[];
+      blocks=blocks.map(value=>{const lines=String(value).trim().split(/\r?\n/);const match=lines[0].match(/^裂变第\s*\d+\s*条\s*[｜|]\s*开头[：:]\s*(.+)$/);notes!.push(match?.[1]?.trim() || '');return match?lines.slice(1).join('\n').trim():String(value);});
+    }
+    parsed = splitPromptBlocks({ text: prompt, blocks, hint: body.codeBlockHint === true, mode });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "代码块校验失败" }, { status: 400 });
+    return Response.json({ error: error instanceof Error ? error.message : "代码块校验失败", code: "PROMPT_BLOCKS_INVALID" }, { status: 400 });
   }
   const split = !fissionChild && (parsed.prompts.length > 1 || variantRound);
   const appliedPrompt = split ? prompt : parsed.prompts[0];
@@ -170,6 +178,7 @@ export async function applyPromptResult(db: Db, body: TaskBody, now: string, pro
     task.provider !== "gemini-web" ||
     task.status !== expectedStatus ||
     ((fissionChild || fissionMother) && (task.bridge_worker_id !== body.workerId || !body.workerId || variantRound !== fissionChild)) ||
+    (task.prompt_batch_id && (!body.workerId || task.bridge_worker_id !== body.workerId)) ||
     (task.bridge_worker_id &&
       body.workerId &&
       task.bridge_worker_id !== body.workerId)
@@ -219,14 +228,14 @@ export async function applyPromptResult(db: Db, body: TaskBody, now: string, pro
 
   if (split) {
     const seedance = await getProviderConfig("seedance");
-    const start = clipStart(Boolean(task.auto_queue), { mode: seedance.config.mode, secretConfigured: seedance.secretConfigured });
+    const start = clipStart(!task.prompt_batch_id && Boolean(task.auto_queue), { mode: seedance.config.mode, secretConfigured: seedance.secretConfigured });
     const latest = await db
       .prepare("SELECT COALESCE(MAX(batch_round), 0) AS round FROM tasks WHERE batch_parent_id = ?")
       .bind(body.taskId)
       .first<{ round: number }>();
     const round = Number(latest?.round || 0) + 1;
     const results = await db.batch([
-      ...clipInsertStatements(db, { groupId: body.taskId, round, prompts: parsed.prompts, start, expectedStatus, workerId, now }),
+      ...clipInsertStatements(db, { groupId: body.taskId, round, prompts: parsed.prompts, notes, start, expectedStatus, workerId, now }),
       db.prepare(
         `UPDATE tasks SET task_role = 'group', status = 'split_done', progress = 100,
          ${variantRound ? "" : "prompt = ?, "}gemini_raw_reply = ?, prompt_note = NULL,
@@ -243,7 +252,7 @@ export async function applyPromptResult(db: Db, body: TaskBody, now: string, pro
     if (!results.at(-1)?.meta.changes) {
       return Response.json({ error: "任务阶段已变化，忽略过期 Gemini 结果", ignorable: true }, { status: 409 });
     }
-    if (start.status === "prompt_ready" && task.auto_queue) {
+    if (start.status === "prompt_ready" && task.auto_queue && !task.prompt_batch_id) {
       for (let index = 1; index <= parsed.prompts.length; index += 1) {
         const clipId = clipTaskId(body.taskId, round, index);
         try {

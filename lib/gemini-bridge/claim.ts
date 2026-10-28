@@ -78,7 +78,7 @@ export async function claimGeminiJobs(request: Request) {
     const variantPending = await db
       .prepare(
         `SELECT t.id, t.product_id, t.gemini_account_id, t.created_at, COALESCE(t.gemini_retry_at, t.created_at) AS queue_at,
-                CASE WHEN t.task_role='fission_child' THEN parent.prompt ELSE t.prompt END AS mother_prompt, t.task_role, t.prompt_batch_id, t.variant_request_text, t.image_keys_snapshot,
+                CASE WHEN t.task_role='fission_child' THEN parent.prompt ELSE t.prompt END AS mother_prompt, t.task_role, t.prompt_batch_id, t.prompt_variant_count, t.variant_request_text, t.image_keys_snapshot,
                 t.duration,t.region,t.shooting_style,t.gemini_request_text,
                 COALESCE(t.variant_gem_id, 'snapshot-variant-' || t.id) AS gem_id, COALESCE(vg.name, '变体 Gem') AS gem_name,
                 t.variant_gem_snapshot AS content
@@ -99,6 +99,7 @@ export async function claimGeminiJobs(request: Request) {
         product_id: string;
         gemini_account_id?: string | null;
         mother_prompt: string;
+        prompt_variant_count: number | null;
         duration: number;
         region: string;
         shooting_style: string;
@@ -170,6 +171,7 @@ export async function claimGeminiJobs(request: Request) {
       kind: GeminiKind;
       accountId: string;
       blockMode?: PromptBlockMode;
+      expectedBlocks?: number;
       prompt?: string;
       spokenLanguage?: string;
       analysisPrompt?: string;
@@ -284,13 +286,16 @@ export async function claimGeminiJobs(request: Request) {
           .prepare(`SELECT object_key FROM product_images WHERE product_id = ? ORDER BY sort_order ASC LIMIT 12`)
           .bind(variantTask.product_id)
           .all<{ object_key: string }>();
+        const notes = variantTask.prompt_batch_id && variantTask.prompt_variant_count ? await db.prepare("SELECT prompt_note FROM tasks WHERE batch_parent_id=? ORDER BY batch_round,batch_index").bind(variantTask.id).all<{prompt_note:string}>() : {results:[]};
+        const template = variantTask.prompt_variant_count ? (variantTask.variant_request_text || '').replaceAll('{条数}',String(variantTask.prompt_variant_count)).replaceAll('{已用开头}',notes.results.map(row=>row.prompt_note).filter(Boolean).join('；') || '无') : (variantTask.variant_request_text || '');
         jobs.push({
+          ...(variantTask.prompt_batch_id && variantTask.prompt_variant_count ? {expectedBlocks:variantTask.prompt_variant_count}:{}),
           id: variantTask.id,
           kind: "variant",
           accountId,
-          blockMode: (variantTask.prompt_batch_id || variantTask.task_role==='fission_child') ? "single" : "split",
+          blockMode: (variantTask.task_role==='fission_child') ? "single" : "split",
           gem: { id: variantTask.gem_id, name: variantTask.gem_name, content: variantTask.content },
-          prompt: renderVariantRequest(variantTask.prompt_batch_id ? (variantTask.variant_request_text || "") : buildGemRequest(variantTask.variant_request_text || "",{duration:variantTask.duration,region:variantTask.region,shooting_style:variantTask.shooting_style,spoken_language:requestSpokenLanguage(variantTask.gemini_request_text || '',variantTask.region)}), variantTask.mother_prompt),
+          prompt: renderVariantRequest(variantTask.prompt_batch_id ? template : buildGemRequest(variantTask.variant_request_text || "",{duration:variantTask.duration,region:variantTask.region,shooting_style:variantTask.shooting_style,spoken_language:requestSpokenLanguage(variantTask.gemini_request_text || '',variantTask.region)}), variantTask.mother_prompt),
           spokenLanguage: requestSpokenLanguage((variantTask.prompt_batch_id ? variantTask.variant_request_text : variantTask.gemini_request_text) || '',variantTask.region),
           imageUrls: (variantTask.image_keys_snapshot ? JSON.parse(variantTask.image_keys_snapshot) as string[] : (images?.results || []).map(image => image.object_key))
             .map(key => mediaUrl(request.url, key)),

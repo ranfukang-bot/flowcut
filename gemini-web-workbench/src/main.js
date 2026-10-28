@@ -523,7 +523,7 @@ async function runGeminiJob(account, job) {
   const resultPromise = new Promise((resolve, reject) => {
     const watchdog = watchGeminiJob({
       contents: window.webContents,
-      timeoutMs: (["remix-segments","remix-rewrite"].includes(job.kind) ? 6 + (job.remix?.analysisBlocks?.length ? 1 : 2) * 16 * Math.max(1,Math.ceil((job.remix?.plan?.length || job.remix?.analysisBlocks?.length || 10)/2)) : job.kind === "script-pipeline" ? 60 : job.kind === "reference-remix" ? 26 : job.kind === "variant" ? 20 : 13) * 60_000,
+      timeoutMs: (["remix-segments","remix-rewrite"].includes(job.kind) ? 6 + (job.remix?.analysisBlocks?.length ? 1 : 2) * 16 * Math.max(1,Math.ceil((job.remix?.plan?.length || job.remix?.analysisBlocks?.length || 10)/2)) : job.kind === "script-pipeline" ? 60 : job.kind === "reference-remix" ? 26 : job.kind === "variant" ? (job.expectedBlocks ? Math.max(20,10+3*job.expectedBlocks) : 20) : 13) * 60_000,
       onFailure(error) {
         error = modelWatchdogError(error, pendingJobs.get(requestId));
         pendingJobs.delete(requestId);
@@ -563,6 +563,7 @@ async function runGeminiJob(account, job) {
     referenceFilePaths: referenceTemporary.filePaths,
     spokenLanguage: job.spokenLanguage,
     blockMode: job.blockMode,
+    expectedBlocks: job.expectedBlocks,
   };
   if (protectedGeminiPageRuntime) {
     void (async () => {

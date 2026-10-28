@@ -930,6 +930,21 @@ async function waitForResponse(initialResponses, minLength = 200, allowShortRepl
 // A shorter reply is the Gem asking or refusing: answer it once in the same
 // conversation. Never open a new chat or upload again for that.
 async function readPromptReply(job, baseline) {
+  if(Number.isInteger(job.expectedBlocks) && job.expectedBlocks>=1 && job.expectedBlocks<=10) {
+    const collected=[],raw=[],n=job.expectedBlocks;
+    for(let attempt=0;attempt<3;attempt++) {
+      try {
+        const reply=await waitForResponse(baseline,200,true);raw.push(reply);
+        const unusable=classifyUnusableResponse(reply);if(unusable) throw unusable;
+        collected.push(...responseCodeBlocks().blocks);
+        if(collected.length>=n)return {prompt:raw.join('\n\n'),rawReply:raw.join('\n\n'),codeBlocks:collected.slice(0,n),codeBlockHint:false};
+        if(attempt===2)throw codedError('补充两次后仍不足 '+n+' 条','PROMPT_BLOCKS_INVALID');
+        const k=collected.length;
+        await typePrompt(k ? '只收到 '+k+' 条，请继续输出第 '+(k+1)+' 到第 '+n+' 条，每条一个代码块，第一行格式不变，开头不要与前面重复，代码块之外不写文字。' : '请按格式输出第 1 到第 '+n+' 条');
+        baseline=responseSnapshot();await submitPrompt();
+      } catch(error){throw Object.assign(error,{rawReply:raw.join('\n\n')});}
+    }
+  }
   const replies=[];
   const single=job.blockMode==='single';
   const joined=()=>replies.join('\n\n【同一对话补充后的回复】\n');

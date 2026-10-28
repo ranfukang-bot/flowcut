@@ -25,23 +25,23 @@ export function clipStart(autoQueue: boolean, seedance: { mode: string; secretCo
 // group still being claimed by this worker, so a late or repeated result can
 // never add clips. Deterministic ids make a replay idempotent.
 export function clipInsertStatements<S extends Statement<S>>(db: { prepare(sql: string): S }, input: {
-  groupId: string; round: number; prompts: string[]; start: ClipStart;
+  groupId: string; round: number; prompts: string[]; notes?: string[]; start: ClipStart;
   expectedStatus: string; workerId: string; now: string;
 }) {
   return input.prompts.map((prompt, offset) => db.prepare(`INSERT OR IGNORE INTO tasks
     (id, product_id, gem_id, title, status, prompt, provider, progress, duration, region, shooting_style,
      callback_token, auto_queue, gemini_account_id, tiktok_account_name, archive_directory, gem_content_snapshot,
      product_external_id_snapshot, gemini_request_text, image_keys_snapshot, task_role, batch_parent_id,
-     batch_index, batch_round, batch_size, created_at, updated_at)
+     batch_index, batch_round, batch_size, created_at, updated_at, prompt_batch_id, prompt_note)
     SELECT ?, product_id, gem_id, title || ' · ' || ?, ?, ?, ?, ?, duration, region, shooting_style,
       ?, auto_queue, NULL, tiktok_account_name, archive_directory, gem_content_snapshot,
       product_external_id_snapshot, gemini_request_text, image_keys_snapshot, 'clip', id,
-      ?, ?, ?, ?, ?
+      ?, ?, ?, ?, ?, prompt_batch_id, ?
     FROM tasks WHERE id = ? AND provider = 'gemini-web' AND status = ?
       AND (bridge_worker_id IS NULL OR bridge_worker_id = ?)`).bind(
     clipTaskId(input.groupId, input.round, offset + 1), `第 ${offset + 1}/${input.prompts.length} 条`,
     input.start.status, prompt, input.start.provider, input.start.progress,
-    crypto.randomUUID(), offset + 1, input.round, input.prompts.length, input.now, input.now,
+    crypto.randomUUID(), offset + 1, input.round, input.prompts.length, input.now, input.now, input.notes?.[offset] || null,
     input.groupId, input.expectedStatus, input.workerId,
   ));
 }

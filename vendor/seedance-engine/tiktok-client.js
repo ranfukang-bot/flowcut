@@ -23,6 +23,18 @@ function isTransientRequestError(error) {
   return TRANSIENT_REQUEST_PATTERN.test(message);
 }
 
+// Short identifiers TikTok returns with a refusal, for later diagnosis. Only
+// codes and log IDs: free text could be mistaken for a rate-limit or quota
+// message by the classifiers that read the error text.
+function refusalDetail(json, response) {
+  const parts = [];
+  const code = json && typeof json === 'object' ? json.code ?? json.status_code : undefined;
+  if (code !== undefined && code !== null && /^[\w.-]{1,40}$/.test(String(code))) parts.push(`code=${code}`);
+  const logId = (json && (json.log_id || json.logid || json.extra?.log_id || json.extra?.logid)) || response?.headers?.get?.('x-tt-logid');
+  if (logId && /^[\w.-]{1,80}$/.test(String(logId))) parts.push(`log_id=${logId}`);
+  return parts.length ? `（${parts.join('，')}）` : '';
+}
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -121,7 +133,7 @@ class TikTokClient {
     }
     if (!response.ok) {
       throw withOutcome(
-        Object.assign(new Error(`TikTok HTTP ${response.status}: ${json?.message || json?.msg || '接口请求失败'}`), { status: response.status, code: json?.code }),
+        Object.assign(new Error(`TikTok HTTP ${response.status}: ${json?.message || json?.msg || '接口请求失败'}${refusalDetail(json, response)}`), { status: response.status, code: json?.code }),
         statusOutcome,
       );
     }

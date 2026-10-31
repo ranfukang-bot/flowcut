@@ -1,4 +1,5 @@
 import { remixAction } from '../../../lib/remix-tasks';
+import { queueSeedance } from '../../../lib/gemini-bridge/seedance-queue';
 import { generatePrompt } from "../../../lib/gemini";
 import { DEFAULT_GEM_REQUEST, buildGemRequest, validateGemRequest } from "../../../lib/gem-request";
 import { getProviderConfig } from "../../../lib/provider-config";
@@ -343,10 +344,10 @@ export async function PATCH(request: Request) {
       return Response.json({error:'请在爆款复刻整组中操作'},{status:409});
     }
     if(remix && ['process','regenerate','retry'].includes(body.action || '')) return Response.json({error:'分段视频请用同提示词重新生成或原 Seedance 任务恢复，不能重置 Gemini'},{status:409});
-    const fission=await db.prepare("SELECT task_role,batch_parent_id,status,prompt,provider_job_id FROM tasks WHERE id=? AND task_role IN ('fission','fission_child')").bind(body.id).first<{task_role:string;batch_parent_id:string|null;status:string;prompt:string;provider_job_id:string|null}>();
+    const fission=await db.prepare("SELECT task_role,batch_parent_id,status,prompt,provider_job_id,auto_queue FROM tasks WHERE id=? AND task_role IN ('fission','fission_child')").bind(body.id).first<{task_role:string;batch_parent_id:string|null;status:string;prompt:string;provider_job_id:string|null;auto_queue:number}>();
     if(fission && ['regenerate','process'].includes(body.action||'')) return Response.json({error:'多品裂变请使用恢复任务或用母版重写，不能按普通商品任务重置'},{status:409});
     if(fission && body.action==='retry'){
-      if(fission.status!=='failed' || fission.provider_job_id) return Response.json({error:'请仅恢复失败的 Gemini 任务；已提交视频请从 Seedance 原任务接续监控'},{status:409});
+      if(fission.status!=='failed') return Response.json({error:'只有失败的任务可以恢复；进行中的任务会继续执行'},{status:409});
       const now=new Date().toISOString();
       if(fission.task_role==='fission'){
         await db.batch([
@@ -358,8 +359,18 @@ export async function PATCH(request: Request) {
       }else{
         const parent=await db.prepare("SELECT status FROM tasks WHERE id=? AND task_role='fission' AND length(trim(prompt))>=300").bind(fission.batch_parent_id).first<{status:string}>();
         if(parent?.status!=='fission_ready') return Response.json({error:'请先恢复并完成母版任务'},{status:409});
-        await db.prepare(`UPDATE tasks SET status=CASE WHEN length(trim(prompt))>=300 THEN 'prompt_ready' ELSE 'variant_queued' END,
-          progress=CASE WHEN length(trim(prompt))>=300 THEN 32 ELSE 36 END,provider='gemini-web',error=NULL,bridge_claimed_at=NULL,bridge_worker_id=NULL,gemini_failures=0,gemini_retry_at=NULL,updated_at=? WHERE id=? AND status='failed'`).bind(now,body.id).run();
+        // A product that already has its prompt failed at Seedance (for example a
+        // rejected submission). Clear only FlowCut's link and queue it again: the
+        // Seedance bridge finds the local task by FlowCut ID and lets the engine
+        // decide (rejected → resubmit; uncertain/known Task ID → history check),
+        // exactly like "恢复任务" → "提交 Seedance" for ordinary tasks.
+        const hasPrompt=String(fission.prompt||'').trim().length>=300;
+        const reset=await db.prepare(`UPDATE tasks SET status=CASE WHEN length(trim(prompt))>=300 THEN 'prompt_ready' ELSE 'variant_queued' END,
+          progress=CASE WHEN length(trim(prompt))>=300 THEN 32 ELSE 36 END,provider='gemini-web',provider_job_id=NULL,provider_status_url=NULL,error=NULL,bridge_claimed_at=NULL,bridge_worker_id=NULL,gemini_failures=0,gemini_retry_at=NULL,updated_at=? WHERE id=? AND status='failed'`).bind(now,body.id).run();
+        if(reset.meta.changes && hasPrompt && fission.auto_queue){
+          await queueSeedance(body.id,request.url);
+          return Response.json({ok:true,queued:true});
+        }
       }
       return Response.json({ok:true});
     }

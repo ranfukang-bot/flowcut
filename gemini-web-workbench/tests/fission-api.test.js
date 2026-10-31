@@ -221,15 +221,37 @@ test('fission: a failed child insert rolls back the entire batch; concurrent mot
   assert.equal(f.row('SELECT COUNT(*) AS n FROM tasks').n,0,'empty fission container is removed');
 });
 
-test('fission: concurrent manual queue requests accept once; recovery never erases a known remote Task ID',async t=>{
+test('fission: concurrent manual queue requests accept once; a Seedance-stage failure recovers through the original local task',async t=>{
   const f=await fixture(t);await f.create({motherSource:'paste',motherPrompt:block('母版'),autoQueue:false});
   const [job]=await f.claim();await f.submit(job);
   const enqueue=()=>f.call('tasks','PATCH',{body:{id:job.id,action:'queue'}});
   const results=await Promise.all([enqueue(),enqueue()]);
   assert.deepEqual(results.map(r=>r.status).sort(),[200,409]);
-  f.sqlite.prepare("UPDATE tasks SET status='failed',provider_job_id='known-task-id' WHERE id=?").run(job.id);
-  for(const action of ['queue','retry','regenerate'])assert.equal((await f.call('tasks','PATCH',{body:{id:job.id,action}})).status,409);
-  assert.equal(f.row('SELECT provider_job_id FROM tasks WHERE id=?',job.id).provider_job_id,'known-task-id');
+  f.sqlite.prepare("UPDATE tasks SET status='failed',provider_job_id='local-seedance-task',error='提交失败：TikTok HTTP 400: Bad Request' WHERE id=?").run(job.id);
+  for(const action of ['queue','regenerate'])assert.equal((await f.call('tasks','PATCH',{body:{id:job.id,action}})).status,409);
+  // Recovery keeps the prompt and only clears FlowCut's link. Without auto video
+  // it stops at prompt-ready; "提交 Seedance" then reaches the same local task.
+  const recovered=await f.call('tasks','PATCH',{body:{id:job.id,action:'retry'}});
+  assert.equal(recovered.status,200,JSON.stringify(recovered.body));assert.equal(recovered.body.queued,undefined);
+  const row=f.row('SELECT status,prompt,provider_job_id,error FROM tasks WHERE id=?',job.id);
+  assert.deepEqual([row.status,row.provider_job_id,row.error],['prompt_ready',null,null]);assert.equal(row.prompt,block(job.id));
+  assert.equal((await enqueue()).status,200);
+});
+
+test('fission: with auto video, recovering a rejected Seedance submission queues the same FlowCut task again, never a Gemini round',async t=>{
+  const f=await fixture(t),c=await f.create({motherSource:'paste',motherPrompt:block('母版')});
+  const jobs=await f.claim(4);for(const job of jobs)assert.equal((await f.submit(job)).status,200);
+  const [child,other]=f.children(c.body.id);assert.equal(child.status,'video_queued');
+  f.sqlite.prepare("UPDATE tasks SET status='failed',provider_job_id='local-seedance-task',error='提交失败：TikTok HTTP 400: Bad Request' WHERE id=?").run(child.id);
+  const recovered=await f.call('tasks','PATCH',{body:{id:child.id,action:'retry'}});
+  assert.equal(recovered.status,200,JSON.stringify(recovered.body));assert.equal(recovered.body.queued,true);
+  const row=f.row('SELECT status,provider,provider_job_id,prompt FROM tasks WHERE id=?',child.id);
+  assert.deepEqual([row.status,row.provider,row.provider_job_id],['video_queued','seedance-bridge',null]);assert.equal(row.prompt,child.prompt);
+  const offered=(await f.call('seedance-bridge','GET',{query:'?workerId=video-desk'})).body.jobs;
+  assert.ok(offered.some(job=>job.id===child.id&&job.prompt===child.prompt),'the bridge offers the same FlowCut ID and prompt, so the local Seedance task is reused');
+  assert.deepEqual(await f.claim(4),[],'no Gemini round is started');
+  assert.equal(f.row('SELECT status FROM tasks WHERE id=?',other.id).status,other.status,'siblings are untouched');
+  assert.equal((await f.call('tasks','PATCH',{body:{id:child.id,action:'retry'}})).status,409,'only a failed task can be recovered');
 });
 
 test('fission: deleting the mother product cannot orphan other products; deleting a child product keeps its siblings',async t=>{

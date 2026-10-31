@@ -126,7 +126,7 @@ export function PromptDrawer({
   async function taskAction(action: "queue" | "check" | "retry" | "regenerate") {
     setBusy(action);
     try {
-      await api("/api/tasks", {
+      const result = await api("/api/tasks", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -134,9 +134,11 @@ export function PromptDrawer({
           action,
           autoQueue: action === "regenerate",
         }),
-      });
+      }) as { queued?: boolean } | null;
       await onUpdated(
-        action === "queue"
+        action === "retry" && result?.queued
+          ? "已重新交给 Seedance：沿用原任务记录核对，不会重复生成"
+          : action === "queue"
           ? "已提交到 Seedance 视频生成队列"
           : action === "regenerate"
             ? "Gemini 已重新识别商品图，并提交到 Seedance"

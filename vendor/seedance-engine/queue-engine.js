@@ -1159,7 +1159,8 @@ class QueueEngine {
         refusal = 'rejected';
         task.status = 'failed';
         task.submitOutcome = 'rejected';
-        task.errorMessage = `提交失败：${error.message}`;
+        // The prompt length and image count make a refusal diagnosable later.
+        task.errorMessage = `提交失败：${error.message}（提示词 ${String(task.prompt || '').length} 字，图片 ${task.imageItems?.length || 0} 张）`;
         task.completedAt = Date.now();
         this.recordTask(task, task.errorMessage, 'error');
         this.store.log(task.errorMessage, 'error');

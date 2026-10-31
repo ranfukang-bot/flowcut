@@ -130,6 +130,16 @@ test("a plain HTTP 400 refusal is a failure", async (t) => {
   assert.equal(result.first.status, "failed");
 });
 
+test("an HTTP 400 refusal records the platform code, log ID, prompt length and image count, and a retry may resend it", async (t) => {
+  const result = await submitThenRetry(t, () => new Response('{"code":40002,"message":"Bad Request","detail":"concurrency quota text"}', {
+    status: 400, headers: { "content-type": "application/json", "x-tt-logid": "20261031134500ABCDEF" },
+  }));
+  assert.equal(result.first.status, "failed");
+  assert.equal(result.first.error, "提交失败：TikTok HTTP 400: Bad Request（code=40002，log_id=20261031134500ABCDEF）（提示词 320 字，图片 1 张）");
+  assert.doesNotMatch(result.first.error, /concurrency|quota/, "free text from the body never reaches the rate-limit/quota classifiers");
+  assert.equal(result.submissions(), 2, "a definite refusal can be retried on request");
+});
+
 for (const legacy of ["提交失败：接口 HTTP 200", "提交失败：接口错误 undefined"]) {
   test(`tasks failed by older versions with "${legacy}" are not resent`, async (t) => {
     const context = setup(t, () => json('{"code":0,"data":{"task_id":"1"}}'));
